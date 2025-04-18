@@ -15,7 +15,6 @@ using PetscScalarKokkosViewHostUnmanaged = Kokkos::View<PetscScalar *, HostMirro
 
 #define N_CELLS 1000
 #define N_ANGLES 4
-#define N_GROUPS 3
 #define LENGTH 1.0
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -289,7 +288,7 @@ int main(int argc, char **args) {
 
    // Do we diagonally scale our matrix before solving
    // Defaults to false
-   PetscBool diag_scale = PETSC_FALSE;
+   PetscBool diag_scale = PETSC_TRUE;
    PetscOptionsGetBool(NULL, NULL, "-diag_scale", &diag_scale, NULL); 
    // Do we precondition with streaming or streaming/removal
    // Defaults to false
@@ -299,7 +298,7 @@ int main(int argc, char **args) {
    const int total_unknowns = N_ANGLES * N_CELLS;
    PetscInt local_rows, local_cols;
 
-   // Quadrature
+   // Sn quadrature
    PetscScalar mu[N_ANGLES], w[N_ANGLES];
    get_sn_quadrature(N_ANGLES, mu, w);
 
@@ -331,19 +330,25 @@ int main(int argc, char **args) {
    // ~~~~~~~~~~~
    // Cross sections
    // ~~~~~~~~~~~
-   double sigma_s[N_GROUPS][N_GROUPS] = {
-      {0.5, 0.2, 0.1}, // scattering from g'=0 to g
-      {0.1, 0.6, 0.2},
-      {0.0, 0.1, 0.5}
-   };
+
+   // Define the range for the random exponent
+   int min_exponent = -2;
+   int max_exponent = 5;
+   int exponent_range = max_exponent - min_exponent + 1;   
 
    // Total cross-section on each local cell  
+   // Random between 0 and 10^max_exponent
    PetscScalar *sigma_t;
    PetscMalloc1(local_nodes, &sigma_t);
    for (int i = 0; i < local_nodes; i++)
    {
-      sigma_t[i] = (PetscScalar)rand() / (PetscScalar)RAND_MAX;
-   }   
+      // Generate a random mantissa between 0.1 and 1.0
+      PetscScalar mantissa = (PetscScalar)rand() / (PetscScalar)RAND_MAX;
+      // Generate a random integer exponent in the desired range
+      int exponent = min_exponent + (rand() % exponent_range);
+      // Combine mantissa and exponent
+      sigma_t[i] = mantissa * pow(10.0, (PetscScalar)exponent);
+   }
 
    // ~~~~~~~~~~~
    // ~~~~~~~~~~~
@@ -371,13 +376,13 @@ int main(int argc, char **args) {
    // Fill the streaming operator
    insert_streaming(mu_d, coo_v_d, A_stream);
 
-   // Diagonally scale the streaming operator 
-   if (diag_scale) {
+   // // Diagonally scale the streaming operator 
+   // if (diag_scale) {
 
-      MatGetDiagonal(A_stream, diag_vec);
-      VecReciprocal(diag_vec);
-      MatDiagonalScale(A_stream, diag_vec, PETSC_NULLPTR);
-   }        
+   //    MatGetDiagonal(A_stream, diag_vec);
+   //    VecReciprocal(diag_vec);
+   //    MatDiagonalScale(A_stream, diag_vec, PETSC_NULLPTR);
+   // }        
 
    // Duplicate the sparsity of the streaming operator
    MatDuplicate(A_stream, MAT_DO_NOT_COPY_VALUES, &A);      
