@@ -217,7 +217,11 @@ int main(int argc, char **args) {
     // Do we diagonally scale our matrix before solving
     // Defaults to false
     PetscBool diag_scale = PETSC_FALSE;
-    PetscOptionsGetBool(NULL, NULL, "-diag_scale", &diag_scale, NULL);    
+    PetscOptionsGetBool(NULL, NULL, "-diag_scale", &diag_scale, NULL); 
+    // Do we precondition with streaming or streaming/removal
+    // Defaults to false
+    PetscBool precon_stream = PETSC_FALSE;
+    PetscOptionsGetBool(NULL, NULL, "-precon_stream", &precon_stream, NULL);        
 
     const int total_unknowns = N_ANGLES * N_CELLS;
     PetscInt local_rows, local_cols;
@@ -234,38 +238,58 @@ int main(int argc, char **args) {
     double mu[N_ANGLES], w[N_ANGLES];
     get_sn_quadrature(N_ANGLES, mu, w);
 
-    Mat A;
+    Mat A_stream, A;
     Vec x, b;
     KSP ksp;
     PC pc;
 
-    // Matrix
-    MatCreate(PETSC_COMM_WORLD, &A);
-    MatSetSizes(A, PETSC_DECIDE, PETSC_DECIDE, total_unknowns, total_unknowns);
-    MatSetType(A, MATAIJKOKKOS);
-    MatSetFromOptions(A);
-    MatSetUp(A);
-    MatGetLocalSize(A, &local_rows, &local_cols);
+    // Create the streaming operator
+    MatCreate(PETSC_COMM_WORLD, &A_stream);
+    MatSetSizes(A_stream, PETSC_DECIDE, PETSC_DECIDE, total_unknowns, total_unknowns);
+    MatSetType(A_stream, MATAIJKOKKOS);
+    MatSetFromOptions(A_stream);
+    MatSetUp(A_stream);
+    MatGetLocalSize(A_stream, &local_rows, &local_cols);
+    // Preallocate the streaming operator
+    preallocate_streaming_removal(mu, A_stream);
+
+    // Vectors
+    MatCreateVecs(A_stream, &x, &b);      
     
     // Be careful about the scope of coo_v
     {
-
       // Create device memory to fill the streaming/removal operator
       PetscScalarKokkosView coo_v("coo_v", 2 * local_rows);    
 
-      // Fill a 1 group streaming/removal operator
-      preallocate_streaming_removal(mu, A);
-      fill_streaming_removal(mu, 0.0, coo_v, A);
+      // Fill the streaming operator
+      fill_streaming_removal(mu, 0.0, coo_v, A_stream);
 
-      // Vectors
-      MatCreateVecs(A, &x, &b);   
+      // Diagonally scale the streaming operator 
+      if (diag_scale) {
+
+         Vec diag_vec;
+         VecDuplicate(x, &diag_vec);
+         MatGetDiagonal(A_stream, diag_vec);
+         VecReciprocal(diag_vec);
+         MatDiagonalScale(A_stream, diag_vec, PETSC_NULLPTR);
+         VecPointwiseMult(b, diag_vec, b);
+         VecDestroy(&diag_vec);
+      }        
+
+      // This will be the streaming/removal operator
+      MatDuplicate(A_stream, MAT_DO_NOT_COPY_VALUES, &A);      
+
+      // ~~~~~~~~~~~~
+      // This is where our group loop would start
+      // ~~~~~~~~~~~~
+      
+      // Fill the streaming/removal operator
+      fill_streaming_removal(mu, sigma_t[0], coo_v, A); 
 
       // RHS: external source
       VecSet(b, 1.0);
-      VecAssemblyBegin(b);
-      VecAssemblyEnd(b);
 
-      // Diagonally scale our matrix 
+      // Diagonally scale the streaming/removal operator 
       if (diag_scale) {
 
          Vec diag_vec;
@@ -277,9 +301,20 @@ int main(int argc, char **args) {
          VecDestroy(&diag_vec);
       }      
 
+      MatView(A_stream, PETSC_VIEWER_STDOUT_WORLD);
+      MatView(A, PETSC_VIEWER_STDOUT_WORLD);      
+
       // Solve
       KSPCreate(PETSC_COMM_WORLD, &ksp);
-      KSPSetOperators(ksp, A, A);
+      // Do we precondition with the streaming operator
+      if (precon_stream)
+      {
+         KSPSetOperators(ksp, A, A_stream);
+      }
+      else
+      {
+         KSPSetOperators(ksp, A, A);
+      }
       KSPGetPC(ksp, &pc);
       PCSetType(pc, PCAIR);
       KSPSetFromOptions(ksp);
