@@ -1,12 +1,17 @@
 #include <petscvec_kokkos.hpp>
+#include <Kokkos_DualView.hpp>
 #include <petscksp.h>
 #include <math.h>
 #include <stdio.h>
 #include <iostream>
+#include <stdlib.h>
 #include "pflare.h"
 
-using DefaultMemorySpace       = Kokkos::DefaultExecutionSpace::memory_space;
-using PetscScalarKokkosView    = Kokkos::View<PetscScalar *, DefaultMemorySpace>;
+using DefaultMemorySpace        = Kokkos::DefaultExecutionSpace::memory_space;
+using PetscScalarKokkosView     = Kokkos::View<PetscScalar *, DefaultMemorySpace>;
+using HostMirrorMemorySpace     = Kokkos::DualView<PetscScalar *>::host_mirror_space::memory_space;
+using PetscScalarKokkosViewHost = Kokkos::View<PetscScalar *, HostMirrorMemorySpace>;
+using PetscScalarKokkosViewHostUnmanaged = Kokkos::View<PetscScalar *, HostMirrorMemorySpace, Kokkos::MemoryTraits<Kokkos::Unmanaged>>;
 
 #define N_CELLS 10
 #define N_ANGLES 4
@@ -16,7 +21,7 @@ using PetscScalarKokkosView    = Kokkos::View<PetscScalar *, DefaultMemorySpace>
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 // SN quadrature (Gauss-Legendre for N_ANGLES=2 or 4)
-void get_sn_quadrature(int no_angles, double *mu, double *w) {
+void get_sn_quadrature(int no_angles, PetscScalar *mu, PetscScalar *w) {
     if (no_angles == 2) {
         mu[0] = -0.5773502692; mu[1] = 0.5773502692;
         w[0] = 1.0;            w[1] = 1.0;
@@ -33,7 +38,7 @@ void get_sn_quadrature(int no_angles, double *mu, double *w) {
 // Create the preallocation structure for the
 // assembled streaming/removal operator for a single group
 // This happens on the host but we only need to call this once
-void preallocate_streaming_removal(double *mu, Mat A) {
+void preallocate_streaming_removal(PetscScalar *mu, Mat A) {
 
    PetscInt i, global_row_start, global_row_end_plus_one;
    PetscInt global_rows, global_cols, local_rows, local_cols;
@@ -143,9 +148,9 @@ void preallocate_streaming_removal(double *mu, Mat A) {
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-// Insert the assembled streaming operator for a single group
+// Insert the streaming term for a single group
 // This happens entirely on the device
-void insert_streaming(double *mu, double sigma_t, PetscScalarKokkosView &coo_v, Mat A) {
+void insert_streaming(PetscScalarKokkosView &mu_d, PetscScalarKokkosView &coo_v_d, Mat A) {
 
    const double dx = LENGTH / N_CELLS;
    
@@ -170,8 +175,8 @@ void insert_streaming(double *mu, double sigma_t, PetscScalarKokkosView &coo_v, 
 
          // Diagonal is always the second entry regardless of angle
          // Non-diagonal boundary conditions are ignored
-         coo_v(i*2) = -mu[i % N_ANGLES]/dx;
-         coo_v(i*2 + 1) = fabs(mu[i % N_ANGLES])/dx;
+         coo_v_d(i*2) = -mu_d[i % N_ANGLES]/dx;
+         coo_v_d(i*2 + 1) = fabs(mu_d[i % N_ANGLES])/dx;
       });
 
    // Left boundary
@@ -181,9 +186,9 @@ void insert_streaming(double *mu, double sigma_t, PetscScalarKokkosView &coo_v, 
          Kokkos::RangePolicy<>(0, N_ANGLES), KOKKOS_LAMBDA(int a) {      
 
          // Set diagonal to 1
-         if (mu[a] > 0)
+         if (mu_d[a] > 0)
          {
-            coo_v[a * 2 + 1] = 1;
+            coo_v_d[a * 2 + 1] = 1;
          }           
       });
    }
@@ -194,25 +199,28 @@ void insert_streaming(double *mu, double sigma_t, PetscScalarKokkosView &coo_v, 
          Kokkos::RangePolicy<>(0, N_ANGLES), KOKKOS_LAMBDA(int a) { 
 
          // Set diagonal to 1
-         if (mu[a] < 0)
+         if (mu_d[a] < 0)
          {
-            coo_v[(local_nodes - 1) * N_ANGLES * 2 + a * 2 + 1] = 1;
+            coo_v_d[(local_nodes - 1) * N_ANGLES * 2 + a * 2 + 1] = 1;
          }           
       });
    }      
 
    // This should all happen on the gpu
-   MatSetValuesCOO(A, coo_v.data(), INSERT_VALUES);      
+   MatSetValuesCOO(A, coo_v_d.data(), INSERT_VALUES);      
 
 }
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-// Fill the assembled removal operator for a single group
+// Add the removal term for a single group
 // This happens entirely on the device
-void add_removal(double *mu, double sigma_t, PetscScalarKokkosView &coo_v, Mat A) {
+void add_removal(PetscScalarKokkosView &mu_d, \
+   PetscScalarKokkosView &sigma_t_d, \
+   PetscScalarKokkosView &coo_v_d, \
+   Mat A) {
 
-   const double dx = LENGTH / N_CELLS;
+   //const double dx = LENGTH / N_CELLS;
    
    PetscInt global_rows, global_cols, local_rows, local_cols;
    MatGetSize(A, &global_rows, &global_cols);   
@@ -229,14 +237,14 @@ void add_removal(double *mu, double sigma_t, PetscScalarKokkosView &coo_v, Mat A
    // ~~~~~~~~~~  
 
    // Set to zero first
-   Kokkos::deep_copy(coo_v, 0.0);
+   Kokkos::deep_copy(coo_v_d, 0.0);
 
    // Add in the removal term
    Kokkos::parallel_for(
       Kokkos::RangePolicy<>(0, local_rows), KOKKOS_LAMBDA(int i) {
 
          // Diagonal is always the second entry regardless of angle
-         coo_v(i*2 + 1) = sigma_t;
+         coo_v_d(i*2 + 1) = sigma_t_d[i / N_ANGLES];
    });  
 
    // Add nothing to the bcs
@@ -247,9 +255,9 @@ void add_removal(double *mu, double sigma_t, PetscScalarKokkosView &coo_v, Mat A
       Kokkos::parallel_for(
          Kokkos::RangePolicy<>(0, N_ANGLES), KOKKOS_LAMBDA(int a) {      
 
-         if (mu[a] > 0)
+         if (mu_d[a] > 0)
          {
-            coo_v[a * 2 + 1] = 0;
+            coo_v_d[a * 2 + 1] = 0;
          }           
       });
    }
@@ -259,15 +267,15 @@ void add_removal(double *mu, double sigma_t, PetscScalarKokkosView &coo_v, Mat A
       Kokkos::parallel_for(
          Kokkos::RangePolicy<>(0, N_ANGLES), KOKKOS_LAMBDA(int a) { 
 
-         if (mu[a] < 0)
+         if (mu_d[a] < 0)
          {
-            coo_v[(local_nodes - 1) * N_ANGLES * 2 + a * 2 + 1] = 0;
+            coo_v_d[(local_nodes - 1) * N_ANGLES * 2 + a * 2 + 1] = 0;
          }           
       });
    }      
 
    // This should all happen on the gpu
-   MatSetValuesCOO(A, coo_v.data(), ADD_VALUES);      
+   MatSetValuesCOO(A, coo_v_d.data(), ADD_VALUES);      
 
 }
 
@@ -275,126 +283,158 @@ void add_removal(double *mu, double sigma_t, PetscScalarKokkosView &coo_v, Mat A
 
 int main(int argc, char **args) {
 
-    PetscInitialize(&argc, &args, (char*)0, NULL);
-    // Register the pflare types
-    PCRegister_PFLARE();    
+   PetscInitialize(&argc, &args, (char*)0, NULL);
+   // Register the pflare types
+   PCRegister_PFLARE();    
 
-    // Do we diagonally scale our matrix before solving
-    // Defaults to false
-    PetscBool diag_scale = PETSC_FALSE;
-    PetscOptionsGetBool(NULL, NULL, "-diag_scale", &diag_scale, NULL); 
-    // Do we precondition with streaming or streaming/removal
-    // Defaults to false
-    PetscBool precon_stream = PETSC_FALSE;
-    PetscOptionsGetBool(NULL, NULL, "-precon_stream", &precon_stream, NULL);        
+   // Do we diagonally scale our matrix before solving
+   // Defaults to false
+   PetscBool diag_scale = PETSC_FALSE;
+   PetscOptionsGetBool(NULL, NULL, "-diag_scale", &diag_scale, NULL); 
+   // Do we precondition with streaming or streaming/removal
+   // Defaults to false
+   PetscBool precon_stream = PETSC_FALSE;
+   PetscOptionsGetBool(NULL, NULL, "-precon_stream", &precon_stream, NULL);        
 
-    const int total_unknowns = N_ANGLES * N_CELLS;
-    PetscInt local_rows, local_cols;
+   const int total_unknowns = N_ANGLES * N_CELLS;
+   PetscInt local_rows, local_cols;
 
-    // Cross sections
-    double sigma_t[N_GROUPS] = {1.0, 0.9, 0.8};  // Total cross section per group
-    double sigma_s[N_GROUPS][N_GROUPS] = {
-        {0.5, 0.2, 0.1}, // scattering from g'=0 to g
-        {0.1, 0.6, 0.2},
-        {0.0, 0.1, 0.5}
-    };
+   // Quadrature
+   PetscScalar mu[N_ANGLES], w[N_ANGLES];
+   get_sn_quadrature(N_ANGLES, mu, w);
 
-    // Quadrature
-    double mu[N_ANGLES], w[N_ANGLES];
-    get_sn_quadrature(N_ANGLES, mu, w);
+   Mat A_stream, A;
+   Vec x, b;
+   KSP ksp;
+   PC pc;
 
-    Mat A_stream, A;
-    Vec x, b;
-    KSP ksp;
-    PC pc;
+   // Create the streaming operator
+   MatCreate(PETSC_COMM_WORLD, &A_stream);
+   MatSetSizes(A_stream, PETSC_DECIDE, PETSC_DECIDE, total_unknowns, total_unknowns);
+   MatSetType(A_stream, MATAIJKOKKOS);
+   MatSetFromOptions(A_stream);
+   MatSetUp(A_stream);
+   MatGetLocalSize(A_stream, &local_rows, &local_cols);
+   // Preallocate the streaming operator
+   preallocate_streaming_removal(mu, A_stream);
 
-    // Create the streaming operator
-    MatCreate(PETSC_COMM_WORLD, &A_stream);
-    MatSetSizes(A_stream, PETSC_DECIDE, PETSC_DECIDE, total_unknowns, total_unknowns);
-    MatSetType(A_stream, MATAIJKOKKOS);
-    MatSetFromOptions(A_stream);
-    MatSetUp(A_stream);
-    MatGetLocalSize(A_stream, &local_rows, &local_cols);
-    // Preallocate the streaming operator
-    preallocate_streaming_removal(mu, A_stream);
+   // Vectors
+   MatCreateVecs(A_stream, &x, &b);  
+   
+   // This is how many local spatal nodes we have
+   PetscInt local_nodes = local_rows / N_ANGLES;   
 
-    // Vectors
-    MatCreateVecs(A_stream, &x, &b);      
-    
-    // Be careful about the scope of coo_v
-    {
-      // Create device memory used in assembly of
-      // the streaming/removal operator
-      PetscScalarKokkosView coo_v("coo_v", 2 * local_rows);    
+   // ~~~~~~~~~~~
+   // Cross sections
+   // ~~~~~~~~~~~
+   double sigma_s[N_GROUPS][N_GROUPS] = {
+      {0.5, 0.2, 0.1}, // scattering from g'=0 to g
+      {0.1, 0.6, 0.2},
+      {0.0, 0.1, 0.5}
+   };
 
-      // Fill the streaming operator
-      insert_streaming(mu, 0.0, coo_v, A_stream);
+   // Total cross-section on each local cell
+   // Seed the random number generator
+   srand(0);   
+   PetscScalar *sigma_t;
+   PetscMalloc1(local_nodes, &sigma_t);
+   for (int i = 0; i < local_nodes; i++)
+   {
+      sigma_t[i] = (PetscScalar)rand() / (PetscScalar)RAND_MAX;
+   }   
 
-      // Diagonally scale the streaming operator 
-      if (diag_scale) {
+   // ~~~~~~~~~~~
+   // ~~~~~~~~~~~
+   
+   // Be careful about the scope of device memory
+   {
+   // Create device memory used in assembly of
+   // the streaming/removal operator
+   // This is how many local nnzs we have
+   // We have 2 non-zeros per unknown
+   PetscScalarKokkosView coo_v_d("coo_v_d", 2 * local_rows);   
 
-         Vec diag_vec;
-         VecDuplicate(x, &diag_vec);
-         MatGetDiagonal(A_stream, diag_vec);
-         VecReciprocal(diag_vec);
-         MatDiagonalScale(A_stream, diag_vec, PETSC_NULLPTR);
-         VecPointwiseMult(b, diag_vec, b);
-         VecDestroy(&diag_vec);
-      }        
+   // Device memory for quadrature
+   PetscScalarKokkosView mu_d("mu_d", N_ANGLES);      
+   PetscScalarKokkosViewHostUnmanaged mu_h(mu, N_ANGLES); 
+   // Copy the quadrature to device memory     
+   Kokkos::deep_copy(mu_d, mu_h);
 
-      // Duplicate the sparsity of the streaming operator
-      MatDuplicate(A_stream, MAT_DO_NOT_COPY_VALUES, &A);      
+   // Device memory for total xsection
+   PetscScalarKokkosView sigma_t_d("sigma_t_d", N_CELLS);      
+   PetscScalarKokkosViewHostUnmanaged sigma_t_h(sigma_t, N_CELLS); 
+   // Copy the total xsection to device memory     
+   Kokkos::deep_copy(sigma_t_d, sigma_t_h);   
 
-      // ~~~~~~~~~~~~
-      // This is where our group loop would start
-      // ~~~~~~~~~~~~
+   // Fill the streaming operator
+   insert_streaming(mu_d, coo_v_d, A_stream);
 
-      MatCopy(A_stream, A, SAME_NONZERO_PATTERN);
-      
-      // Add in the removal operator
-      add_removal(mu, sigma_t[0], coo_v, A); 
+   // Diagonally scale the streaming operator 
+   if (diag_scale) {
 
-      // RHS: external source
-      VecSet(b, 1.0);
+      Vec diag_vec;
+      VecDuplicate(x, &diag_vec);
+      MatGetDiagonal(A_stream, diag_vec);
+      VecReciprocal(diag_vec);
+      MatDiagonalScale(A_stream, diag_vec, PETSC_NULLPTR);
+      VecPointwiseMult(b, diag_vec, b);
+      VecDestroy(&diag_vec);
+   }        
 
-      // Diagonally scale the streaming/removal operator 
-      if (diag_scale) {
+   // Duplicate the sparsity of the streaming operator
+   MatDuplicate(A_stream, MAT_DO_NOT_COPY_VALUES, &A);      
 
-         Vec diag_vec;
-         VecDuplicate(x, &diag_vec);
-         MatGetDiagonal(A, diag_vec);
-         VecReciprocal(diag_vec);
-         MatDiagonalScale(A, diag_vec, PETSC_NULLPTR);
-         VecPointwiseMult(b, diag_vec, b);
-         VecDestroy(&diag_vec);
-      }      
+   // ~~~~~~~~~~~~
+   // This is where our group loop would start
+   // ~~~~~~~~~~~~
 
-      MatView(A_stream, PETSC_VIEWER_STDOUT_WORLD);
-      MatView(A, PETSC_VIEWER_STDOUT_WORLD);      
+   MatCopy(A_stream, A, SAME_NONZERO_PATTERN);
+   
+   // Add in the removal operator
+   add_removal(mu_d, sigma_t_d, coo_v_d, A); 
 
-      // Solve
-      KSPCreate(PETSC_COMM_WORLD, &ksp);
-      // Do we precondition with the streaming operator
-      if (precon_stream)
-      {
-         KSPSetOperators(ksp, A, A_stream);
-      }
-      else
-      {
-         KSPSetOperators(ksp, A, A);
-      }
-      KSPGetPC(ksp, &pc);
-      PCSetType(pc, PCAIR);
-      KSPSetFromOptions(ksp);
-      KSPSolve(ksp, b, x);
+   // RHS: external source
+   VecSet(b, 1.0);
 
-    }
+   // Diagonally scale the streaming/removal operator 
+   if (diag_scale) {
 
-    // Clean up
-    KSPDestroy(&ksp);
-    VecDestroy(&x);
-    VecDestroy(&b);
-    MatDestroy(&A);
-    PetscFinalize();
-    return 0;
+      Vec diag_vec;
+      VecDuplicate(x, &diag_vec);
+      MatGetDiagonal(A, diag_vec);
+      VecReciprocal(diag_vec);
+      MatDiagonalScale(A, diag_vec, PETSC_NULLPTR);
+      VecPointwiseMult(b, diag_vec, b);
+      VecDestroy(&diag_vec);
+   }      
+
+   MatView(A_stream, PETSC_VIEWER_STDOUT_WORLD);
+   MatView(A, PETSC_VIEWER_STDOUT_WORLD);      
+
+   // Solve
+   KSPCreate(PETSC_COMM_WORLD, &ksp);
+   // Do we precondition with the streaming operator
+   if (precon_stream)
+   {
+      KSPSetOperators(ksp, A, A_stream);
+   }
+   else
+   {
+      KSPSetOperators(ksp, A, A);
+   }
+   KSPGetPC(ksp, &pc);
+   PCSetType(pc, PCAIR);
+   KSPSetFromOptions(ksp);
+   KSPSolve(ksp, b, x);
+
+   }
+
+   // Clean up
+   KSPDestroy(&ksp);
+   VecDestroy(&x);
+   VecDestroy(&b);
+   MatDestroy(&A);
+   PetscFree(sigma_t);
+   PetscFinalize();
+   return 0;
 }
