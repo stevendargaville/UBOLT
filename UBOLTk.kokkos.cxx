@@ -64,7 +64,7 @@ void preallocate_streaming_removal(double *mu, Mat A) {
    // We add two non-zeros per unknown
    // On boundary nodes we also include two non-zeros
    // We make it ignore one of those entries given dirichlet conditions
-   // That way the fill code doesn't have to change
+   // That way the setvalues code doesn't have to change
    // depending on the boundary condition
    for (i = 0; i < local_nodes; i++)
    {
@@ -85,7 +85,7 @@ void preallocate_streaming_removal(double *mu, Mat A) {
          }
          // Negative velocity, we have -> 1 -1     
          // but we always add the diagonal last 
-         // This makes the fill very simple as this matches the ordering
+         // This makes the setvalues very simple as this matches the ordering
          // of the positive velocity and hence we don't have to detect
          // what direction    
          else
@@ -143,9 +143,9 @@ void preallocate_streaming_removal(double *mu, Mat A) {
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-// Fill the assembled streaming/removal operator for a single group
+// Insert the assembled streaming operator for a single group
 // This happens entirely on the device
-void fill_streaming_removal(double *mu, double sigma_t, PetscScalarKokkosView &coo_v, Mat A) {
+void insert_streaming(double *mu, double sigma_t, PetscScalarKokkosView &coo_v, Mat A) {
 
    const double dx = LENGTH / N_CELLS;
    
@@ -171,7 +171,7 @@ void fill_streaming_removal(double *mu, double sigma_t, PetscScalarKokkosView &c
          // Diagonal is always the second entry regardless of angle
          // Non-diagonal boundary conditions are ignored
          coo_v(i*2) = -mu[i % N_ANGLES]/dx;
-         coo_v(i*2 + 1) = fabs(mu[i % N_ANGLES])/dx + sigma_t;
+         coo_v(i*2 + 1) = fabs(mu[i % N_ANGLES])/dx;
       });
 
    // Left boundary
@@ -203,6 +203,71 @@ void fill_streaming_removal(double *mu, double sigma_t, PetscScalarKokkosView &c
 
    // This should all happen on the gpu
    MatSetValuesCOO(A, coo_v.data(), INSERT_VALUES);      
+
+}
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+// Fill the assembled removal operator for a single group
+// This happens entirely on the device
+void add_removal(double *mu, double sigma_t, PetscScalarKokkosView &coo_v, Mat A) {
+
+   const double dx = LENGTH / N_CELLS;
+   
+   PetscInt global_rows, global_cols, local_rows, local_cols;
+   MatGetSize(A, &global_rows, &global_cols);   
+   MatGetLocalSize(A, &local_rows, &local_cols);
+
+   PetscInt global_row_start, global_row_end_plus_one;
+   MatGetOwnershipRange(A, &global_row_start, &global_row_end_plus_one);   
+
+   // This is how many local spatal nodes we have
+   PetscInt local_nodes = local_rows / N_ANGLES;   
+
+   // ~~~~~~~~~~
+   // MatSetValuesCOO - happens on the device
+   // ~~~~~~~~~~  
+
+   // Set to zero first
+   Kokkos::deep_copy(coo_v, 0.0);
+
+   // Add in the removal term
+   Kokkos::parallel_for(
+      Kokkos::RangePolicy<>(0, local_rows), KOKKOS_LAMBDA(int i) {
+
+         // Diagonal is always the second entry regardless of angle
+         coo_v(i*2 + 1) = sigma_t;
+   });  
+
+   // Add nothing to the bcs
+
+   // Left boundary
+   if (global_row_start == 0)
+   {
+      Kokkos::parallel_for(
+         Kokkos::RangePolicy<>(0, N_ANGLES), KOKKOS_LAMBDA(int a) {      
+
+         if (mu[a] > 0)
+         {
+            coo_v[a * 2 + 1] = 0;
+         }           
+      });
+   }
+   // Right boundary
+   if (global_row_end_plus_one == global_rows)
+   {
+      Kokkos::parallel_for(
+         Kokkos::RangePolicy<>(0, N_ANGLES), KOKKOS_LAMBDA(int a) { 
+
+         if (mu[a] < 0)
+         {
+            coo_v[(local_nodes - 1) * N_ANGLES * 2 + a * 2 + 1] = 0;
+         }           
+      });
+   }      
+
+   // This should all happen on the gpu
+   MatSetValuesCOO(A, coo_v.data(), ADD_VALUES);      
 
 }
 
@@ -258,11 +323,12 @@ int main(int argc, char **args) {
     
     // Be careful about the scope of coo_v
     {
-      // Create device memory to fill the streaming/removal operator
+      // Create device memory used in assembly of
+      // the streaming/removal operator
       PetscScalarKokkosView coo_v("coo_v", 2 * local_rows);    
 
       // Fill the streaming operator
-      fill_streaming_removal(mu, 0.0, coo_v, A_stream);
+      insert_streaming(mu, 0.0, coo_v, A_stream);
 
       // Diagonally scale the streaming operator 
       if (diag_scale) {
@@ -276,15 +342,17 @@ int main(int argc, char **args) {
          VecDestroy(&diag_vec);
       }        
 
-      // This will be the streaming/removal operator
+      // Duplicate the sparsity of the streaming operator
       MatDuplicate(A_stream, MAT_DO_NOT_COPY_VALUES, &A);      
 
       // ~~~~~~~~~~~~
       // This is where our group loop would start
       // ~~~~~~~~~~~~
+
+      MatCopy(A_stream, A, SAME_NONZERO_PATTERN);
       
-      // Fill the streaming/removal operator
-      fill_streaming_removal(mu, sigma_t[0], coo_v, A); 
+      // Add in the removal operator
+      add_removal(mu, sigma_t[0], coo_v, A); 
 
       // RHS: external source
       VecSet(b, 1.0);
