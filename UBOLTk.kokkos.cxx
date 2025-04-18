@@ -79,40 +79,26 @@ void preallocate_streaming_removal(double *mu, Mat A) {
             oor[counter] = i * N_ANGLES + a + global_row_start;
             ooc[counter] = (i - 1) * N_ANGLES + a + global_row_start;
 
-            //std::cout << counter << " node: " << i << " angle " << a << " row " << oor[counter] << " col " << ooc[counter] << std::endl;
-
             oor[counter + 1] = i * N_ANGLES + a + global_row_start;
             ooc[counter + 1] = i * N_ANGLES + a + global_row_start;
-
-            //std::cout << counter + 1 << " node: " << i << " angle " << a << " row " << oor[counter+1] << " col " << ooc[counter+1] << std::endl;
 
          }
          // Negative velocity, we have -> 1 -1     
          // but we always add the diagonal last 
-         // This makes the fill very simple as we don't have to detect
+         // This makes the fill very simple as this matches the ordering
+         // of the positive velocity and hence we don't have to detect
          // what direction    
          else
          {
             oor[counter] = i * N_ANGLES + a + global_row_start;
             ooc[counter] = (i + 1) * N_ANGLES + a + global_row_start;
 
-            //std::cout << counter << " NEG node: " << i << " angle " << a << " row " << oor[counter] << " col " << ooc[counter] << std::endl;
-
             oor[counter + 1] = i * N_ANGLES + a + global_row_start;
             ooc[counter + 1] = i * N_ANGLES + a + global_row_start;
-
-            //std::cout << counter + 1 << " NEG node: " << i << " angle " << a << " row " << oor[counter+1] << " col " << ooc[counter+1] << std::endl;
-
          }
          counter = counter + 2;         
       }
    }
-
-   // for (int i = 0; i < 2 * local_rows; i++)
-   // {
-   //    std::cout << "node: " << i/(N_ANGLES*2) << " row " << oor[i] << " col " << ooc[i] << std::endl;
-   // }
-
 
    // Now let's go and fix up the boundary conditions
    // Let's impose Dirichlet conditions on the left and right boundaries
@@ -129,10 +115,7 @@ void preallocate_streaming_removal(double *mu, Mat A) {
          if (mu[a] > 0)
          {
             oor[a * 2] = -1;
-            ooc[a * 2] = -1;       
-            
-            //std::cout << "LEFT BOUND" << a * 2 << std::endl;
-            
+            ooc[a * 2] = -1;                   
          }           
       }
    }
@@ -147,16 +130,9 @@ void preallocate_streaming_removal(double *mu, Mat A) {
          {
             oor[(local_nodes - 1) * N_ANGLES * 2 + a * 2] = -1;
             ooc[(local_nodes - 1) * N_ANGLES * 2 + a * 2] = -1;
-            
-            //std::cout << "RIGHT BOUND" << (local_nodes - 1) * N_ANGLES * 2 + a * 2 << std::endl;            
          }           
       }
    }
-
-   // for (int i = 0; i < 2 * local_rows; i++)
-   // {
-   //    std::cout << i << " node: " << i/N_ANGLES << " " << oor[i] << " " << ooc[i] << std::endl;
-   // }
 
    // Set the indices
    counter = 2 * local_rows;
@@ -171,10 +147,17 @@ void preallocate_streaming_removal(double *mu, Mat A) {
 // This happens entirely on the device
 void fill_streaming_removal(double *mu, double sigma_t, PetscScalarKokkosView &coo_v, Mat A) {
 
-   //const double dx = LENGTH / N_CELLS;
+   const double dx = LENGTH / N_CELLS;
    
-   PetscInt local_rows, local_cols;
+   PetscInt global_rows, global_cols, local_rows, local_cols;
+   MatGetSize(A, &global_rows, &global_cols);   
    MatGetLocalSize(A, &local_rows, &local_cols);
+
+   PetscInt global_row_start, global_row_end_plus_one;
+   MatGetOwnershipRange(A, &global_row_start, &global_row_end_plus_one);   
+
+   // This is how many local spatal nodes we have
+   PetscInt local_nodes = local_rows / N_ANGLES;   
 
    // ~~~~~~~~~~
    // MatSetValuesCOO - happens on the device
@@ -187,9 +170,36 @@ void fill_streaming_removal(double *mu, double sigma_t, PetscScalarKokkosView &c
 
          // Diagonal is always the second entry regardless of angle
          // Non-diagonal boundary conditions are ignored
-         coo_v(i*2) = -1.0;
-         coo_v(i*2 + 1) = 1.0;
+         coo_v(i*2) = -mu[i % N_ANGLES]/dx;
+         coo_v(i*2 + 1) = fabs(mu[i % N_ANGLES])/dx + sigma_t;
       });
+
+   // Left boundary
+   if (global_row_start == 0)
+   {
+      Kokkos::parallel_for(
+         Kokkos::RangePolicy<>(0, N_ANGLES), KOKKOS_LAMBDA(int a) {      
+
+         // Set diagonal to 1
+         if (mu[a] > 0)
+         {
+            coo_v[a * 2 + 1] = 1;
+         }           
+      });
+   }
+   // Right boundary
+   if (global_row_end_plus_one == global_rows)
+   {
+      Kokkos::parallel_for(
+         Kokkos::RangePolicy<>(0, N_ANGLES), KOKKOS_LAMBDA(int a) { 
+
+         // Set diagonal to 1
+         if (mu[a] < 0)
+         {
+            coo_v[(local_nodes - 1) * N_ANGLES * 2 + a * 2 + 1] = 1;
+         }           
+      });
+   }      
 
    // This should all happen on the gpu
    MatSetValuesCOO(A, coo_v.data(), INSERT_VALUES);      
@@ -200,9 +210,14 @@ void fill_streaming_removal(double *mu, double sigma_t, PetscScalarKokkosView &c
 
 int main(int argc, char **args) {
 
-    PetscInitialize(&argc, &args, NULL, NULL);
+    PetscInitialize(&argc, &args, (char*)0, NULL);
     // Register the pflare types
     PCRegister_PFLARE();    
+
+    // Do we diagonally scale our matrix before solving
+    // Defaults to false
+    PetscBool diag_scale = PETSC_FALSE;
+    PetscOptionsGetBool(NULL, NULL, "-diag_scale", &diag_scale, NULL);    
 
     const int total_unknowns = N_ANGLES * N_CELLS;
     PetscInt local_rows, local_cols;
@@ -240,7 +255,7 @@ int main(int argc, char **args) {
 
       // Fill a 1 group streaming/removal operator
       preallocate_streaming_removal(mu, A);
-      fill_streaming_removal(mu, sigma_t[0], coo_v, A);
+      fill_streaming_removal(mu, 0.0, coo_v, A);
 
       // Vectors
       MatCreateVecs(A, &x, &b);   
@@ -250,12 +265,24 @@ int main(int argc, char **args) {
       VecAssemblyBegin(b);
       VecAssemblyEnd(b);
 
+      // Diagonally scale our matrix 
+      if (diag_scale) {
+
+         Vec diag_vec;
+         VecDuplicate(x, &diag_vec);
+         MatGetDiagonal(A, diag_vec);
+         VecReciprocal(diag_vec);
+         MatDiagonalScale(A, diag_vec, PETSC_NULLPTR);
+         VecPointwiseMult(b, diag_vec, b);
+         VecDestroy(&diag_vec);
+      }      
+
       // Solve
       KSPCreate(PETSC_COMM_WORLD, &ksp);
       KSPSetOperators(ksp, A, A);
-      KSPSetFromOptions(ksp);
       KSPGetPC(ksp, &pc);
       PCSetType(pc, PCAIR);
+      KSPSetFromOptions(ksp);
       KSPSolve(ksp, b, x);
 
     }
