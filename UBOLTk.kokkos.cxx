@@ -13,7 +13,7 @@ using HostMirrorMemorySpace     = Kokkos::DualView<PetscScalar *>::host_mirror_s
 using PetscScalarKokkosViewHost = Kokkos::View<PetscScalar *, HostMirrorMemorySpace>;
 using PetscScalarKokkosViewHostUnmanaged = Kokkos::View<PetscScalar *, HostMirrorMemorySpace, Kokkos::MemoryTraits<Kokkos::Unmanaged>>;
 
-#define N_CELLS 10
+#define N_CELLS 1000
 #define N_ANGLES 4
 #define N_GROUPS 3
 #define LENGTH 1.0
@@ -304,7 +304,7 @@ int main(int argc, char **args) {
    get_sn_quadrature(N_ANGLES, mu, w);
 
    Mat A_stream, A;
-   Vec x, b;
+   Vec x, b, diag_vec;
    KSP ksp;
    PC pc;
 
@@ -319,10 +319,14 @@ int main(int argc, char **args) {
    preallocate_streaming_removal(mu, A_stream);
 
    // Vectors
-   MatCreateVecs(A_stream, &x, &b);  
+   MatCreateVecs(A_stream, &x, &b);
+   VecDuplicate(x, &diag_vec);   
    
    // This is how many local spatal nodes we have
    PetscInt local_nodes = local_rows / N_ANGLES;   
+
+   // Seed the random number generator
+   srand(0);   
 
    // ~~~~~~~~~~~
    // Cross sections
@@ -333,9 +337,7 @@ int main(int argc, char **args) {
       {0.0, 0.1, 0.5}
    };
 
-   // Total cross-section on each local cell
-   // Seed the random number generator
-   srand(0);   
+   // Total cross-section on each local cell  
    PetscScalar *sigma_t;
    PetscMalloc1(local_nodes, &sigma_t);
    for (int i = 0; i < local_nodes; i++)
@@ -354,10 +356,10 @@ int main(int argc, char **args) {
    // We have 2 non-zeros per unknown
    PetscScalarKokkosView coo_v_d("coo_v_d", 2 * local_rows);   
 
-   // Device memory for quadrature
+   // Device memory for Sn quadrature
    PetscScalarKokkosView mu_d("mu_d", N_ANGLES);      
    PetscScalarKokkosViewHostUnmanaged mu_h(mu, N_ANGLES); 
-   // Copy the quadrature to device memory     
+   // Copy the Sn quadrature to device memory     
    Kokkos::deep_copy(mu_d, mu_h);
 
    // Device memory for total xsection
@@ -372,13 +374,9 @@ int main(int argc, char **args) {
    // Diagonally scale the streaming operator 
    if (diag_scale) {
 
-      Vec diag_vec;
-      VecDuplicate(x, &diag_vec);
       MatGetDiagonal(A_stream, diag_vec);
       VecReciprocal(diag_vec);
       MatDiagonalScale(A_stream, diag_vec, PETSC_NULLPTR);
-      VecPointwiseMult(b, diag_vec, b);
-      VecDestroy(&diag_vec);
    }        
 
    // Duplicate the sparsity of the streaming operator
@@ -399,17 +397,11 @@ int main(int argc, char **args) {
    // Diagonally scale the streaming/removal operator 
    if (diag_scale) {
 
-      Vec diag_vec;
-      VecDuplicate(x, &diag_vec);
       MatGetDiagonal(A, diag_vec);
       VecReciprocal(diag_vec);
       MatDiagonalScale(A, diag_vec, PETSC_NULLPTR);
       VecPointwiseMult(b, diag_vec, b);
-      VecDestroy(&diag_vec);
-   }      
-
-   MatView(A_stream, PETSC_VIEWER_STDOUT_WORLD);
-   MatView(A, PETSC_VIEWER_STDOUT_WORLD);      
+   }    
 
    // Solve
    KSPCreate(PETSC_COMM_WORLD, &ksp);
@@ -433,6 +425,7 @@ int main(int argc, char **args) {
    KSPDestroy(&ksp);
    VecDestroy(&x);
    VecDestroy(&b);
+   VecDestroy(&diag_vec);
    MatDestroy(&A);
    PetscFree(sigma_t);
    PetscFinalize();
