@@ -1,3 +1,6 @@
+// Currently run with:
+// make && ./UBOLTk -ksp_monitor -sub_0_pc_air_print_stats_timings -ksp_pc_side right -precon_stream -max_exponent 2
+
 #include <petscvec_kokkos.hpp>
 #include <Kokkos_DualView.hpp>
 #include <petscksp.h>
@@ -305,16 +308,16 @@ PetscErrorCode RemovalPCCreate(RemovalShellPC **shell, Mat A, PetscScalar *sigma
    PetscNew(&newctx);
    // Create vector for removal preconditioning
    MatCreateVecs(A, &newctx->inverse_sigma_t_vec, NULL);
-   VecSet(newctx->inverse_sigma_t_vec, 1.0);
-   for (int i = 0; i < N_CELLS; i++)
-   {
-      // Copy the inverse of the total xsection to the vector
-      if (sigma_t[i] > 0.1){
-         VecSetValue(newctx->inverse_sigma_t_vec, i, 1.0/sigma_t[i], INSERT_VALUES);
-      }
-   }   
-   // MatGetDiagonal(A, newctx->inverse_sigma_t_vec);
-   // VecReciprocal(newctx->inverse_sigma_t_vec);
+   // VecSet(newctx->inverse_sigma_t_vec, 1.0);
+   // for (int i = 0; i < N_CELLS; i++)
+   // {
+   //    // Copy the inverse of the total xsection to the vector
+   //    if (sigma_t[i] > 0.1){
+   //       VecSetValue(newctx->inverse_sigma_t_vec, i, 1.0/sigma_t[i], INSERT_VALUES);
+   //    }
+   // }   
+   MatGetDiagonal(A, newctx->inverse_sigma_t_vec);
+   VecReciprocal(newctx->inverse_sigma_t_vec);
 
    *shell = newctx;
 
@@ -343,20 +346,13 @@ void build_precon(PC pc, Mat A, PetscScalar *sigma_t) {
    PCCompositeSetType(pc, PC_COMPOSITE_MULTIPLICATIVE);
 
    // ~~~~~~~~~~~~~
-   // Preconditioner for streaming term
-   // ~~~~~~~~~~~~~
-   // AIR preconditioner for streaming operator
-   // This will operate on pmat
-   PCCompositeAddPCType(pc, PCAIR);
-
-   // ~~~~~~~~~~~~~
    // Preconditioner for removal term
    // ~~~~~~~~~~~~~
    // Shell preconditioner for removal term
    PCCompositeAddPCType(pc, PCSHELL);
    PC pc_removal;
    // Get the 2nd PC object out (ie the removal one)
-   PCCompositeGetPC(pc, 1, &pc_removal);
+   PCCompositeGetPC(pc, 0, &pc_removal);
 
    // Create the context for the preconditioner   
    RemovalShellPC *shell;
@@ -371,6 +367,13 @@ void build_precon(PC pc, Mat A, PetscScalar *sigma_t) {
    
    // Set the name
    PCShellSetName(pc_removal, "RemovalPCShell");
+
+   // ~~~~~~~~~~~~~
+   // Preconditioner for streaming term
+   // ~~~~~~~~~~~~~
+   // AIR preconditioner for streaming operator
+   // This will operate on pmat
+   PCCompositeAddPCType(pc, PCAIR);
 
 }
 
@@ -390,6 +393,9 @@ int main(int argc, char **args) {
    // Defaults to false
    PetscBool precon_stream = PETSC_FALSE;
    PetscOptionsGetBool(NULL, NULL, "-precon_stream", &precon_stream, NULL);        
+   // Total xsections range between 10^0 and 10^max_exponent
+   PetscInt max_exponent = 1;
+   PetscOptionsGetInt(NULL, NULL, "-max_exponent", &max_exponent, NULL);
 
    const int total_unknowns = N_ANGLES * N_CELLS;
    PetscInt local_rows, local_cols;
@@ -429,7 +435,6 @@ int main(int argc, char **args) {
 
    // Define the range for the random exponent
    int min_exponent = 0;
-   int max_exponent = 1;
    int exponent_range = max_exponent - min_exponent + 1;   
 
    // Total cross-section on each local cell  
