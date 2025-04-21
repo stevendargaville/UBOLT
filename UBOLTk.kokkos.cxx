@@ -305,14 +305,17 @@ PetscErrorCode RemovalPCCreate(RemovalShellPC **shell, Mat A, PetscScalar *sigma
    PetscNew(&newctx);
    // Create vector for removal preconditioning
    MatCreateVecs(A, &newctx->inverse_sigma_t_vec, NULL);
-   VecSet(newctx->inverse_sigma_t_vec, 0.0);
+   VecSet(newctx->inverse_sigma_t_vec, 1.0);
    for (int i = 0; i < N_CELLS; i++)
    {
       // Copy the inverse of the total xsection to the vector
-      if (sigma_t[i] > 1.0){
+      if (sigma_t[i] > 0.1){
          VecSetValue(newctx->inverse_sigma_t_vec, i, 1.0/sigma_t[i], INSERT_VALUES);
       }
    }   
+   // MatGetDiagonal(A, newctx->inverse_sigma_t_vec);
+   // VecReciprocal(newctx->inverse_sigma_t_vec);
+
    *shell = newctx;
 
    PetscFunctionReturn(PETSC_SUCCESS);
@@ -335,9 +338,9 @@ PetscErrorCode RemovalPCApply(PC pc, Vec x, Vec y)
 // Build the PETSc preconditioner
 void build_precon(PC pc, Mat A, PetscScalar *sigma_t) {
 
-   // Set our PC type to be an additive combination of preconditioners
+   // Set our PC type to be an multiplicative combination of preconditioners
    PCSetType(pc, PCCOMPOSITE);
-   PCCompositeSetType(pc, PC_COMPOSITE_ADDITIVE);
+   PCCompositeSetType(pc, PC_COMPOSITE_MULTIPLICATIVE);
 
    // ~~~~~~~~~~~~~
    // Preconditioner for streaming term
@@ -381,7 +384,7 @@ int main(int argc, char **args) {
 
    // Do we diagonally scale our matrix before solving
    // Defaults to false
-   PetscBool diag_scale = PETSC_TRUE;
+   PetscBool diag_scale = PETSC_FALSE;
    PetscOptionsGetBool(NULL, NULL, "-diag_scale", &diag_scale, NULL); 
    // Do we precondition with streaming or streaming/removal
    // Defaults to false
@@ -425,8 +428,8 @@ int main(int argc, char **args) {
    // ~~~~~~~~~~~
 
    // Define the range for the random exponent
-   int min_exponent = -2;
-   int max_exponent = 5;
+   int min_exponent = 0;
+   int max_exponent = 1;
    int exponent_range = max_exponent - min_exponent + 1;   
 
    // Total cross-section on each local cell  
@@ -442,6 +445,11 @@ int main(int argc, char **args) {
       // Combine mantissa and exponent
       sigma_t[i] = mantissa * pow(10.0, (PetscScalar)exponent);
    }
+
+   // for (int i = 0; i < local_nodes; i++)
+   // {
+   //    std::cout << "sigma_t[" << i << "] = " << sigma_t[i] << std::endl;
+   // }
 
    // ~~~~~~~~~~~
    // ~~~~~~~~~~~
