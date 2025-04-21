@@ -1,5 +1,5 @@
 // Currently run with:
-// make && ./UBOLTk -ksp_monitor -sub_0_pc_air_print_stats_timings -ksp_pc_side right -precon_stream -max_exponent 2
+// make && ./UBOLTk -ksp_monitor -sub_1_pc_air_print_stats_timings -ksp_pc_side right -precon_stream -max_exponent 2
 
 #include <petscvec_kokkos.hpp>
 #include <Kokkos_DualView.hpp>
