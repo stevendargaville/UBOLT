@@ -303,8 +303,6 @@ PetscErrorCode RemovalPCCreate(RemovalShellPC **shell, Mat A, PetscScalar *sigma
    PetscFunctionBeginUser;
 
    PetscNew(&newctx);
-   newctx->inverse_sigma_t_vec = 0;
-
    // Create vector for removal preconditioning
    MatCreateVecs(A, &newctx->inverse_sigma_t_vec, NULL);
    VecSet(newctx->inverse_sigma_t_vec, 0.0);
@@ -315,7 +313,7 @@ PetscErrorCode RemovalPCCreate(RemovalShellPC **shell, Mat A, PetscScalar *sigma
          VecSetValue(newctx->inverse_sigma_t_vec, i, 1.0/sigma_t[i], INSERT_VALUES);
       }
    }   
-   *shell       = newctx;
+   *shell = newctx;
 
    PetscFunctionReturn(PETSC_SUCCESS);
 }
