@@ -17,6 +17,11 @@ using PetscScalarKokkosViewHostUnmanaged = Kokkos::View<PetscScalar *, HostMirro
 #define N_ANGLES 4
 #define LENGTH 1.0
 
+/* Define context for removal term */
+typedef struct {
+   Vec inverse_sigma_t_vec;
+} RemovalShellPC;
+
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 // SN quadrature (Gauss-Legendre for N_ANGLES=2 or 4)
@@ -278,6 +283,96 @@ void add_removal(PetscScalarKokkosView &mu_d, \
 
 }
 
+PetscErrorCode RemovalPCDestroy(PC pc)
+{
+   RemovalShellPC *shell;
+
+   PetscFunctionBeginUser;
+   
+   PCShellGetContext(pc, &shell);
+   VecDestroy(&shell->inverse_sigma_t_vec);
+   PetscFree(shell);
+   
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+PetscErrorCode RemovalPCCreate(RemovalShellPC **shell, Mat A, PetscScalar *sigma_t)
+{
+   RemovalShellPC *newctx;
+
+   PetscFunctionBeginUser;
+
+   PetscNew(&newctx);
+   newctx->inverse_sigma_t_vec = 0;
+
+   // Create vector for removal preconditioning
+   MatCreateVecs(A, &newctx->inverse_sigma_t_vec, NULL);
+   VecSet(newctx->inverse_sigma_t_vec, 0.0);
+   for (int i = 0; i < N_CELLS; i++)
+   {
+      // Copy the inverse of the total xsection to the vector
+      if (sigma_t[i] > 1.0){
+         VecSetValue(newctx->inverse_sigma_t_vec, i, 1.0/sigma_t[i], INSERT_VALUES);
+      }
+   }   
+   *shell       = newctx;
+
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+// Apply the preconditoiner for the removal term
+PetscErrorCode RemovalPCApply(PC pc, Vec x, Vec y)
+{
+   RemovalShellPC *shell;
+   PetscFunctionBeginUser;
+   
+   PCShellGetContext(pc, &shell);
+   VecPointwiseMult(y, x, shell->inverse_sigma_t_vec);
+
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+// Build the PETSc preconditioner
+void build_precon(PC pc, Mat A, PetscScalar *sigma_t) {
+
+   // Set our PC type to be an additive combination of preconditioners
+   PCSetType(pc, PCCOMPOSITE);
+   PCCompositeSetType(pc, PC_COMPOSITE_ADDITIVE);
+
+   // ~~~~~~~~~~~~~
+   // Preconditioner for streaming term
+   // ~~~~~~~~~~~~~
+   // AIR preconditioner for streaming operator
+   // This will operate on pmat
+   PCCompositeAddPCType(pc, PCAIR);
+
+   // ~~~~~~~~~~~~~
+   // Preconditioner for removal term
+   // ~~~~~~~~~~~~~
+   // Shell preconditioner for removal term
+   PCCompositeAddPCType(pc, PCSHELL);
+   PC pc_removal;
+   // Get the 2nd PC object out (ie the removal one)
+   PCCompositeGetPC(pc, 1, &pc_removal);
+
+   // Create the context for the preconditioner   
+   RemovalShellPC *shell;
+   RemovalPCCreate(&shell, A, sigma_t);
+   
+   // Set the routine that does the apply
+   PCShellSetApply(pc_removal, RemovalPCApply);
+   PCShellSetContext(pc_removal, shell);
+   
+   // Set the routine that destroys
+   PCShellSetDestroy(pc_removal, RemovalPCDestroy);
+   
+   // Set the name
+   PCShellSetName(pc_removal, "RemovalPCShell");
+
+}
+
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 int main(int argc, char **args) {
@@ -420,7 +515,10 @@ int main(int argc, char **args) {
       KSPSetOperators(ksp, A, A);
    }
    KSPGetPC(ksp, &pc);
-   PCSetType(pc, PCAIR);
+
+   // Set the preconditioners
+   build_precon(pc, A, sigma_t);
+
    KSPSetFromOptions(ksp);
    KSPSolve(ksp, b, x);
 
@@ -432,6 +530,7 @@ int main(int argc, char **args) {
    VecDestroy(&b);
    VecDestroy(&diag_vec);
    MatDestroy(&A);
+   MatDestroy(&A_stream);
    PetscFree(sigma_t);
    PetscFinalize();
    return 0;
