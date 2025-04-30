@@ -20,13 +20,16 @@ using PetscScalarKokkosViewHostUnmanaged = Kokkos::View<PetscScalar *, HostMirro
 #define N_ANGLES 4
 #define LENGTH 1.0
 
-// Define context for matshell
+// Define context for pcshell
 typedef struct {
    Vec inverse_sigma_t_vec;
+} transport_ctx;
 
+// Define context for matshell
+typedef struct {
    Mat A_stream_removal;
    PetscScalarKokkosView *sigma_s_d = NULL;
-} transport_ctx;
+} matshell_ctx;
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -306,7 +309,7 @@ PetscErrorCode destroy_transport_ctx(PC pc)
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-PetscErrorCode create_transport_ctx(transport_ctx **shell, Mat A_stream_removal, PetscScalar *sigma_t, PetscScalarKokkosView *sigma_s_d)
+PetscErrorCode create_transport_ctx(transport_ctx **shell, Mat A_stream_removal, PetscScalar *sigma_t)
 {
    transport_ctx *newctx;
 
@@ -326,10 +329,6 @@ PetscErrorCode create_transport_ctx(transport_ctx **shell, Mat A_stream_removal,
    MatGetDiagonal(A_stream_removal, newctx->inverse_sigma_t_vec);
    VecReciprocal(newctx->inverse_sigma_t_vec);
 
-   // Copy pointer to scattering xsections on the device
-   newctx->sigma_s_d = sigma_s_d;
-   // Copy pointer to the streaming/removal operator
-   newctx->A_stream_removal = A_stream_removal;
    *shell = newctx;
 
    PetscFunctionReturn(PETSC_SUCCESS);
@@ -351,8 +350,56 @@ PetscErrorCode ShellPCApply(PC pc, Vec x, Vec y)
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
+// Apply the streaming/removal + scattering terms
+PetscErrorCode ShellMatMultApply(Mat A, Vec x, Vec y)
+{
+   matshell_ctx *ctx;
+   PetscFunctionBeginUser;
+   
+   MatShellGetContext(A, &ctx);
+   MatMult(ctx->A_stream_removal, x, y);
+
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
 // Create the PETSc preconditioner
-void create_pc(PC pc, Mat A_stream_removal, PetscScalar *sigma_t, PetscScalarKokkosView *sigma_s_d) {
+void create_matshell(Mat A_stream_removal, Mat *A, PetscScalarKokkosView *sigma_s_d) {
+
+   // ~~~~~~~~~~~~~
+   // Create the matshell which we use to apply streaming/removal + scattering
+   // ~~~~~~~~~~~~~   
+
+   // Create the context for the preconditioner   
+   matshell_ctx *newctx;
+   PetscNew(&newctx);
+
+   // Copy pointer to scattering xsections on the device
+   newctx->sigma_s_d = sigma_s_d;
+   // Copy pointer to the streaming/removal operator
+   newctx->A_stream_removal = A_stream_removal;
+
+   PetscInt global_rows, global_cols, local_rows, local_cols;
+   MatGetSize(A_stream_removal, &global_rows, &global_cols);
+   MatGetLocalSize(A_stream_removal, &local_rows, &local_cols);
+
+   MatCreateShell(PETSC_COMM_WORLD, local_rows, local_cols, global_rows, global_cols, newctx, A);
+   // The subroutine ShellMatMultApply applies the matrix
+   MatShellSetOperation(*A, MATOP_MULT, (void (*)(void))ShellMatMultApply);
+
+   MatAssemblyBegin(*A, MAT_FINAL_ASSEMBLY);
+   MatAssemblyEnd(*A, MAT_FINAL_ASSEMBLY);
+   // Have to make sure to set the type of vectors the shell creates
+   VecType vtype;
+   MatGetVecType(A_stream_removal, &vtype);
+   MatShellSetVecType(*A, vtype);
+}
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+// Create the PETSc preconditioner
+void create_pc(PC pc, Mat A_stream_removal, PetscScalar *sigma_t) {
 
    // Set our PC type to be an multiplicative combination of preconditioners
    PCSetType(pc, PCCOMPOSITE);
@@ -369,7 +416,7 @@ void create_pc(PC pc, Mat A_stream_removal, PetscScalar *sigma_t, PetscScalarKok
 
    // Create the context for the preconditioner   
    transport_ctx *shell;
-   create_transport_ctx(&shell, A_stream_removal, sigma_t, sigma_s_d);
+   create_transport_ctx(&shell, A_stream_removal, sigma_t);
    
    // Set the routine that does the apply
    PCShellSetApply(pc_removal, ShellPCApply);
@@ -387,7 +434,6 @@ void create_pc(PC pc, Mat A_stream_removal, PetscScalar *sigma_t, PetscScalarKok
    // AIR preconditioner for streaming operator
    // This will operate on pmat
    PCCompositeAddPCType(pc, PCAIR);
-
 }
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -429,7 +475,7 @@ int main(int argc, char **args) {
    PetscScalar mu[N_ANGLES], w[N_ANGLES];
    get_sn_quadrature(N_ANGLES, mu, w);
 
-   Mat A_stream, A_stream_removal;
+   Mat A_stream, A_stream_removal, A;
    Vec x, b, diag_vec;
    KSP ksp;
    PC pc;
@@ -503,8 +549,8 @@ int main(int argc, char **args) {
 
    // Device memory for xsections
    PetscScalarKokkosView sigma_t_d("sigma_t_d", N_CELLS);      
-   PetscScalarKokkosViewHostUnmanaged sigma_t_h(sigma_t, N_CELLS); 
    PetscScalarKokkosView sigma_s_d("sigma_s_d", N_CELLS);      
+   PetscScalarKokkosViewHostUnmanaged sigma_t_h(sigma_t, N_CELLS); 
    PetscScalarKokkosViewHostUnmanaged sigma_s_h(sigma_s, N_CELLS);    
    // Copy the xsections to device memory     
    Kokkos::deep_copy(sigma_t_d, sigma_t_h);   
@@ -545,21 +591,23 @@ int main(int argc, char **args) {
       VecPointwiseMult(b, diag_vec, b);
    }    
 
+   create_matshell(A_stream_removal, &A, &sigma_s_d);
+
    // Solve
    KSPCreate(PETSC_COMM_WORLD, &ksp);
    // Do we precondition with the streaming operator
    if (precon_stream)
    {
-      KSPSetOperators(ksp, A_stream_removal, A_stream);
+      KSPSetOperators(ksp, A, A_stream);
    }
    else
    {
-      KSPSetOperators(ksp, A_stream_removal, A_stream_removal);
+      KSPSetOperators(ksp, A, A_stream_removal);
    }
    KSPGetPC(ksp, &pc);
 
    // Set the preconditioners
-   create_pc(pc, A_stream_removal, sigma_t, &sigma_s_d);
+   create_pc(pc, A_stream_removal, sigma_t);
 
    KSPSetFromOptions(ksp);
    KSPSolve(ksp, b, x);
@@ -577,6 +625,7 @@ int main(int argc, char **args) {
    VecDestroy(&diag_vec);
    MatDestroy(&A_stream_removal);
    MatDestroy(&A_stream);
+   MatDestroy(&A);
    PetscFree2(sigma_t, sigma_s);
    PetscFinalize();
    return 0;
