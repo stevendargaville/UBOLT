@@ -3,18 +3,25 @@
 
 #include <petscvec_kokkos.hpp>
 #include <Kokkos_DualView.hpp>
+#include <KokkosBlas.hpp>
 #include <petscksp.h>
+#include "petsc_kokkos.hpp"
 #include <math.h>
 #include <stdio.h>
 #include <iostream>
 #include <stdlib.h>
 #include "pflare.h"
 
-using DefaultMemorySpace        = Kokkos::DefaultExecutionSpace::memory_space;
-using PetscScalarKokkosView     = Kokkos::View<PetscScalar *, DefaultMemorySpace>;
-using HostMirrorMemorySpace     = Kokkos::DualView<PetscScalar *>::host_mirror_space::memory_space;
-using PetscScalarKokkosViewHost = Kokkos::View<PetscScalar *, HostMirrorMemorySpace>;
+using DefaultMemorySpace         = Kokkos::DefaultExecutionSpace::memory_space;
+using PetscScalarKokkosView      = Kokkos::View<PetscScalar *, DefaultMemorySpace>;
+using PetscScalar2DKokkosView    = Kokkos::View<PetscScalar **, DefaultMemorySpace>;
+using PetscScalarConstKokkosView = Kokkos::View<const PetscScalar *, DefaultMemorySpace>;
+using PetscScalar2DConstKokkosView = Kokkos::View<const PetscScalar **, Kokkos::LayoutRight, DefaultMemorySpace>;
+using HostMirrorMemorySpace      = Kokkos::DualView<PetscScalar *>::host_mirror_space::memory_space;
+using PetscScalarKokkosViewHost  = Kokkos::View<PetscScalar *, HostMirrorMemorySpace>;
 using PetscScalarKokkosViewHostUnmanaged = Kokkos::View<PetscScalar *, HostMirrorMemorySpace, Kokkos::MemoryTraits<Kokkos::Unmanaged>>;
+using PetscScalar2DKokkosViewHostUnmanaged = Kokkos::View<PetscScalar **, Kokkos::LayoutRight, HostMirrorMemorySpace, Kokkos::MemoryTraits<Kokkos::Unmanaged>>;
+using KokkosTeamMemberType = Kokkos::TeamPolicy<Kokkos::DefaultExecutionSpace>::member_type;
 
 #define N_CELLS 1000
 #define N_ANGLES 4
@@ -29,12 +36,15 @@ typedef struct {
 typedef struct {
    Mat A_stream_removal;
    PetscScalarKokkosView *sigma_s_d = NULL;
+   PetscScalar2DKokkosView *scalar_flux_d = NULL;
+   PetscScalar2DKokkosView *w_d = NULL;
+   PetscScalar sum_weights;
 } matshell_ctx;
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 // SN quadrature (Gauss-Legendre for N_ANGLES=2 or 4)
-void get_sn_quadrature(int no_angles, PetscScalar *mu, PetscScalar *w) {
+void create_sn_quadrature(int no_angles, PetscScalar *mu, PetscScalar *w, PetscScalar *sum_weights) {
     if (no_angles == 2) {
         mu[0] = -0.5773502692; mu[1] = 0.5773502692;
         w[0] = 1.0;            w[1] = 1.0;
@@ -44,6 +54,8 @@ void get_sn_quadrature(int no_angles, PetscScalar *mu, PetscScalar *w) {
         w[0] = 0.3478548451;   w[1] = 0.6521451549;
         w[2] = 0.6521451549;   w[3] = 0.3478548451;
     }
+    // In 1D we integrate over [-1, 1] so the sum of weights is 2
+    *sum_weights = 2.0; 
 }
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -355,9 +367,68 @@ PetscErrorCode ShellMatMultApply(Mat A, Vec x, Vec y)
 {
    matshell_ctx *ctx;
    PetscFunctionBeginUser;
-   
    MatShellGetContext(A, &ctx);
+
+   // ~~~~~~~~~~~~~
+   // Apply the streaming/removal term
+   // ~~~~~~~~~~~~~ 
    MatMult(ctx->A_stream_removal, x, y);
+
+   // ~~~~~~~~~~~~~
+   // Apply the scattering term matrix-free
+   // ~~~~~~~~~~~~~ 
+
+   // Get the device views
+   // Making sure to use a const view for the input
+   PetscScalarConstKokkosView x_d;
+   VecGetKokkosView(x, &x_d);
+   PetscScalarKokkosView y_d;
+   VecGetKokkosView(y, &y_d);   
+
+   // Let's reshape (without copying) the 1D input view into a 2D view
+   // Get the raw pointer from the 1D view
+   const PetscScalar* x_d_1d = x_d.data();
+
+   // Create the 2D view using the pointer and new dimensions
+   // The 2D view uses LayoutRight so we have the correct ordering of contiguous 
+   // in angle
+   PetscScalar2DConstKokkosView x_d_2d(x_d_1d, N_CELLS, N_ANGLES);   
+
+   // Now let's integrate the angular flux to get the scalar flux
+   // This is just a dgemm (on the device)
+   const double alpha = double(1.0);
+   const double beta = double(0.0);   
+   KokkosBlas::gemm("N","N",alpha,x_d_2d,*ctx->w_d,beta,*ctx->scalar_flux_d);
+
+   // Now let's multiply by the scattering xsection
+   Kokkos::parallel_for(
+      Kokkos::RangePolicy<>(0, N_CELLS), KOKKOS_LAMBDA(int i) {
+
+         // We have to divide by the sum of weights to get the amount going
+         // into each angle
+         (*ctx->scalar_flux_d)(i, 0) *= (*ctx->sigma_s_d)(i)/ctx->sum_weights;
+      });   
+   
+   // Now let's put the scatter back into y
+   Kokkos::parallel_for(
+      Kokkos::TeamPolicy<>(PetscGetKokkosExecutionSpace(), N_CELLS, Kokkos::AUTO()),
+      KOKKOS_LAMBDA(const KokkosTeamMemberType &t) {
+
+         // cell
+         PetscInt i = t.league_rank();
+
+         // For all the angles
+         Kokkos::parallel_for(
+            Kokkos::TeamThreadRange(t, N_ANGLES), [&](const PetscInt j) {   
+
+               // Minus the scattering term to the output vector as it's on the lhs
+               y_d(i * N_ANGLES + j) -= (*ctx->scalar_flux_d)(i, 0);
+         });
+   });
+
+   // Restore the views
+   VecRestoreKokkosView(x, &x_d);
+   VecRestoreKokkosView(y, &y_d);
 
    PetscFunctionReturn(PETSC_SUCCESS);
 }
@@ -365,7 +436,7 @@ PetscErrorCode ShellMatMultApply(Mat A, Vec x, Vec y)
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 // Create the PETSc preconditioner
-void create_matshell(Mat A_stream_removal, Mat *A, PetscScalarKokkosView *sigma_s_d) {
+void create_matshell(Mat A_stream_removal, Mat *A, PetscScalarKokkosView *sigma_s_d, PetscScalar2DKokkosView *scalar_flux_d, PetscScalar2DKokkosView *w_d, PetscScalar sum_weights) {
 
    // ~~~~~~~~~~~~~
    // Create the matshell which we use to apply streaming/removal + scattering
@@ -377,6 +448,12 @@ void create_matshell(Mat A_stream_removal, Mat *A, PetscScalarKokkosView *sigma_
 
    // Copy pointer to scattering xsections on the device
    newctx->sigma_s_d = sigma_s_d;
+   // Copy pointer to space for scalar flux on the device
+   newctx->scalar_flux_d = scalar_flux_d;
+   // Copy pointer to Sn weights on the device
+   newctx->w_d = w_d;   
+   // What is the sum of the Sn weights
+   newctx->sum_weights = sum_weights;
    // Copy pointer to the streaming/removal operator
    newctx->A_stream_removal = A_stream_removal;
 
@@ -479,15 +556,18 @@ int main(int argc, char **args) {
    PetscOptionsGetInt(NULL, NULL, "-max_exponent", &max_exponent, NULL);
 
    // ~~~~~~~~~~~~~
+   // Compute the Sn quadrature
+   // ~~~~~~~~~~~~~  
+   PetscScalar mu[N_ANGLES], w[N_ANGLES];
+   PetscScalar sum_weights;
+   create_sn_quadrature(N_ANGLES, mu, w, &sum_weights);   
+
+   // ~~~~~~~~~~~~~
    // Preallocate the sparsity of the streaming/removal operator
    // ~~~~~~~~~~~~~   
 
    const int total_unknowns = N_ANGLES * N_CELLS;
    PetscInt local_rows, local_cols;
-
-   // Sn quadrature
-   PetscScalar mu[N_ANGLES], w[N_ANGLES];
-   get_sn_quadrature(N_ANGLES, mu, w);
 
    Mat A_stream, A_stream_removal, A;
    Vec x, b, diag_vec;
@@ -538,10 +618,10 @@ int main(int argc, char **args) {
       sigma_s[i] = max_exponent;
    }
 
-   for (int i = 0; i < local_nodes; i++)
-   {
-      std::cout << "sigma_t[" << i << "] = " << sigma_t[i] << " sigma_s[" << i << "] = " << sigma_s[i] << std::endl;
-   }
+   // for (int i = 0; i < local_nodes; i++)
+   // {
+   //    std::cout << "sigma_t[" << i << "] = " << sigma_t[i] << " sigma_s[" << i << "] = " << sigma_s[i] << std::endl;
+   // }
 
    // ~~~~~~~~~~~~~
    // Copy data to the device where needed
@@ -557,9 +637,12 @@ int main(int argc, char **args) {
 
    // Device memory for Sn quadrature
    PetscScalarKokkosView mu_d("mu_d", N_ANGLES);      
+   PetscScalar2DKokkosView w_d("w_d", N_ANGLES, 1);      
    PetscScalarKokkosViewHostUnmanaged mu_h(mu, N_ANGLES); 
+   PetscScalar2DKokkosViewHostUnmanaged w_h(w, N_ANGLES, 1); 
    // Copy the Sn quadrature to device memory     
    Kokkos::deep_copy(mu_d, mu_h);
+   Kokkos::deep_copy(w_d, w_h);
 
    // Device memory for xsections
    PetscScalarKokkosView sigma_t_d("sigma_t_d", N_CELLS);      
@@ -569,6 +652,9 @@ int main(int argc, char **args) {
    // Copy the xsections to device memory     
    Kokkos::deep_copy(sigma_t_d, sigma_t_h);   
    Kokkos::deep_copy(sigma_s_d, sigma_s_h);    
+
+   // Device memory for scalar flux
+   PetscScalar2DKokkosView scalar_flux_d("scalar_flux_d", N_CELLS, 1);
 
    // Fill the streaming operator
    insert_streaming(mu_d, coo_v_d, A_stream);
@@ -605,7 +691,7 @@ int main(int argc, char **args) {
       VecPointwiseMult(b, diag_vec, b);
    }    
 
-   create_matshell(A_stream_removal, &A, &sigma_s_d);
+   create_matshell(A_stream_removal, &A, &sigma_s_d, &scalar_flux_d, &w_d, sum_weights);
 
    // Solve
    KSPCreate(PETSC_COMM_WORLD, &ksp);
