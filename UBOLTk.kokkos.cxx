@@ -398,6 +398,20 @@ void create_matshell(Mat A_stream_removal, Mat *A, PetscScalarKokkosView *sigma_
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
+PetscErrorCode destroy_matshell_ctx(Mat A)
+{
+   matshell_ctx *ctx;
+
+   PetscFunctionBeginUser;
+   
+   MatShellGetContext(A, &ctx);
+   PetscFree(ctx);
+   
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
 // Create the PETSc preconditioner
 void create_pc(PC pc, Mat A_stream_removal, PetscScalar *sigma_t) {
 
@@ -625,6 +639,7 @@ int main(int argc, char **args) {
    VecDestroy(&diag_vec);
    MatDestroy(&A_stream_removal);
    MatDestroy(&A_stream);
+   destroy_matshell_ctx(A);
    MatDestroy(&A);
    PetscFree2(sigma_t, sigma_s);
    PetscFinalize();
