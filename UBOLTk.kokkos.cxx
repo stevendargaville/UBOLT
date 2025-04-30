@@ -20,10 +20,13 @@ using PetscScalarKokkosViewHostUnmanaged = Kokkos::View<PetscScalar *, HostMirro
 #define N_ANGLES 4
 #define LENGTH 1.0
 
-/* Define context for removal term */
+// Define context for matshell
 typedef struct {
    Vec inverse_sigma_t_vec;
-} RemovalShellPC;
+
+   Mat A_stream_removal;
+   PetscScalarKokkosView *sigma_s_d = NULL;
+} transport_ctx;
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -45,13 +48,13 @@ void get_sn_quadrature(int no_angles, PetscScalar *mu, PetscScalar *w) {
 // Create the preallocation structure for the
 // assembled streaming/removal operator for a single group
 // This happens on the host but we only need to call this once
-void preallocate_streaming_removal(PetscScalar *mu, Mat A) {
+void preallocate_streaming_removal(PetscScalar *mu, Mat A_stream_removal) {
 
    PetscInt i, global_row_start, global_row_end_plus_one;
    PetscInt global_rows, global_cols, local_rows, local_cols;
-   MatGetSize(A, &global_rows, &global_cols);
-   MatGetLocalSize(A, &local_rows, &local_cols);
-   MatGetOwnershipRange(A, &global_row_start, &global_row_end_plus_one);
+   MatGetSize(A_stream_removal, &global_rows, &global_cols);
+   MatGetLocalSize(A_stream_removal, &local_rows, &local_cols);
+   MatGetOwnershipRange(A_stream_removal, &global_row_start, &global_row_end_plus_one);
 
     // Row and column indices for COO assembly
     PetscInt *oor, *ooc;    
@@ -148,7 +151,7 @@ void preallocate_streaming_removal(PetscScalar *mu, Mat A) {
 
    // Set the indices
    counter = 2 * local_rows;
-   MatSetPreallocationCOO(A, counter, oor, ooc); 
+   MatSetPreallocationCOO(A_stream_removal, counter, oor, ooc); 
    // Can delete oor and ooc now
    PetscFree2(oor, ooc);    
 }
@@ -157,16 +160,16 @@ void preallocate_streaming_removal(PetscScalar *mu, Mat A) {
 
 // Insert the streaming term for a single group
 // This happens entirely on the device
-void insert_streaming(PetscScalarKokkosView &mu_d, PetscScalarKokkosView &coo_v_d, Mat A) {
+void insert_streaming(PetscScalarKokkosView &mu_d, PetscScalarKokkosView &coo_v_d, Mat A_stream_removal) {
 
    const double dx = LENGTH / N_CELLS;
    
    PetscInt global_rows, global_cols, local_rows, local_cols;
-   MatGetSize(A, &global_rows, &global_cols);   
-   MatGetLocalSize(A, &local_rows, &local_cols);
+   MatGetSize(A_stream_removal, &global_rows, &global_cols);   
+   MatGetLocalSize(A_stream_removal, &local_rows, &local_cols);
 
    PetscInt global_row_start, global_row_end_plus_one;
-   MatGetOwnershipRange(A, &global_row_start, &global_row_end_plus_one);   
+   MatGetOwnershipRange(A_stream_removal, &global_row_start, &global_row_end_plus_one);   
 
    // This is how many local spatal nodes we have
    PetscInt local_nodes = local_rows / N_ANGLES;   
@@ -214,7 +217,7 @@ void insert_streaming(PetscScalarKokkosView &mu_d, PetscScalarKokkosView &coo_v_
    }      
 
    // This should all happen on the gpu
-   MatSetValuesCOO(A, coo_v_d.data(), INSERT_VALUES);      
+   MatSetValuesCOO(A_stream_removal, coo_v_d.data(), INSERT_VALUES);      
 
 }
 
@@ -225,16 +228,16 @@ void insert_streaming(PetscScalarKokkosView &mu_d, PetscScalarKokkosView &coo_v_
 void add_removal(PetscScalarKokkosView &mu_d, \
    PetscScalarKokkosView &sigma_t_d, \
    PetscScalarKokkosView &coo_v_d, \
-   Mat A) {
+   Mat A_stream_removal) {
 
    //const double dx = LENGTH / N_CELLS;
    
    PetscInt global_rows, global_cols, local_rows, local_cols;
-   MatGetSize(A, &global_rows, &global_cols);   
-   MatGetLocalSize(A, &local_rows, &local_cols);
+   MatGetSize(A_stream_removal, &global_rows, &global_cols);   
+   MatGetLocalSize(A_stream_removal, &local_rows, &local_cols);
 
    PetscInt global_row_start, global_row_end_plus_one;
-   MatGetOwnershipRange(A, &global_row_start, &global_row_end_plus_one);   
+   MatGetOwnershipRange(A_stream_removal, &global_row_start, &global_row_end_plus_one);   
 
    // This is how many local spatal nodes we have
    PetscInt local_nodes = local_rows / N_ANGLES;   
@@ -282,13 +285,15 @@ void add_removal(PetscScalarKokkosView &mu_d, \
    }      
 
    // This should all happen on the gpu
-   MatSetValuesCOO(A, coo_v_d.data(), ADD_VALUES);      
+   MatSetValuesCOO(A_stream_removal, coo_v_d.data(), ADD_VALUES);      
 
 }
 
-PetscErrorCode RemovalPCDestroy(PC pc)
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+PetscErrorCode destroy_transport_ctx(PC pc)
 {
-   RemovalShellPC *shell;
+   transport_ctx *shell;
 
    PetscFunctionBeginUser;
    
@@ -299,15 +304,17 @@ PetscErrorCode RemovalPCDestroy(PC pc)
    PetscFunctionReturn(PETSC_SUCCESS);
 }
 
-PetscErrorCode RemovalPCCreate(RemovalShellPC **shell, Mat A, PetscScalar *sigma_t)
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+PetscErrorCode create_transport_ctx(transport_ctx **shell, Mat A_stream_removal, PetscScalar *sigma_t, PetscScalarKokkosView *sigma_s_d)
 {
-   RemovalShellPC *newctx;
+   transport_ctx *newctx;
 
    PetscFunctionBeginUser;
 
    PetscNew(&newctx);
    // Create vector for removal preconditioning
-   MatCreateVecs(A, &newctx->inverse_sigma_t_vec, NULL);
+   MatCreateVecs(A_stream_removal, &newctx->inverse_sigma_t_vec, NULL);
    // VecSet(newctx->inverse_sigma_t_vec, 1.0);
    // for (int i = 0; i < N_CELLS; i++)
    // {
@@ -316,18 +323,24 @@ PetscErrorCode RemovalPCCreate(RemovalShellPC **shell, Mat A, PetscScalar *sigma
    //       VecSetValue(newctx->inverse_sigma_t_vec, i, 1.0/sigma_t[i], INSERT_VALUES);
    //    }
    // }   
-   MatGetDiagonal(A, newctx->inverse_sigma_t_vec);
+   MatGetDiagonal(A_stream_removal, newctx->inverse_sigma_t_vec);
    VecReciprocal(newctx->inverse_sigma_t_vec);
 
+   // Copy pointer to scattering xsections on the device
+   newctx->sigma_s_d = sigma_s_d;
+   // Copy pointer to the streaming/removal operator
+   newctx->A_stream_removal = A_stream_removal;
    *shell = newctx;
 
    PetscFunctionReturn(PETSC_SUCCESS);
 }
 
-// Apply the preconditoiner for the removal term
-PetscErrorCode RemovalPCApply(PC pc, Vec x, Vec y)
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+// Apply the preconditioner for the removal term
+PetscErrorCode ShellPCApply(PC pc, Vec x, Vec y)
 {
-   RemovalShellPC *shell;
+   transport_ctx *shell;
    PetscFunctionBeginUser;
    
    PCShellGetContext(pc, &shell);
@@ -338,8 +351,8 @@ PetscErrorCode RemovalPCApply(PC pc, Vec x, Vec y)
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-// Build the PETSc preconditioner
-void build_precon(PC pc, Mat A, PetscScalar *sigma_t) {
+// Create the PETSc preconditioner
+void create_pc(PC pc, Mat A_stream_removal, PetscScalar *sigma_t, PetscScalarKokkosView *sigma_s_d) {
 
    // Set our PC type to be an multiplicative combination of preconditioners
    PCSetType(pc, PCCOMPOSITE);
@@ -355,15 +368,15 @@ void build_precon(PC pc, Mat A, PetscScalar *sigma_t) {
    PCCompositeGetPC(pc, 0, &pc_removal);
 
    // Create the context for the preconditioner   
-   RemovalShellPC *shell;
-   RemovalPCCreate(&shell, A, sigma_t);
+   transport_ctx *shell;
+   create_transport_ctx(&shell, A_stream_removal, sigma_t, sigma_s_d);
    
    // Set the routine that does the apply
-   PCShellSetApply(pc_removal, RemovalPCApply);
+   PCShellSetApply(pc_removal, ShellPCApply);
    PCShellSetContext(pc_removal, shell);
    
    // Set the routine that destroys
-   PCShellSetDestroy(pc_removal, RemovalPCDestroy);
+   PCShellSetDestroy(pc_removal, destroy_transport_ctx);
    
    // Set the name
    PCShellSetName(pc_removal, "RemovalPCShell");
@@ -381,9 +394,17 @@ void build_precon(PC pc, Mat A, PetscScalar *sigma_t) {
 
 int main(int argc, char **args) {
 
+   // ~~~~~~~~~~~~~
+   // Initialise petsc and pflare
+   // ~~~~~~~~~~~~~
+
    PetscInitialize(&argc, &args, (char*)0, NULL);
    // Register the pflare types
    PCRegister_PFLARE();    
+
+   // ~~~~~~~~~~~~~
+   // Get options from the command line
+   // ~~~~~~~~~~~~~
 
    // Do we diagonally scale our matrix before solving
    // Defaults to false
@@ -397,6 +418,10 @@ int main(int argc, char **args) {
    PetscInt max_exponent = 1;
    PetscOptionsGetInt(NULL, NULL, "-max_exponent", &max_exponent, NULL);
 
+   // ~~~~~~~~~~~~~
+   // Preallocate the sparsity of the streaming/removal operator
+   // ~~~~~~~~~~~~~   
+
    const int total_unknowns = N_ANGLES * N_CELLS;
    PetscInt local_rows, local_cols;
 
@@ -404,7 +429,7 @@ int main(int argc, char **args) {
    PetscScalar mu[N_ANGLES], w[N_ANGLES];
    get_sn_quadrature(N_ANGLES, mu, w);
 
-   Mat A_stream, A;
+   Mat A_stream, A_stream_removal;
    Vec x, b, diag_vec;
    KSP ksp;
    PC pc;
@@ -424,14 +449,14 @@ int main(int argc, char **args) {
    VecDuplicate(x, &diag_vec);   
    
    // This is how many local spatal nodes we have
-   PetscInt local_nodes = local_rows / N_ANGLES;   
+   PetscInt local_nodes = local_rows / N_ANGLES;     
+
+   // ~~~~~~~~~~~~~
+   // Define the cross sections
+   // ~~~~~~~~~~~~~
 
    // Seed the random number generator
    srand(0);   
-
-   // ~~~~~~~~~~~
-   // Cross sections
-   // ~~~~~~~~~~~
 
    // Define the range for the random exponent
    int min_exponent = 0;
@@ -439,8 +464,8 @@ int main(int argc, char **args) {
 
    // Total cross-section on each local cell  
    // Random between 0 and 10^max_exponent
-   PetscScalar *sigma_t;
-   PetscMalloc1(local_nodes, &sigma_t);
+   PetscScalar *sigma_t, *sigma_s;
+   PetscMalloc2(local_nodes, &sigma_t, local_nodes, &sigma_s);
    for (int i = 0; i < local_nodes; i++)
    {
       // Generate a random mantissa between 0.1 and 1.0
@@ -448,16 +473,19 @@ int main(int argc, char **args) {
       // Generate a random integer exponent in the desired range
       int exponent = min_exponent + (rand() % exponent_range);
       // Combine mantissa and exponent
-      sigma_t[i] = mantissa * pow(10.0, (PetscScalar)exponent);
+      //sigma_t[i] = mantissa * pow(10.0, (PetscScalar)exponent);
+      sigma_t[i] = max_exponent;
+      sigma_s[i] = max_exponent;
    }
 
-   // for (int i = 0; i < local_nodes; i++)
-   // {
-   //    std::cout << "sigma_t[" << i << "] = " << sigma_t[i] << std::endl;
-   // }
+   for (int i = 0; i < local_nodes; i++)
+   {
+      std::cout << "sigma_t[" << i << "] = " << sigma_t[i] << " sigma_s[" << i << "] = " << sigma_s[i] << std::endl;
+   }
 
-   // ~~~~~~~~~~~
-   // ~~~~~~~~~~~
+   // ~~~~~~~~~~~~~
+   // Copy data to the device where needed
+   // ~~~~~~~~~~~~~
    
    // Be careful about the scope of device memory
    {
@@ -473,11 +501,14 @@ int main(int argc, char **args) {
    // Copy the Sn quadrature to device memory     
    Kokkos::deep_copy(mu_d, mu_h);
 
-   // Device memory for total xsection
+   // Device memory for xsections
    PetscScalarKokkosView sigma_t_d("sigma_t_d", N_CELLS);      
    PetscScalarKokkosViewHostUnmanaged sigma_t_h(sigma_t, N_CELLS); 
-   // Copy the total xsection to device memory     
+   PetscScalarKokkosView sigma_s_d("sigma_s_d", N_CELLS);      
+   PetscScalarKokkosViewHostUnmanaged sigma_s_h(sigma_s, N_CELLS);    
+   // Copy the xsections to device memory     
    Kokkos::deep_copy(sigma_t_d, sigma_t_h);   
+   Kokkos::deep_copy(sigma_s_d, sigma_s_h);    
 
    // Fill the streaming operator
    insert_streaming(mu_d, coo_v_d, A_stream);
@@ -491,16 +522,16 @@ int main(int argc, char **args) {
    // }        
 
    // Duplicate the sparsity of the streaming operator
-   MatDuplicate(A_stream, MAT_DO_NOT_COPY_VALUES, &A);      
+   MatDuplicate(A_stream, MAT_DO_NOT_COPY_VALUES, &A_stream_removal);      
 
-   // ~~~~~~~~~~~~
-   // This is where our group loop would start
-   // ~~~~~~~~~~~~
+   // ~~~~~~~~~~~~~~
+   // Group loop
+   // ~~~~~~~~~~~~~~
 
-   MatCopy(A_stream, A, SAME_NONZERO_PATTERN);
+   MatCopy(A_stream, A_stream_removal, SAME_NONZERO_PATTERN);
    
    // Add in the removal operator
-   add_removal(mu_d, sigma_t_d, coo_v_d, A); 
+   add_removal(mu_d, sigma_t_d, coo_v_d, A_stream_removal); 
 
    // RHS: external source
    VecSet(b, 1.0);
@@ -508,9 +539,9 @@ int main(int argc, char **args) {
    // Diagonally scale the streaming/removal operator 
    if (diag_scale) {
 
-      MatGetDiagonal(A, diag_vec);
+      MatGetDiagonal(A_stream_removal, diag_vec);
       VecReciprocal(diag_vec);
-      MatDiagonalScale(A, diag_vec, PETSC_NULLPTR);
+      MatDiagonalScale(A_stream_removal, diag_vec, PETSC_NULLPTR);
       VecPointwiseMult(b, diag_vec, b);
    }    
 
@@ -519,30 +550,34 @@ int main(int argc, char **args) {
    // Do we precondition with the streaming operator
    if (precon_stream)
    {
-      KSPSetOperators(ksp, A, A_stream);
+      KSPSetOperators(ksp, A_stream_removal, A_stream);
    }
    else
    {
-      KSPSetOperators(ksp, A, A);
+      KSPSetOperators(ksp, A_stream_removal, A_stream_removal);
    }
    KSPGetPC(ksp, &pc);
 
    // Set the preconditioners
-   build_precon(pc, A, sigma_t);
+   create_pc(pc, A_stream_removal, sigma_t, &sigma_s_d);
 
    KSPSetFromOptions(ksp);
    KSPSolve(ksp, b, x);
 
    }
 
+   // ~~~~~~~~~~~~~~
+   // Cleanup
+   // ~~~~~~~~~~~~~~   
+
    // Clean up
    KSPDestroy(&ksp);
    VecDestroy(&x);
    VecDestroy(&b);
    VecDestroy(&diag_vec);
-   MatDestroy(&A);
+   MatDestroy(&A_stream_removal);
    MatDestroy(&A_stream);
-   PetscFree(sigma_t);
+   PetscFree2(sigma_t, sigma_s);
    PetscFinalize();
    return 0;
 }
