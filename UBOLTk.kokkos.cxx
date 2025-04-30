@@ -435,12 +435,8 @@ PetscErrorCode ShellMatMultApply(Mat A, Vec x, Vec y)
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-// Create the PETSc preconditioner
-void create_matshell(Mat A_stream_removal, Mat *A, PetscScalarKokkosView *sigma_s_d, PetscScalar2DKokkosView *scalar_flux_d, PetscScalar2DKokkosView *w_d, PetscScalar sum_weights) {
-
-   // ~~~~~~~~~~~~~
-   // Create the matshell which we use to apply streaming/removal + scattering
-   // ~~~~~~~~~~~~~   
+// Create the matshell which we use to apply streaming/removal + scattering
+void create_matshell(Mat A_stream_removal, Mat *A, PetscScalarKokkosView *sigma_s_d, PetscScalar2DKokkosView *scalar_flux_d, PetscScalar2DKokkosView *w_d, PetscScalar sum_weights) { 
 
    // Create the context for the preconditioner   
    matshell_ctx *newctx;
