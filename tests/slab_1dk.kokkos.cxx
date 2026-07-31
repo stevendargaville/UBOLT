@@ -369,9 +369,15 @@ PetscErrorCode ShellMatMultApply(Mat A, Vec x, Vec y)
    PetscFunctionBeginUser;
    MatShellGetContext(A, &ctx);
 
+   // All the scatter kernels below operate on the local part of the
+   // vectors only - this is how many local cells we have
+   PetscInt local_rows;
+   VecGetLocalSize(x, &local_rows);
+   const PetscInt local_cells = local_rows / N_ANGLES;
+
    // ~~~~~~~~~~~~~
    // Apply the streaming/removal term
-   // ~~~~~~~~~~~~~ 
+   // ~~~~~~~~~~~~~
    MatMult(ctx->A_stream_removal, x, y);
 
    // ~~~~~~~~~~~~~
@@ -390,9 +396,9 @@ PetscErrorCode ShellMatMultApply(Mat A, Vec x, Vec y)
    const PetscScalar* x_d_1d = x_d.data();
 
    // Create the 2D view using the pointer and new dimensions
-   // The 2D view uses LayoutRight so we have the correct ordering of contiguous 
+   // The 2D view uses LayoutRight so we have the correct ordering of contiguous
    // in angle
-   PetscScalar2DConstKokkosView x_d_2d(x_d_1d, N_CELLS, N_ANGLES);   
+   PetscScalar2DConstKokkosView x_d_2d(x_d_1d, local_cells, N_ANGLES);
 
    // Now let's integrate the angular flux to get the scalar flux
    // This is just a dgemm (on the device)
@@ -402,7 +408,7 @@ PetscErrorCode ShellMatMultApply(Mat A, Vec x, Vec y)
 
    // Now let's multiply by the scattering xsection
    Kokkos::parallel_for(
-      Kokkos::RangePolicy<>(0, N_CELLS), KOKKOS_LAMBDA(int i) {
+      Kokkos::RangePolicy<>(0, local_cells), KOKKOS_LAMBDA(int i) {
 
          // We have to divide by the sum of weights to get the amount going
          // into each angle
@@ -411,7 +417,7 @@ PetscErrorCode ShellMatMultApply(Mat A, Vec x, Vec y)
    
    // Now let's put the scatter back into y
    Kokkos::parallel_for(
-      Kokkos::TeamPolicy<>(PetscGetKokkosExecutionSpace(), N_CELLS, Kokkos::AUTO()),
+      Kokkos::TeamPolicy<>(PetscGetKokkosExecutionSpace(), local_cells, Kokkos::AUTO()),
       KOKKOS_LAMBDA(const KokkosTeamMemberType &t) {
 
          // cell
@@ -641,16 +647,18 @@ int main(int argc, char **args) {
    Kokkos::deep_copy(w_d, w_h);
 
    // Device memory for xsections
-   PetscScalarKokkosView sigma_t_d("sigma_t_d", N_CELLS);      
-   PetscScalarKokkosView sigma_s_d("sigma_s_d", N_CELLS);      
-   PetscScalarKokkosViewHostUnmanaged sigma_t_h(sigma_t, N_CELLS); 
-   PetscScalarKokkosViewHostUnmanaged sigma_s_h(sigma_s, N_CELLS);    
-   // Copy the xsections to device memory     
-   Kokkos::deep_copy(sigma_t_d, sigma_t_h);   
-   Kokkos::deep_copy(sigma_s_d, sigma_s_h);    
+   // These are all sized by the local number of cells - the scatter is
+   // applied to the local part of the vectors only
+   PetscScalarKokkosView sigma_t_d("sigma_t_d", local_nodes);
+   PetscScalarKokkosView sigma_s_d("sigma_s_d", local_nodes);
+   PetscScalarKokkosViewHostUnmanaged sigma_t_h(sigma_t, local_nodes);
+   PetscScalarKokkosViewHostUnmanaged sigma_s_h(sigma_s, local_nodes);
+   // Copy the xsections to device memory
+   Kokkos::deep_copy(sigma_t_d, sigma_t_h);
+   Kokkos::deep_copy(sigma_s_d, sigma_s_h);
 
    // Device memory for scalar flux
-   PetscScalar2DKokkosView scalar_flux_d("scalar_flux_d", N_CELLS, 1);
+   PetscScalar2DKokkosView scalar_flux_d("scalar_flux_d", local_nodes, 1);
 
    // Fill the streaming operator
    insert_streaming(mu_d, coo_v_d, A_stream);

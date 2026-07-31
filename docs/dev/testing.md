@@ -37,24 +37,23 @@ Captured 2026-07-31 from the pre-refactor code (capture capped at `-ksp_max_it 2
 | config | np=1 | np=2 |
 |---|---|---|
 | default pc, me=0 | 1 | 1 |
-| default pc, me=2 | 10 | DIVERGED_NANORINF at 6 (see bug below) |
+| default pc, me=2 | 10 | 10 |
 | default pc, me=0, diag_scale | 1 | 1 |
-| default pc, me=2, diag_scale | DIVERGED_ITS (6305 uncapped) | DIVERGED_NANORINF at 6 |
+| default pc, me=2, diag_scale | DIVERGED_ITS (6305 uncapped) | DIVERGED_ITS |
 | precon_stream, me=0 | 1 | 1 |
 | precon_stream, me=2 | 16 | 16 |
 | precon_stream, me=0, diag_scale | 3 | 3 |
 | precon_stream, me=2, diag_scale | DIVERGED_ITS | DIVERGED_ITS |
 
 Known issues captured in these baselines:
-- **Parallel out-of-bounds bug in the matrix-free scatter** (pre-refactor code, fixed in
-  Phase 1a): `ShellMatMultApply` reshapes the LOCAL vector with the GLOBAL `N_CELLS` and
-  loops kernels over `N_CELLS`, so at np>1 it reads past the local `x`/`sigma_s` arrays and
-  writes past the end of local `y`. At np=2 the owned region happens to compute correctly
-  (residuals match np=1 to roundoff in the stream configs) but the heap corruption makes
-  `default pc, me=2, np=2` go NaN. The np=2 default/me=2 baselines are therefore
-  fingerprints of undefined behavior — do not use them for refactor verification; the
-  stream and me=0 np=2 configs remain valid comparisons. Re-capture np=2 default/me=2
-  after the Phase 1a fix.
+- **Parallel out-of-bounds bug in the matrix-free scatter** (FIXED, Phase 1a-pre): the
+  original code reshaped the LOCAL vector with the GLOBAL `N_CELLS` and looped kernels
+  over `N_CELLS`, so at np>1 it read past the local `x`/`sigma_s` arrays and wrote past
+  the end of local `y`, sending `default pc, me=2, np=2` to NaN. After the fix (local
+  cell counts everywhere in the scatter path) np=1 residual histories were verified
+  bitwise identical, every np=2 baseline except the two previously-NaN default/me=2 logs
+  was bitwise unchanged on re-capture, and the repaired config converges in 10 iterations
+  matching serial.
 - **diag_scale + strong removal is pathological** (6305 its / divergence): diagonal
   scaling makes the removal shell PC an identity and degrades the composite. Known
   current behavior, not a target — excluded from pass/fail recipes; revisit when the

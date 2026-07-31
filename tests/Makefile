@@ -105,6 +105,8 @@ run_tests_short_serial:
 run_tests_short_parallel:
 #
 	@echo ""
+	@echo "Test 1D slab, streaming/removal pmat, strong removal in parallel"
+	$(MPIEXEC) -n 2 ./slab_1dk -max_exponent 2 -ksp_max_it 10 $(FAIL_NOT_CONVERGED)
 	@echo "Test 1D slab, streaming/removal pmat, weak removal in parallel"
 	$(MPIEXEC) -n 2 ./slab_1dk -max_exponent 0 -ksp_max_it 1 $(FAIL_NOT_CONVERGED)
 	@echo "Test 1D slab, streaming-only pmat, strong removal in parallel"

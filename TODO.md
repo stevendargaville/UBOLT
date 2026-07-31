@@ -18,10 +18,11 @@ previous one's verification has passed and been reviewed.
   removal is pathological (6305 its / divergence) — excluded from pass/fail recipes.
 
 ## Phase 1 — Pure refactor into libubolt (identical numerics)
-- [ ] 1a-pre (own commit): fix the parallel scatter out-of-bounds bug — ShellMatMultApply
+- [x] 1a-pre (own commit): fix the parallel scatter out-of-bounds bug — ShellMatMultApply
       must reshape/loop over LOCAL cells (local_rows/N_ANGLES), and the sigma/scalar_flux
       views must be sized/filled with local counts; then re-capture the invalidated np=2
-      default/me=2 baselines
+      default/me=2 baselines. Done: np=1 bitwise identical, only the two NaN logs changed
+      on re-capture, repaired config converges in 10 its matching serial.
 - [ ] 1a: mechanical split of existing free functions into src/, driver calls them;
       #defines become -n_cells/-n_angles/-length options; driver exits nonzero unless
       KSPGetConvergedReason > 0
