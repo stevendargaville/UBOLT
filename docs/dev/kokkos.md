@@ -1,15 +1,27 @@
 # Kokkos conventions in UBOLT
 
 ## Views
-- All view typedefs live in one place (currently the top of `tests/slab_1dk.kokkos.cxx`;
-  Phase 1 moves them to `include/ubolt/types.hpp`). Use them — don't declare ad-hoc
-  `Kokkos::View` types. `PetscScalar2DConstKokkosView` and the host-unmanaged 2D views are
-  deliberately `LayoutRight` so that a 1D Vec reshapes to (cells, angles) with angle
-  contiguous (angle-fastest dof ordering).
+- All view typedefs live in one place, `include/ubolt/types.hpp`. Use them — don't declare
+  ad-hoc `Kokkos::View` types. `PetscScalar2DConstKokkosView` and the host-unmanaged 2D
+  views are deliberately `LayoutRight` so that a 1D Vec reshapes to (cells, angles) with
+  angle contiguous (angle-fastest dof ordering).
 - Kokkos translation units are named `Xk.kokkos.cxx` — the `.kokkos.cxx` suffix triggers
   PETSc's Kokkos build rules, and the trailing `k` on the stem is the PFLARE convention.
 - No `KOKKOS_LAMBDA` in public headers: kernels stay in `src/*.kokkos.cxx` so consumers of
   libubolt compile with a plain C++ compiler.
+
+## Include order
+- `petscvec_kokkos.hpp` must be the FIRST PETSc header in a C++ translation unit (it
+  `#error`s otherwise). `types.hpp` pulls it in, so ubolt headers that need views include
+  `ubolt/types.hpp` before anything else, and `ubolt/ubolt.hpp` lists it first — include
+  the umbrella header before `<petscksp.h>` and friends.
+- Only Kokkos-using files include `types.hpp`: keeping Kokkos out of the plain `.cxx`
+  translation units means they don't need the Kokkos device compiler.
+- PETSc compiles C++ with `-fvisibility=hidden` but strips it from its Kokkos rule, so
+  which rule compiled a file would otherwise decide whether its symbols are exported.
+  Public declarations are therefore tagged `PETSC_EXTERN` (which is
+  `extern "C" __attribute__((visibility("default")))` in C++, so the library exports
+  unmangled names — public functions can't be overloaded).
 
 ## COO assembly discipline
 The streaming/removal operator is assembled with the PETSc COO interface so that value

@@ -23,12 +23,26 @@ previous one's verification has passed and been reviewed.
       views must be sized/filled with local counts; then re-capture the invalidated np=2
       default/me=2 baselines. Done: np=1 bitwise identical, only the two NaN logs changed
       on re-capture, repaired config converges in 10 its matching serial.
-- [ ] 1a: mechanical split of existing free functions into src/, driver calls them;
+- [x] 1a: mechanical split of existing free functions into src/, driver calls them;
       #defines become -n_cells/-n_angles/-length options; driver exits nonzero unless
-      KSPGetConvergedReason > 0
+      KSPGetConvergedReason > 0. Done: all 16 baselines reproduce bitwise; the driver is
+      the only thing that changed behaviourally. Beyond the mechanical move:
+      (i) library functions return PetscErrorCode and wrap every PETSc call in PetscCall
+      (the pre-refactor file emitted 89 nodiscard warnings; libubolt now builds clean),
+      (ii) public declarations tagged PETSC_EXTERN since PETSc uses -fvisibility=hidden,
+      (iii) the row decomposition is now decided in cells (PetscSplitOwnership over
+      n_cells) rather than PETSC_DECIDE over rows — identical at np=1,2 and it fixes the
+      mid-cell split, np=3 now converges in 10 its matching serial,
+      (iv) the dead random-xsection block in the driver is commented out consistently
+      (it computed values that were immediately overwritten).
 - [ ] 1b: introduce PhaseSpace, SNQuadrature, StructuredFD1D (CooPattern slot maps +
       is_dirichlet_row_d), StreamingTerm/RemovalTerm/ScatteringTerm, TransportOperator,
       TransportSolver; driver shrinks to ~60 lines; delete dead code
+      - When ScatteringTerm replaces ShellMatMultApply, capture the device views by value
+        in the kernels. The current apply captures the host `ctx` pointer and dereferences
+        it inside the lambdas (`(*ctx->sigma_s_d)(i)`), which only works because the Kokkos
+        backend here is a host one — it breaks on CUDA/HIP. Pre-existing, carried over
+        unchanged by 1a apart from hoisting `n_angles` into a local.
 - Verify: residual histories diff-identical against tests/baselines/ for the full matrix,
   np=1,2 (np=3 differs by design: cell-based decomposition fixes the mid-cell split bug).
 - Fidelity notes: single summed COO INSERT replaces INSERT-then-ADD (identical per-entry
@@ -102,5 +116,7 @@ previous one's verification has passed and been reviewed.
 - **Angle-major ordering** (vs current angle-fastest): per-angle contiguous blocks or
   MatNest of per-angle streaming blocks each with its own AIR — plausible PCAIR win,
   DofOrdering enum reserves the decision.
-- **Latent bug fixed in Phase 1**: PETSC_DECIDE row split can land mid-cell (np=3 with
-  1000x4); decomposition is decided in cells from Phase 1 on.
+- **Latent bug fixed in Phase 1a**: PETSC_DECIDE row split can land mid-cell (np=3 with
+  1000x4); the decomposition is decided in cells (PetscSplitOwnership over n_cells) from
+  Phase 1a on. np=1,2 are unaffected (the splits coincide), np=3 now converges in 10 its
+  matching serial where the pre-refactor binary did not.

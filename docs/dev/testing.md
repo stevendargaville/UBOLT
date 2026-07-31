@@ -5,19 +5,19 @@
   true so CI can later just run `make tests`). `make` stops on the first non-zero exit.
 - Every recipe in `tests/Makefile` pins `-ksp_max_it` to the baseline iteration count, so
   an iteration-count regression fails the run.
-- Until the drivers check `KSPGetConvergedReason` themselves (Phase 1a), recipes add
-  `-ksp_error_if_not_converged -on_error_abort` so a non-converged solve aborts with a
-  non-zero exit code. Phase 1a moves this into the driver (exit 1 on reason <= 0) and the
-  two options can then be dropped from the recipes.
+- The drivers return 1 unless `KSPGetConvergedReason() > 0` (since Phase 1a), so a
+  non-converged solve fails the recipe on its own — no `-ksp_error_if_not_converged`
+  or `-on_error_abort` needed. Driver diagnostics go to stderr so they never appear in a
+  captured baseline. The four non-converging `capture_baselines` lines carry `|| true`.
 - Targets: `make check` (fast sanity, 2 runs) < `make tests_short` < `make tests`.
   Parallel variants use `$(MPIEXEC) -n 2` and are skipped under MPIUNI.
 
 ## Baselines (tests/baselines/)
 Captured `-ksp_monitor -ksp_converged_reason` logs from the pre-refactor code
-(the single-file `UBOLTk.kokkos.cxx`, now `tests/slab_1dk.kokkos.cxx` unmodified).
+(the single-file `UBOLTk.kokkos.cxx`, now split into libubolt + `tests/slab_1dk.kokkos.cxx`).
 They are the ground truth for the Phase 1 refactor: identical numerics means the residual
 history of the refactored driver diffs clean against these files (iteration counts exactly,
-residuals to ~1e-14).
+residuals to ~1e-14). Phase 1a reproduced all 16 of them bitwise.
 
 - Full matrix: {default pc, `-precon_stream -ksp_pc_side right`} x {`-max_exponent` 0, 2}
   x {np 1, 2} x {`-diag_scale` off, on}. File naming:
@@ -69,7 +69,8 @@ Known issues captured in these baselines:
 4. Driver rules: exit non-zero unless `KSPGetConvergedReason() > 0`; no output files.
 
 ## np=3 caveat
-From Phase 1 the parallel decomposition is decided in cells (rows = local_cells * n_angles).
-The pre-refactor code used PETSC_DECIDE over rows, which can split mid-cell (e.g. 1000
-cells x 4 angles on 3 ranks) — so np=3 results legitimately differ from the pre-refactor
-binary. Baselines and tests use np=1,2 only, where the decompositions coincide.
+From Phase 1a the parallel decomposition is decided in cells (rows = local_cells *
+n_angles). The pre-refactor code used PETSC_DECIDE over rows, which can split mid-cell
+(e.g. 1000 cells x 4 angles on 3 ranks) — so np=3 results legitimately differ from the
+pre-refactor binary (np=3, me=2 now converges in 10 iterations, matching serial).
+Baselines and tests use np=1,2 only, where the decompositions coincide.

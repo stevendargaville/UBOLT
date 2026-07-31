@@ -7,9 +7,16 @@ Codebase map
 - `tests/`: test drivers (they are also the examples) + a Makefile of literal run commands.
   `tests/slab_1dk.kokkos.cxx`: 1D slab single-group SN driver. `tests/baselines/`: captured
   reference `-ksp_monitor` logs — never regenerate casually (see `docs/dev/testing.md`).
-- `src/` + `include/ubolt/`: the libubolt library (arrives in Phase 1 — see `TODO.md` for
-  the roadmap and current phase). Kokkos translation units are named `Xk.kokkos.cxx`
-  (the suffix triggers PETSc's Kokkos build rules).
+- `src/` + `include/ubolt/`: the libubolt library — `quadrature` (SN quadrature),
+  `streaming` (COO preallocation + streaming/removal fills), `matshell` (streaming/removal
+  + matrix-free scatter apply), `precon` (composite removal shell PC + PCAIR); `types.hpp`
+  owns every Kokkos view typedef, `ubolt.hpp` is the umbrella header. Kokkos translation
+  units are named `Xk.kokkos.cxx` (the suffix triggers PETSc's Kokkos build rules).
+  See `TODO.md` for the roadmap and current phase.
+- Library conventions: public functions return `PetscErrorCode` and every PETSc call is
+  wrapped in `PetscCall` (PETSc marks `PetscErrorCode` `nodiscard`, so unchecked calls
+  warn); public declarations are tagged `PETSC_EXTERN` because PETSc compiles with
+  `-fvisibility=hidden`.
 - New physics = subclass `OperatorTerm` (assembled contribution into the shared COO values
   and/or matrix-free apply). Discretisation backends produce a `CooPattern` (slot maps) +
   `BoundaryInfo` (Dirichlet row mask); terms write through those, never raw indices.
@@ -22,7 +29,8 @@ Read only when the task needs it
 - `docs/dev/kokkos.md` — before touching `*.kokkos.cxx`, COO assembly or MatShell code
 
 Build
-1. In top repo directory: `make -j3 build_tests` (PETSc >= 3.25 configured with Kokkos required)
+1. In top repo directory: `make -j3 build_tests` (PETSc >= 3.25 configured with Kokkos
+   required). This builds `lib/libubolt.{so,a}` first; `make` on its own builds just the library.
 2. Rule: fix all compile warnings (CI will build with `-Werror`).
 
 Tests

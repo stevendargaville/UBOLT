@@ -74,36 +74,83 @@ ifeq ($(PETSC_HAVE_KOKKOS),0)
 $(error PETSc has not been configured with Kokkos. UBOLT requires Kokkos)
 endif
 
+# To prevent overlinking with conda builds, only explicitly link
+# to the libraries we use in ubolt
+ifeq ($(CONDA_BUILD),1)
+	PETSC_LINK_LIBS = -L${PETSC_DIR}/${PETSC_ARCH}/lib -lpetsc ${BLASLAPACK_LIB} ${KOKKOS_LIB} ${KOKKOS_KERNELS_LIB}
+# Otherwise just use everything petsc uses to be safe
+else
+	PETSC_LINK_LIBS = $(LDLIBS)
+endif
+
+# On macOS, strip any -Wl,-rpath,* when linking the shared library to avoid duplicate LC_RPATH
+ifeq ($(shell uname -s 2>/dev/null),Darwin)
+PETSC_LINK_LIBS_NORPATH := $(strip $(foreach w,$(PETSC_LINK_LIBS),$(if $(findstring -Wl,-rpath,$(w)),,$(w))))
+else
+PETSC_LINK_LIBS_NORPATH := $(PETSC_LINK_LIBS)
+endif
+
 # ~~~~~~~~~~~~~~~~~~~~~~~~
 # ~~~~~~~~~~~~~~~~~~~~~~~~
 
 # All the files required by libubolt
-# Phase 1 populates this - the library has no sources yet
-OBJS :=
+# The Xk.o objects come from Xk.kokkos.cxx via PETSc's Kokkos build rules
+OBJS := $(SRCDIR)/quadrature.o \
+		  $(SRCDIR)/precon.o \
+		  $(SRCDIR)/streamingk.o \
+		  $(SRCDIR)/matshellk.o
 
 # Define a variable containing all the tests
 export TEST_TARGETS = slab_1dk
 # Define a variable containing all the tests that the make check runs
 export CHECK_TARGETS = slab_1dk
 
+# Output the library - either static or dynamic
+ifeq ($(PETSC_USE_SHARED_LIBRARIES),0)
+OUT = $(LIBDIR)/libubolt.a
+else
+# mac osx name is different
+ifeq ($(shell uname -s 2>/dev/null),Darwin)
+OUT = $(LIBDIR)/libubolt.dylib
+else
+OUT = $(LIBDIR)/libubolt.so
+endif
+endif
+export OUT
+
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # Rules
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 .DEFAULT_GOAL := all
-# Once OBJS is non-empty (Phase 1) this becomes: all: $(LIBDIR)/libubolt.{a,so}
 .PHONY: all
-all:
-	@echo "libubolt has no sources yet (arrives in Phase 1)."
-	@echo "Use 'make build_tests', 'make check' or 'make tests'."
+all: $(OUT)
+
+# Create our directory structure and build the library
+# (either static or dynamic depending on what petsc was configured with)
+# Linked with the Kokkos linker as libubolt contains Kokkos kernels
+$(OUT): $(OBJS)
+	@mkdir -p $(LIBDIR)
+ifeq ($(PETSC_USE_SHARED_LIBRARIES),0)
+	$(AR) $(AR_FLAGS) $(OUT) $(OBJS)
+	$(RANLIB) $(OUT)
+else
+ifeq ($(shell uname -s 2>/dev/null),Darwin)
+# macOS: Use -dynamiclib and set a relocatable @rpath install_name. Do not embed rpaths.
+	$(LINK.kokkos.cxx) -dynamiclib -o $(OUT) $(OBJS) $(PETSC_LINK_LIBS_NORPATH) -install_name @rpath/$(notdir $(OUT))
+else
+# Linux: Use -shared and set the soname.
+	$(LINK.kokkos.cxx) -shared -o $(OUT) $(OBJS) $(PETSC_LINK_LIBS) -Wl,-soname,$(notdir $(OUT))
+endif
+endif
 
 # Build the tests (in parallel)
 .PHONY: build_tests
-build_tests:
+build_tests: $(OUT)
 	+$(MAKE) -C tests $(TEST_TARGETS)
 
 # Build the tests used in the check
 .PHONY: build_tests_check
-build_tests_check:
+build_tests_check: $(OUT)
 	+$(MAKE) -C tests $(CHECK_TARGETS)
 
 .PHONY: tests_short_serial
