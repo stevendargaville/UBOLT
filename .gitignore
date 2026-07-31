@@ -1,0 +1,13 @@
+# Build artifacts
+*.o
+*.mod
+lib/
+
+# Compiled test executables
+tests/slab_1dk
+
+# Old root-level executable (pre-Phase-0 layout)
+UBOLTk
+
+# Editor
+.vscode/
