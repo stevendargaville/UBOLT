@@ -51,13 +51,12 @@ PetscErrorCode StreamingTerm::assemble_add(PetscScalarKokkosView &coo_v_d) const
 
          coo_v_d(diag) += fabs(mu_d(a)) / dx;
 
-         // Everything else in the row is an upwind neighbour
+         // Everything else in the row is an upwind neighbour. The neighbour
+         // always sits on the opposite side of the diagonal, whichever way the
+         // angle points: mu dpsi/dx is |mu|/dx (psi_i - psi_upwind)
          for (PetscInt s = row_slot_offset_d(r); s < row_slot_offset_d(r + 1); s++) {
             if (s == diag) continue;
-            // NOTE: -mu, not -|mu|, so the neighbour coefficient comes out
-            // positive for the negative angles. Carried over unchanged from the
-            // pre-refactor code to keep Phase 1 bit-for-bit - see TODO.md
-            coo_v_d(s) += -mu_d(a) / dx;
+            coo_v_d(s) += -fabs(mu_d(a)) / dx;
          }
       });
 

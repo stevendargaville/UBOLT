@@ -105,17 +105,14 @@ previous one's verification has passed and been reviewed.
 - [ ] Performance passes (kernel fusion in the MatShell loop, avoid the -precon_stream
       MatDuplicate)
 
-## Open questions
-- **Upwind sign for the negative angles** (found during Phase 1b, NOT fixed — Phase 1 is
-  bit-for-bit): `StreamingTerm` writes the upwind neighbour coefficient as `-mu/dx`, which
-  is `-|mu|/dx` for `mu > 0` (correct) but `+|mu|/dx` for `mu < 0`. For `mu < 0` upwinding
-  gives `mu dpsi/dx ~ (mu/dx)(psi_i+1 - psi_i)`, i.e. `+|mu|/dx` on the diagonal and
-  `-|mu|/dx` on cell `i+1`, so the negative-angle rows should be `|mu|/dx (psi_i - psi_i+1)`
-  and are currently `|mu|/dx (psi_i + psi_i+1)`. Verified on a 4-cell S2 matrix dump: row 0
-  (`mu < 0`) is `(0, +0.577) (2, +0.577)` where row 3 (`mu > 0`) is correctly
-  `(1, -0.577) (3, +0.577)`. Boundary conditions are right in both directions. Fixing it is
-  one character in `StreamingTerm::assemble_add` plus a full baseline re-capture — decide
-  before Phase 2 builds multigroup on top of it.
+## Phase 1 postscript — negative-angle upwind sign (own commit, after 1b)
+- [x] `StreamingTerm` wrote the upwind neighbour coefficient as `-mu/dx`: correct for
+      `mu > 0`, wrong sign for `mu < 0`, so those rows were `|mu|/dx (psi_i + psi_i+1)`
+      instead of `|mu|/dx (psi_i - psi_i+1)`. Found during 1b and deliberately preserved
+      so Phase 1 could be verified bit-for-bit, then fixed on its own with a full baseline
+      re-capture. Interior streaming rows now sum to zero and everything well-behaved
+      converges faster (me=2: 10 -> 5 its, streaming pmat me=2: 16 -> 10). New counts in
+      `docs/dev/testing.md`; recipes re-pinned. diag_scale + me=2 is still pathological.
 
 ## Research notes
 - **Single assembled streaming matrix across all groups** (Phase 5 direction): apply
