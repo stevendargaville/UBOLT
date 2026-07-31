@@ -26,19 +26,26 @@
 ## COO assembly discipline
 The streaming/removal operator is assembled with the PETSc COO interface so that value
 fill runs on device (MATAIJKOKKOS dispatches `MatSetValuesCOO` to the GPU):
-- `MatSetPreallocationCOO` happens ONCE on the host: build `oor`/`ooc` index arrays there.
-  Repeated assembly (per group, per parameter change) is values-only:
-  fill a device view with a `Kokkos::parallel_for` and call `MatSetValuesCOO`.
-- Dirichlet trick: a `-1` row/col index in the preallocation means "ignore this entry".
-  Boundary rows keep only their diagonal (set to 1 by the streaming fill); the ordering of
-  entries per row is fixed at preallocation time and value fills must match it exactly
-  (currently: off-diagonal first, diagonal second, for every row regardless of angle sign).
-- Phase 1 generalizes this to slot maps: `row_slot_offset_d` (CSR-shaped COO slot ranges
-  per row) and `diag_slot_d` (which slot is the diagonal). Assembled terms write through
-  the slot maps, never raw COO positions.
-- Contract: assembled terms must contribute NOTHING to rows flagged in the Dirichlet row
-  mask (`is_dirichlet_row_d` from Phase 1). Today `add_removal` re-zeroes those diagonals
-  by hand — that implicit coupling is exactly what the mask replaces.
+- `MatSetPreallocationCOO` happens ONCE on the host, in the discretisation backend: it
+  builds the `oor`/`ooc` index arrays and keeps them, so every matrix built from the same
+  discretisation (`StructuredFD1D::create_matrix`) shares the sparsity. Repeated assembly
+  (per group, per parameter change) is values-only: terms fill a device view with a
+  `Kokkos::parallel_for` and `TransportOperator` calls `MatSetValuesCOO`.
+- Dirichlet trick: a `-1` row/col index in the preallocation means "ignore this entry", so
+  boundary rows keep only their diagonal. The ordering of entries per row is fixed at
+  preallocation time (1D: off-diagonal first, diagonal second, every row regardless of
+  angle sign) and value fills must match it exactly.
+- Terms address entries through the `CooPattern` slot maps — `row_slot_offset_d`
+  (CSR-shaped COO slot ranges per row) and `diag_slot_d` (which slot is the diagonal) —
+  never through raw COO positions.
+- Contract: assembled terms must contribute NOTHING to rows flagged in
+  `BoundaryInfo::is_dirichlet_row_d`. `TransportOperator::assemble_into` writes the
+  identity on those rows after the terms have run, so a term never has to know what the
+  boundary condition is.
+- All the assembled terms add into ONE shared values array and go in with a single
+  `MatSetValuesCOO(INSERT_VALUES)`. `-ubolt_coo_two_call` is the debug fallback: one call
+  per term, the first INSERTing and the rest ADDing. Same per-entry arithmetic in the same
+  order, so the two paths agree bit for bit — the test suite runs both.
 
 ## MatShell rules
 - `MatShellSetVecType` from the assembled matrix's vectype is MANDATORY after
@@ -48,8 +55,16 @@ fill runs on device (MATAIJKOKKOS dispatches `MatSetValuesCOO` to the GPU):
   device memory inside an apply.
 - Input views must be `const` views (`VecGetKokkosView` with a const view type) so PETSc
   doesn't mark the vector dirty.
-- Mind device-view scope: views captured by a MatShell context must outlive the KSP solve
-  (the current driver keeps them alive in a block scope around the solve).
+- Mind device-view scope: views captured by a MatShell context must outlive the KSP solve,
+  and all of them must be gone before `PetscFinalize` takes Kokkos down (the driver keeps
+  the whole problem in a block scope).
+- Kernels in member functions must capture value copies of what they need, never `this` —
+  a member access inside a `KOKKOS_LAMBDA` dereferences a host pointer on the device.
+  Take local copies of the views at the top of the method (view copies are shallow).
+- Don't define a `KOKKOS_LAMBDA` inside another lambda: nvcc rejects extended device
+  lambdas there. Use a file-static free function taking the views instead.
+- PETSc brings Kokkos up lazily, so anything that allocates device memory before the first
+  Kokkos-typed PETSc object exists must call `PetscKokkosInitializeCheck()` first.
 
 ## pflare / GPU dispatch
 - pflare dispatches on the matrix type at RUNTIME: PCAIR only takes its Kokkos/GPU paths

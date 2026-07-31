@@ -20,4 +20,9 @@ using PetscScalarKokkosViewHostUnmanaged = Kokkos::View<PetscScalar *, HostMirro
 using PetscScalar2DKokkosViewHostUnmanaged = Kokkos::View<PetscScalar **, Kokkos::LayoutRight, HostMirrorMemorySpace, Kokkos::MemoryTraits<Kokkos::Unmanaged>>;
 using KokkosTeamMemberType = Kokkos::TeamPolicy<Kokkos::DefaultExecutionSpace>::member_type;
 
+// Index views - the COO slot maps and the Dirichlet row mask
+using PetscIntKokkosView      = Kokkos::View<PetscInt *, DefaultMemorySpace>;
+using PetscIntConstKokkosView = Kokkos::View<const PetscInt *, DefaultMemorySpace>;
+using PetscIntKokkosViewHostUnmanaged = Kokkos::View<PetscInt *, HostMirrorMemorySpace, Kokkos::MemoryTraits<Kokkos::Unmanaged>>;
+
 #endif

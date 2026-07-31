@@ -17,7 +17,8 @@ Captured `-ksp_monitor -ksp_converged_reason` logs from the pre-refactor code
 (the single-file `UBOLTk.kokkos.cxx`, now split into libubolt + `tests/slab_1dk.kokkos.cxx`).
 They are the ground truth for the Phase 1 refactor: identical numerics means the residual
 history of the refactored driver diffs clean against these files (iteration counts exactly,
-residuals to ~1e-14). Phase 1a reproduced all 16 of them bitwise.
+residuals to ~1e-14). Phase 1a and Phase 1b each reproduced all 16 of them bitwise, as does
+the `-ubolt_coo_two_call` assembly fallback.
 
 - Full matrix: {default pc, `-precon_stream -ksp_pc_side right`} x {`-max_exponent` 0, 2}
   x {np 1, 2} x {`-diag_scale` off, on}. File naming:

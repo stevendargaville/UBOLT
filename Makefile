@@ -94,11 +94,13 @@ endif
 # ~~~~~~~~~~~~~~~~~~~~~~~~
 
 # All the files required by libubolt
-# The Xk.o objects come from Xk.kokkos.cxx via PETSc's Kokkos build rules
-OBJS := $(SRCDIR)/quadrature.o \
-		  $(SRCDIR)/precon.o \
-		  $(SRCDIR)/streamingk.o \
-		  $(SRCDIR)/matshellk.o
+# Every translation unit is a Kokkos one: the Xk.o objects come from
+# Xk.kokkos.cxx via PETSc's Kokkos build rules
+OBJS := $(SRCDIR)/sn_quadraturek.o \
+		  $(SRCDIR)/structured_fd_1dk.o \
+		  $(SRCDIR)/termsk.o \
+		  $(SRCDIR)/transport_operatork.o \
+		  $(SRCDIR)/transport_solverk.o
 
 # Define a variable containing all the tests
 export TEST_TARGETS = slab_1dk

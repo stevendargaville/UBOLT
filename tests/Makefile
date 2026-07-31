@@ -100,6 +100,8 @@ run_tests_short_serial:
 	./slab_1dk -n_cells 1000 -n_angles 4 -length 1.0 -max_exponent 2 -ksp_max_it 10
 	@echo "Test 1D slab, S2 on a coarser slab"
 	./slab_1dk -n_cells 500 -n_angles 2 -length 2.0 -max_exponent 2 -ksp_max_it 14
+	@echo "Test 1D slab, one MatSetValuesCOO per term instead of a single summed one"
+	./slab_1dk -max_exponent 2 -ksp_max_it 10 -ubolt_coo_two_call
 
 # ~~~~~~~~~~~
 # ~~~~~~~~~~~
@@ -114,6 +116,8 @@ run_tests_short_parallel:
 	$(MPIEXEC) -n 2 ./slab_1dk -precon_stream -ksp_pc_side right -max_exponent 2 -ksp_max_it 16
 	@echo "Test 1D slab, S2 on a coarser slab in parallel"
 	$(MPIEXEC) -n 2 ./slab_1dk -n_cells 500 -n_angles 2 -length 2.0 -max_exponent 2 -ksp_max_it 14
+	@echo "Test 1D slab, one MatSetValuesCOO per term in parallel"
+	$(MPIEXEC) -n 2 ./slab_1dk -max_exponent 2 -ksp_max_it 10 -ubolt_coo_two_call
 
 # ~~~~~~~~~~~
 # ~~~~~~~~~~~

@@ -7,16 +7,20 @@ Codebase map
 - `tests/`: test drivers (they are also the examples) + a Makefile of literal run commands.
   `tests/slab_1dk.kokkos.cxx`: 1D slab single-group SN driver. `tests/baselines/`: captured
   reference `-ksp_monitor` logs — never regenerate casually (see `docs/dev/testing.md`).
-- `src/` + `include/ubolt/`: the libubolt library — `quadrature` (SN quadrature),
-  `streaming` (COO preallocation + streaming/removal fills), `matshell` (streaming/removal
-  + matrix-free scatter apply), `precon` (composite removal shell PC + PCAIR); `types.hpp`
-  owns every Kokkos view typedef, `ubolt.hpp` is the umbrella header. Kokkos translation
-  units are named `Xk.kokkos.cxx` (the suffix triggers PETSc's Kokkos build rules).
-  See `TODO.md` for the roadmap and current phase.
-- Library conventions: public functions return `PetscErrorCode` and every PETSc call is
-  wrapped in `PetscCall` (PETSc marks `PetscErrorCode` `nodiscard`, so unchecked calls
-  warn); public declarations are tagged `PETSC_EXTERN` because PETSc compiles with
-  `-fvisibility=hidden`.
+- `src/` + `include/ubolt/`: the libubolt library. `PhaseSpace` (sizes + the cell-based
+  decomposition), `SNQuadrature`, `StructuredFD1D` (the discretisation: owns the mesh and
+  the COO sparsity, hands out `CooPattern` + `BoundaryInfo`), `OperatorTerm` and the
+  `Streaming`/`Removal`/`Scattering` terms, `TransportOperator` (assembled terms in one
+  matrix + matrix-free terms behind a MatShell), `TransportSolver` (KSP + the composite
+  PC). `types.hpp` owns every Kokkos view typedef, `ubolt.hpp` is the umbrella header.
+  Every translation unit is a Kokkos one, named `Xk.kokkos.cxx` (the suffix triggers
+  PETSc's Kokkos build rules). See `TODO.md` for the roadmap and current phase.
+- Library conventions: methods return `PetscErrorCode` and every PETSc call is wrapped in
+  `PetscCall` (PETSc marks `PetscErrorCode` `nodiscard`, so unchecked calls warn);
+  construction is a `create(...)` method, not a constructor, so it can return errors, and
+  the objects that own PETSc handles have a matching `destroy()`. Exported classes are
+  tagged `PETSC_VISIBILITY_PUBLIC` and exported free functions `PETSC_EXTERN`, because
+  PETSc compiles with `-fvisibility=hidden`.
 - New physics = subclass `OperatorTerm` (assembled contribution into the shared COO values
   and/or matrix-free apply). Discretisation backends produce a `CooPattern` (slot maps) +
   `BoundaryInfo` (Dirichlet row mask); terms write through those, never raw indices.
