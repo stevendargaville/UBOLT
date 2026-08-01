@@ -160,7 +160,7 @@ run_tests_short_serial:
 	@echo "Test 2D box, weak removal (advection dominated)"
 	./box_2dk -n_cells_x 50 -n_cells_y 50 -max_exponent 0 -ksp_max_it 3
 	@echo "Test 2D box, streaming-only pmat"
-	./box_2dk -n_cells_x 50 -n_cells_y 50 -precon_stream -ksp_pc_side right -max_exponent 2 -ksp_max_it 8
+	./box_2dk -n_cells_x 50 -n_cells_y 50 -precon_stream -ksp_pc_side right -max_exponent 2 -ksp_max_it 9
 	@echo "Test 2D box, S4 (12 angles)"
 	./box_2dk -n_cells_x 30 -n_cells_y 30 -n_angles 12 -max_exponent 2 -ksp_max_it 6
 	@echo "Test 2D box, one MatSetValuesCOO per term instead of a single summed one"
@@ -238,7 +238,7 @@ run_tests_serial:
 	@echo "Test 2D box, S4 on a larger grid"
 	./box_2dk -n_cells_x 100 -n_cells_y 100 -n_angles 12 -max_exponent 2 -ksp_max_it 6
 	@echo "Test 2D box, streaming-only pmat on a larger grid"
-	./box_2dk -n_cells_x 120 -n_cells_y 60 -precon_stream -ksp_pc_side right -max_exponent 2 -ksp_max_it 9
+	./box_2dk -n_cells_x 120 -n_cells_y 60 -precon_stream -ksp_pc_side right -max_exponent 2 -ksp_max_it 10
 	@echo "Test 2D box, pure scattering on a larger grid"
 	./box_2dk -n_cells_x 100 -n_cells_y 100 -max_exponent 2 -ksp_max_it 7
 

@@ -4,7 +4,10 @@
 - Pass/fail is the process exit code — no output diffing, no log grepping (this must stay
   true so CI can later just run `make tests`). `make` stops on the first non-zero exit.
 - Every solve recipe in `tests/Makefile` pins `-ksp_max_it` to the baseline iteration
-  count, so an iteration-count regression fails the run.
+  count, so an iteration-count regression fails the run. The same recipes run on every
+  CI arch (opt/debug/64-bit/OpenMP), so a pin is the max over those environments —
+  today that differs from the reference count only for the two streaming-only pmat 2D
+  recipes, see the 2D table.
 - Multigroup caveat: `-ksp_max_it` is one option for the whole group sweep, so a
   multigroup recipe pins the **max over the groups**. A single group getting slower
   without exceeding that max will not fail the recipe — the multigroup baselines below
@@ -184,6 +187,14 @@ in `TODO.md`.
 
 Mesh independent on every shape: 60x30 to 120x60 moves 6 to 7, and 200x50 in the 1x0.25
 box (not a recipe) is 5, the same as 80x20.
+
+The two streaming-only pmat serial recipes pin one above their np=1 counts (9 and 10):
+under 64-bit indices and under the OpenMP Kokkos backend — both CI arches — those two
+configs take one more iteration (measured 2026-08-02 by sweeping every pinned recipe in
+both CI images; every other recipe's count was identical to the reference). PCAIR's
+setup on the streaming matrix is the sensitive part; the assembled-pmat configs do not
+move. The cost is one iteration of slack on the reference build for these two recipes —
+the 1D streaming-pmat baselines still pin their counts exactly.
 
 ## Reflective boundary conditions
 Every solve driver exposes per-face `-bc_left`/`-bc_right` (1D) and
