@@ -10,7 +10,7 @@ typedef struct {
 
 static PetscErrorCode RemovalPCDestroy(PC pc)
 {
-   removal_pc_ctx *shell;
+   removal_pc_ctx *shell = nullptr;
 
    PetscFunctionBeginUser;
 
@@ -58,7 +58,7 @@ static PetscErrorCode RemovalPCCreateContext(removal_pc_ctx **shell, Mat assembl
 // Apply the preconditioner for the removal term
 static PetscErrorCode RemovalPCApply(PC pc, Vec x, Vec y)
 {
-   removal_pc_ctx *shell;
+   removal_pc_ctx *shell = nullptr;
 
    PetscFunctionBeginUser;
 
@@ -73,7 +73,7 @@ static PetscErrorCode RemovalPCApply(PC pc, Vec x, Vec y)
 PetscErrorCode TransportSolver::create(MPI_Comm comm, const TransportOperator &op, Mat pmat)
 {
    PC pc, pc_removal;
-   removal_pc_ctx *shell;
+   removal_pc_ctx *shell = nullptr;
 
    PetscFunctionBeginUser;
 
@@ -119,7 +119,7 @@ PetscErrorCode TransportSolver::create(MPI_Comm comm, const TransportOperator &o
 PetscErrorCode TransportSolver::refresh()
 {
    PC pc, pc_removal;
-   removal_pc_ctx *shell;
+   removal_pc_ctx *shell = nullptr;
 
    PetscFunctionBeginUser;
 
