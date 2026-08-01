@@ -143,13 +143,18 @@ catch. `make baselines` is still 1D + multigroup only.
    a 1x2 box, so nothing about it is symmetric in x and y and a mix-up cannot hide.
 2. **Shell operator vs a reference matrix.** `MatComputeOperator` on the *shell*, so the
    matrix-free scatter is included, against a matrix built entry by entry in the driver on
-   a 4x3 grid. Currently agrees to 0.0, i.e. bitwise. Serial only: the reference is
-   written in the natural ordering, which is what a 2D DMDA uses on one rank.
-   The reference deliberately reimplements the inflow test rather than reading the
-   discretisation's Dirichlet mask — a check that asked the code under test which rows it
-   thought were boundary rows would agree with it by construction. It says a Dirichlet row
-   is the identity and nothing else, which is how it caught the matrix-free scatter writing
-   to those rows; see the Phase 4 postscript in `TODO.md`.
+   a 4x3 grid — for three BC configurations apiece: all-vacuum, all-reflect, and mixed
+   (left + bottom reflect), so both reflection maps and the vacuum-wins corner rule are in
+   the checked matrix. Currently agrees to 0.0, i.e. bitwise, in all six runs. Serial
+   only: the reference is written in the natural ordering, which is what a 2D DMDA uses on
+   one rank. The reference deliberately reimplements the boundary-row classification —
+   including its own search for the mirrored ordinate — rather than reading the
+   discretisation's BC mask, reflect slots or reflection maps: a check that asked the code
+   under test which rows it thought were boundary rows would agree with it by
+   construction. It says a Dirichlet row is the identity and nothing else, and a
+   reflective row is the identity plus the -1 on its mirrored angle and nothing else; the
+   former is how it caught the matrix-free scatter writing to those rows, see the Phase 4
+   postscript in `TODO.md`.
 
 **Parallel.** A 2D DMDA at `-n 2` splits in one direction only, so `-n 4` is the first
 decomposition with a genuinely 2D processor grid and the one where the patch-lexicographic
@@ -179,6 +184,38 @@ in `TODO.md`.
 
 Mesh independent on every shape: 60x30 to 120x60 moves 6 to 7, and 200x50 in the 1x0.25
 box (not a recipe) is 5, the same as 80x20.
+
+## Reflective boundary conditions
+Every solve driver exposes per-face `-bc_left`/`-bc_right` (1D) and
+`-bc_left`/`-bc_right`/`-bc_bottom`/`-bc_top` (2D) options taking `vacuum` (the default)
+or `reflect`. The default is bitwise the pre-reflective behaviour — verified by
+re-capturing all 24 baselines when the plumbing landed — so every recipe and baseline
+above is untouched, and the reflective recipes below are NEW pins, not adjustments.
+Reflective rows couple the angle blocks at the boundary (the streaming-only pmat carries
+the coupling too), so these counts have no reason to match their vacuum counterparts.
+
+The sharp oracles are the verify_2dk reference configs above and the **infinite-medium
+check**: with every face reflective, a uniform unit source and uniform xsections, the
+exact discrete solution is `psi = 1 / (sigma_t - sigma_s)` in every cell and angle — no
+discretisation error, so `-check_inf_medium` compares against 1e-9 under `-ksp_rtol
+1e-12` (lands at ~1e-13). It is decomposition independent, which is what makes it the
+parallel oracle for the reflect partner columns.
+
+Singularity constraint: all-reflect with a scattering ratio of exactly 1 has the
+constants in the operator's kernel. Hence the all-reflect recipes carry absorption
+(`-sigma_scatter 1.0` under `-max_exponent 2`), `slab_1dk` grew `-sigma_scatter` for
+exactly this, and the multigroup reflective recipe keeps the right face vacuum — the last
+group always has ratio 1 (no downscatter out of it).
+
+| reflective config | np=1 | np=2 |
+|---|---|---|
+| 1D, left reflect, me=2 (ratio 1) | 8 | — |
+| 1D, left reflect, me=2, two-call assembly | 8 | — |
+| 1D all-reflect infinite medium (rtol 1e-12) | 10 | 11 |
+| 1D multigroup 4 groups t05, left reflect | 8 (max over groups) | — |
+| 2D 50x50, left+bottom reflect, me=2 ratio 0.5 | 6 | 6 |
+| 2D 50x50 S4, left+bottom reflect, ratio 0.5 | 6 | — |
+| 2D all-reflect infinite medium (rtol 1e-12) | 10 | 10 |
 
 ## Adding a test driver
 1. Add the executable name to `TEST_TARGETS` (and `CHECK_TARGETS` if it belongs in

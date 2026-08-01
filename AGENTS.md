@@ -24,8 +24,11 @@ Codebase map
   metadata on it, NOT part of the row count, and it does NOT decide the decomposition),
   `AngularQuadrature` (the dimension-independent part: n_angles, sum_weights and the
   weight matrix) with `SNQuadrature` / `SNQuadrature2D` under it, plus
-  `UboltAngularIntegral`, the shared angular integral; `Discretisation` (the backend base:
-  `create_matrix`, `coo_pattern`, `boundary_info`, `destroy`, `dm`, and
+  `UboltAngularIntegral`, the shared angular integral; `BCSpec` (boundary label id →
+  BC family {vacuum, reflect}, keyed the way DMPlex "Face Sets" ids are — the structured
+  backends' `FACE_*` constants match PETSc's box-mesh convention, and each solve driver
+  exposes per-face `-bc_left`/`-bc_right`/... options); `Discretisation` (the backend
+  base: `create_matrix`, `coo_pattern`, `boundary_info`, `destroy`, `dm`, and
   `set_uniform_pattern` for a fixed-entries-per-row backend) with `StructuredFD1D` and
   `StructuredFD2D` under it (each owns a DMDA and through it the mesh, the cell-based
   decomposition and the COO sparsity, and adds only its own geometry — `dx()`, `dy()`);
@@ -60,12 +63,14 @@ Codebase map
   add that call to new ones.
 - New physics = subclass `OperatorTerm` (assembled contribution into the shared COO values
   and/or matrix-free apply). Discretisation backends produce a `CooPattern` (slot maps) +
-  `BoundaryInfo` (Dirichlet row mask); terms write through those, never raw indices.
-  The Dirichlet contract binds BOTH halves of a term, `assemble_add` and `apply_add`:
-  leave flagged rows alone, they carry the boundary condition, and the assembly has already
-  put the identity there. Anything that builds a right hand side rather than acting on the
-  unknowns being solved for is NOT an `OperatorTerm` — see `GroupTransfer` — but it owes
-  the mask the same thing.
+  `BoundaryInfo` (BC row mask + reflect slots); terms write through those, never raw
+  indices. The BC contract binds BOTH halves of a term, `assemble_add` and `apply_add`:
+  leave flagged rows alone, they carry the boundary condition, and the assembly has
+  already written them — the identity on a Dirichlet (vacuum) row, identity minus the
+  mirrored angle on a reflective one. Anything that builds a right hand side rather than
+  acting on the unknowns being solved for is NOT an `OperatorTerm` — see `GroupTransfer`
+  — but it owes the mask the same thing; the rhs itself owes the reflect rows a zero,
+  which is what `UboltZeroReflectRows` is for.
 - PETSc source is at `$PETSC_DIR/$PETSC_ARCH`. Both env variables must be set.
   PFLARE is at `$PFLARE_DIR` (defaults to `/home/sdargavi/projects/PFLARE` in the Makefile).
 

@@ -251,6 +251,9 @@ previous one's verification has passed and been reviewed.
       volume + face kernels
 - [ ] 6b CGSUPG: PetscFE/PetscDS host-only for quadrature/tabulations copied to device
       once; volume kernels; Dirichlet via identity-row mechanism
+- BCs: consume the existing `BCSpec` with real "Face Sets" label values (the structured
+  backends' FACE_* ids already match the box-mesh convention, so square meshes carry
+  over unchanged) — see the reflective-BC postscript below for the label/physics split
 - [x] Introduce thin abstract Discretisation base — DONE in Phase 4a, as that phase's
       decision point predicted. This item survives only as the point where a DMPlex
       backend would widen it: `set_uniform_pattern` is the part that will not carry over
@@ -333,6 +336,40 @@ previous one's verification has passed and been reviewed.
       (spot-checked np=1 single-group and np=2 multigroup), so the change is numerically
       inert — as it must be, since coordinates are the only thing the solve path even
       sees, and nothing reads them.
+
+## Phase 4 postscript — reflective boundary conditions (own commit, Aug 2026)
+- [x] Specular reflective BCs, selectable per boundary face, alongside the existing
+      vacuum (prescribed-inflow) rows. Pulled forward from the unstructured phase because
+      the selection API is where the two meet: `BCSpec` maps an integer boundary label id
+      to a BC family ({vacuum, reflect}, default vacuum), keyed the way DMPlex
+      "Face Sets" ids are. The structured backends' `FACE_*` constants match PETSc's
+      box-mesh convention (1D left=1/right=2; 2D bottom=1/right=2/top=3/left=4), so the
+      Phase 6 backends consume the SAME spec with real "Face Sets" values, on the
+      adv_dg_upwind split: the label says which family a face belongs to, the sign of
+      direction dot normal (the upwind test) decides what happens per row.
+      How a reflective row works — no sparsity growth anywhere:
+      - The row is `psi(cell, a) - psi(cell, a') = 0`, `a'` the mirrored angle. The
+        backend repurposes one of the row's otherwise-nulled off-diagonal slots for the
+        partner column (same cell, so always rank-local) and records it in
+        `BoundaryInfo::reflect_slot_d`; `SetBoundaryRows` (was `SetDirichletIdentity`)
+        writes the identity plus the -1.0. Terms are untouched: the mask (renamed
+        `is_bc_row_d`, it now covers both BC kinds) means what it always meant.
+      - The quadratures grew host-side reflection maps, built by SEARCH over the cosines
+        with a PetscCheck, so a future non-symmetric set fails loudly rather than
+        reflecting into a wrong angle.
+      - Mirror rule at corners: any incoming vacuum face wins (Dirichlet); a direction
+        incoming through two reflective faces flips both cosines — still one partner.
+        A reflective face on a single-cell-wide direction is a checked setup error.
+      - The rhs owes reflect rows a zero — `UboltZeroReflectRows`, called by the drivers
+        after filling b (and before `-diag_scale`).
+      Verified three ways (docs/dev/testing.md): the vacuum default reproduces all 24
+      baselines bitwise; `verify_2dk`'s reference matrix runs all-vacuum/all-reflect/mixed
+      x S2/S4 and agrees bitwise, pinning the slots, partners and corner rule per entry;
+      and `-check_inf_medium` (all faces reflective, uniform source) hits the exact
+      `1/(sigma_t - sigma_s)` to ~1e-13 in serial and parallel — decomposition
+      independent, so it is the parallel oracle for the partner columns. All-reflect with
+      scattering ratio 1 is singular, hence `-sigma_scatter` on `slab_1dk` and the
+      mg-keeps-a-vacuum-face rule.
 
 ## Research notes
 - **"Scattering ratio 1 in 2D degrades on non-square grids" — RESOLVED, it was the

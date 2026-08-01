@@ -77,10 +77,14 @@ fill runs on device (MATAIJKOKKOS dispatches `MatSetValuesCOO` to the GPU):
   neighbour's patch). Each backend asserts the layout property it actually relies on in its
   own `CheckDALayout` — see `docs/dev/testing.md`.
 - Dirichlet trick: a `-1` row/col index in the preallocation means "ignore this entry", so
-  boundary rows keep only their diagonal. The same `-1` covers a slot a row genuinely does
-  not have — in 2D, a direction whose `mu` or `eta` is zero has no upwind neighbour on that
-  axis. Either way the slot still EXISTS in the values array, so the value fills never
-  branch; the entry is just dropped at assembly.
+  Dirichlet boundary rows keep only their diagonal. The same `-1` covers a slot a row
+  genuinely does not have — in 2D, a direction whose `mu` or `eta` is zero has no upwind
+  neighbour on that axis. Either way the slot still EXISTS in the values array, so the
+  value fills never branch; the entry is just dropped at assembly. A REFLECTIVE boundary
+  row instead repurposes one of those otherwise-nulled slots: the backend points its
+  column at (same cell, mirrored angle) — always rank-local, so no ghost exchange — and
+  records the slot in `BoundaryInfo::reflect_slot_d`, and the assembly writes the -1.0
+  coupling there. No sparsity growth, and `slots_per_row` stays uniform.
 - The ordering of entries per row is fixed at preallocation time, off-diagonals first and
   the diagonal LAST — 1D: upwind, diagonal; 2D: upwind-x, upwind-y, diagonal — every row
   the same regardless of the sign of the direction cosines, and value fills must match it
@@ -93,14 +97,18 @@ fill runs on device (MATAIJKOKKOS dispatches `MatSetValuesCOO` to the GPU):
   `+ 1`), which is why the slot order is a convention the backend and its streaming term
   share, and why the streaming term is per-dimension.
 - Contract: a term must contribute NOTHING to rows flagged in
-  `BoundaryInfo::is_dirichlet_row_d` — not from `assemble_add` and not from `apply_add`.
-  `TransportOperator::assemble_into` writes the identity on those rows after the assembled
-  terms have run, so a term never has to know what the boundary condition is; a
-  matrix-free term that then adds to them would take that identity straight back off.
-  `ScatteringTerm::apply_add` did exactly that until Aug 2026 — see the Phase 4 postscript
-  in `TODO.md`. Note the contract is about what a term WRITES: the scatter still reads
-  every angle when it integrates the scalar flux, Dirichlet rows included, because the
-  prescribed incoming flux is a real part of the flux in that cell.
+  `BoundaryInfo::is_bc_row_d` — not from `assemble_add` and not from `apply_add`.
+  `TransportOperator::assemble_into` (via `SetBoundaryRows`) writes those rows after the
+  assembled terms have run — the identity, plus the -1.0 reflection coupling in
+  `reflect_slot_d` on reflective rows — so a term never has to know what the boundary
+  condition is; a matrix-free term that then adds to them would take that straight back
+  off. `ScatteringTerm::apply_add` did exactly that until Aug 2026 — see the Phase 4
+  postscript in `TODO.md`. Note the contract is about what a term WRITES: the scatter
+  still reads every angle when it integrates the scalar flux, BC rows included — for
+  reflective rows that read is REQUIRED, since the reflected outgoing flux is a real part
+  of the flux in the cell (it is what makes the infinite-medium check land at machine
+  precision). The rhs owes the same rows the boundary value: the incoming flux on
+  Dirichlet rows, zero on reflective ones (`UboltZeroReflectRows`).
 - All the assembled terms add into ONE shared values array and go in with a single
   `MatSetValuesCOO(INSERT_VALUES)`. `-ubolt_coo_two_call` is the debug fallback: one call
   per term, the first INSERTing and the rest ADDing. Same per-entry arithmetic in the same
