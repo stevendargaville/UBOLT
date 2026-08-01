@@ -143,12 +143,16 @@ int main(int argc, char **args) {
          // and everything downscattered out of the groups already solved
          PetscCall(VecSet(b, 1.0));
          for (PetscInt g_from = 0; g_from < g; g_from++) {
-            PetscCall(transfer.add_source(g_from, g, psi[g_from], b));
+            PetscCall(transfer.add_source(g_from, g, b));
          }
 
          PetscCall(solver.solve(b, psi[g]));
          reason = solver.converged_reason();
          if (reason <= 0) break;
+
+         // This group's scalar flux is fixed now, and every group below it
+         // scatters from it. Integrate once here rather than once per target
+         PetscCall(transfer.set_scalar_flux(g, psi[g]));
       }
 
       PetscCall(solver.destroy());

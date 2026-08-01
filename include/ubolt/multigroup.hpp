@@ -5,6 +5,7 @@
 #include "ubolt/coo_pattern.hpp"
 #include "ubolt/phase_space.hpp"
 #include "ubolt/sn_quadrature.hpp"
+#include <vector>
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -61,19 +62,36 @@ public:
       const GroupXSections &xs, const BoundaryInfo &boundary);
    PetscErrorCode destroy();
 
-   // b += sigma_s(g_from -> g_to) phi(psi_from) / sum_weights, on every angle
+   // Integrate group g's angular flux and keep it. Call once, as soon as that
+   // group is solved
+   //
+   // A group's scalar flux is fixed the moment the group is solved, and every
+   // group below it scatters from the same one, so integrating on demand inside
+   // add_source() would redo it once per target group: G(G-1)/2 angular
+   // integrals over a sweep instead of G
+   PetscErrorCode set_scalar_flux(PetscInt g, Vec psi_g);
+
+   // b += sigma_s(g_from -> g_to) phi(g_from) / sum_weights, on every angle.
+   // set_scalar_flux(g_from, ...) must have been called first
    //
    // Dirichlet rows are skipped: the rhs there is the incoming flux boundary
    // value and a scattering source must not touch it, the same contract
    // assembled terms have with the Dirichlet mask
-   PetscErrorCode add_source(PetscInt g_from, PetscInt g_to, Vec psi_from, Vec b) const;
+   PetscErrorCode add_source(PetscInt g_from, PetscInt g_to, Vec b) const;
 
 private:
    PetscInt n_angles_ = 0;
+   PetscInt local_cells_ = 0;
    PetscScalar sum_weights_ = 0.0;
    const GroupXSections *xs_ = nullptr;
    PetscScalar2DKokkosView w_d_;
    PetscIntKokkosView is_dirichlet_row_d_;
+   // The cached scalar flux of each group, (local_cells, 1) apiece. Separate
+   // allocations rather than one (group, cell) table: the angular integral
+   // writes a 2D gemm output, and a slice of a 2D table would be a rank-2 view
+   // whose layout no longer matches the default one on a device backend
+   std::vector<PetscScalar2DKokkosView> phi_;
+   std::vector<PetscBool> phi_set_;
    // Persistent scratch - never allocate device memory inside an apply
    PetscScalar2DKokkosView scalar_flux_d_;
 };

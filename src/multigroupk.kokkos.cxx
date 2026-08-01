@@ -117,11 +117,18 @@ PetscErrorCode GroupTransfer::create(const PhaseSpace &ps, const SNQuadrature &q
    PetscCall(PetscKokkosInitializeCheck());
 
    n_angles_ = ps.n_angles;
+   local_cells_ = ps.local_cells;
    sum_weights_ = quad.sum_weights();
    xs_ = &xs;
    w_d_ = quad.w_d();
    is_dirichlet_row_d_ = boundary.is_dirichlet_row_d;
-   scalar_flux_d_ = PetscScalar2DKokkosView("scalar_flux_d", ps.local_cells, 1);
+   scalar_flux_d_ = PetscScalar2DKokkosView("scalar_flux_d", local_cells_, 1);
+
+   phi_.resize(ps.n_groups);
+   phi_set_.assign(ps.n_groups, PETSC_FALSE);
+   for (PetscInt g = 0; g < ps.n_groups; g++) {
+      phi_[g] = PetscScalar2DKokkosView("phi_d", local_cells_, 1);
+   }
 
    PetscFunctionReturn(PETSC_SUCCESS);
 }
@@ -136,18 +143,36 @@ PetscErrorCode GroupTransfer::destroy()
    w_d_ = PetscScalar2DKokkosView();
    is_dirichlet_row_d_ = PetscIntKokkosView();
    scalar_flux_d_ = PetscScalar2DKokkosView();
+   phi_.clear();
+   phi_set_.clear();
 
    PetscFunctionReturn(PETSC_SUCCESS);
 }
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-// Integrate the source group's angular flux, scale by the transfer xsection and
-// spread it isotropically over the target group's angles
+PetscErrorCode GroupTransfer::set_scalar_flux(PetscInt g, Vec psi_g)
+{
+   PetscFunctionBeginUser;
+
+   PetscCheck(g >= 0 && g < (PetscInt)phi_.size(), PETSC_COMM_SELF, PETSC_ERR_ARG_OUTOFRANGE, \
+      "group %" PetscInt_FMT " out of range, n_groups is %" PetscInt_FMT, g, (PetscInt)phi_.size());
+
+   PetscCall(UboltAngularIntegral(psi_g, n_angles_, w_d_, phi_[g]));
+   phi_set_[g] = PETSC_TRUE;
+
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+// Take the source group's cached scalar flux, scale it by the transfer xsection
+// and spread it isotropically over the target group's angles
 // This happens entirely on the device
-PetscErrorCode GroupTransfer::add_source(PetscInt g_from, PetscInt g_to, Vec psi_from, Vec b) const
+PetscErrorCode GroupTransfer::add_source(PetscInt g_from, PetscInt g_to, Vec b) const
 {
    const PetscInt n_angles = n_angles_;
+   const PetscInt local_cells = local_cells_;
    const PetscScalar sum_weights = sum_weights_;
    const PetscScalar2DKokkosView scalar_flux_d = scalar_flux_d_;
    const PetscIntKokkosView is_dirichlet_row_d = is_dirichlet_row_d_;
@@ -155,19 +180,21 @@ PetscErrorCode GroupTransfer::add_source(PetscInt g_from, PetscInt g_to, Vec psi
 
    PetscFunctionBeginUser;
 
-   PetscInt local_rows;
-   PetscCall(VecGetLocalSize(psi_from, &local_rows));
-   const PetscInt local_cells = local_rows / n_angles;
+   PetscCheck(g_from >= 0 && g_from < (PetscInt)phi_.size(), PETSC_COMM_SELF, PETSC_ERR_ARG_OUTOFRANGE, \
+      "group %" PetscInt_FMT " out of range, n_groups is %" PetscInt_FMT, g_from, (PetscInt)phi_.size());
+   PetscCheck(phi_set_[g_from], PETSC_COMM_SELF, PETSC_ERR_ARG_WRONGSTATE, \
+      "no scalar flux cached for group %" PetscInt_FMT " - set_scalar_flux() must be called " \
+      "when that group is solved, before anything scatters out of it", g_from);
 
-   // The scalar flux of the group we are scattering out of
-   PetscCall(UboltAngularIntegral(psi_from, n_angles, w_d_, scalar_flux_d));
+   const PetscScalar2DKokkosView phi_d = phi_[g_from];
 
    // Scale by the transfer xsection, and by the sum of weights to get the
-   // amount going into each angle
+   // amount going into each angle. Into the scratch, not the cache: the source
+   // group scatters into every group below it and each wants its own xsection
    Kokkos::parallel_for(
       Kokkos::RangePolicy<>(0, local_cells), KOKKOS_LAMBDA(PetscInt i) {
 
-         scalar_flux_d(i, 0) *= sigma_s_d(i) / sum_weights;
+         scalar_flux_d(i, 0) = phi_d(i, 0) * (sigma_s_d(i) / sum_weights);
       });
 
    PetscScalarKokkosView b_d;

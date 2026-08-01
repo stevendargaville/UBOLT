@@ -81,6 +81,12 @@ previous one's verification has passed and been reviewed.
     Dirichlet rows, the same contract the assembled terms have.
   - With downscatter only, the group system is block lower triangular, so ONE forward
     sweep is exact — there is no outer iteration yet. Upscatter is what forces it.
+  - `GroupTransfer` caches each group's scalar flux (`set_scalar_flux`, called once when
+    the group is solved) rather than integrating inside `add_source`. A group's scalar
+    flux is fixed once it is solved and every group below it scatters from the same one,
+    so integrating on demand costs G(G-1)/2 angular integrals per sweep instead of G — at
+    16 groups that was 120 against 95 for the whole iterative solve. Upscatter will need
+    the validity flag relaxed, since it wants the previous iterate's flux.
   - `TransportSolver::refresh()` added: the removal shell PC caches the inverse diagonal
     of the assembled matrix, and sigma_t changes under it every group. PCAIR needs no
     help (it tracks pmat's state), and with `-precon_stream` the streaming-only pmat is
