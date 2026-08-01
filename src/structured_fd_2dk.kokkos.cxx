@@ -148,6 +148,15 @@ PetscErrorCode StructuredFD2D::create(MPI_Comm comm, PhaseSpace &ps, PetscInt n_
    local_cells_y_ = ym;
    ps.local_cells = xm * ym;
 
+   // The DM owns the mesh, so it carries the node positions too: node (i, j)
+   // sits at (i dx, j dy), the same convention the closed-form check in
+   // tests/verify_2dk.kokkos.cxx uses. Nothing in the solve reads these - they
+   // are for output (the scalar flux VTK writer picks them up). A direction
+   // with a single node has no spacing to define and PETSc would divide by
+   // n - 1, so that degenerate grid keeps no coordinates
+   if (n_cells_x > 1 && n_cells_y > 1) PetscCall(DMDASetUniformCoordinates(dm_, \
+      0.0, length_x - length_x / n_cells_x, 0.0, length_y - length_y / n_cells_y, 0.0, 0.0));
+
    PetscCall(DMGetLocalToGlobalMapping(dm_, &ltog_map));
    PetscCall(ISLocalToGlobalMappingGetIndices(ltog_map, &ltog));
    PetscCall(CheckDALayout(dm_, ps, ltog, xs, ys, xm, ym, gxs, gys, gxm));

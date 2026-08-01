@@ -93,6 +93,14 @@ PetscErrorCode StructuredFD1D::create(MPI_Comm comm, PhaseSpace &ps, PetscReal l
    ps.local_cells = local_cells;
    PetscCall(CheckDALayout(dm_, ps, cell_start));
 
+   // The DM owns the mesh, so it carries the node positions too: node i sits at
+   // i dx, so the last one is at length - dx. Nothing in the solve reads these -
+   // they are for output (the scalar flux VTK writer picks them up). A
+   // single-cell slab has no spacing to define and PETSc would divide by
+   // n_cells - 1, so it keeps no coordinates
+   if (ps.n_cells > 1) PetscCall(DMDASetUniformCoordinates(dm_, 0.0, \
+      length - length / ps.n_cells, 0.0, 0.0, 0.0, 0.0));
+
    ps_ = ps;
    const PetscInt local_rows = ps.local_rows();
    const PetscInt global_row_start = cell_start * n_angles;

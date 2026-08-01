@@ -18,6 +18,7 @@
 #include <petscksp.h>
 #include "pflare.h"
 #include <vector>
+#include <cstring>
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -51,6 +52,12 @@ int main(int argc, char **args) {
    // which is what makes -n_groups 1 the single-group problem exactly
    PetscReal sigma_transfer = 0.0;
    PetscCall(PetscOptionsGetReal(NULL, NULL, "-sigma_transfer", &sigma_transfer, NULL));
+   // Write the scalar flux of the solution for inspection, one file per group:
+   // -flux_vtk flux.vts writes flux_g0.vts, flux_g1.vts, ... The extension
+   // picks the format, .vts or .vtr
+   char flux_vtk[PETSC_MAX_PATH_LEN];
+   PetscBool write_flux = PETSC_FALSE;
+   PetscCall(PetscOptionsGetString(NULL, NULL, "-flux_vtk", flux_vtk, sizeof(flux_vtk), &write_flux));
 
    KSPConvergedReason reason = KSP_CONVERGED_ITERATING;
 
@@ -153,6 +160,18 @@ int main(int argc, char **args) {
          // This group's scalar flux is fixed now, and every group below it
          // scatters from it. Integrate once here rather than once per target
          PetscCall(transfer.set_scalar_flux(g, psi[g]));
+      }
+
+      // Only a full sweep leaves every group's flux worth looking at
+      if (write_flux && reason > 0) {
+         const char *dot = strrchr(flux_vtk, '.');
+         const size_t base_len = dot ? (size_t)(dot - flux_vtk) : strlen(flux_vtk);
+         for (PetscInt g = 0; g < n_groups; g++) {
+            char fname[PETSC_MAX_PATH_LEN];
+            PetscCall(PetscSNPrintf(fname, sizeof(fname), "%.*s_g%" PetscInt_FMT "%s", \
+               (int)base_len, flux_vtk, g, dot ? dot : ""));
+            PetscCall(UboltWriteScalarFluxVTK(ps, disc, quad, psi[g], fname));
+         }
       }
 
       PetscCall(solver.destroy());

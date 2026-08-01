@@ -32,7 +32,10 @@ Codebase map
   `GroupXSections` + `GroupTransfer` (multigroup xsection tables and the group-to-group
   source), `TransportOperator` (assembled terms in one matrix + matrix-free terms behind a
   MatShell), `TransportSolver` (KSP + the composite PC, plus `refresh()` for what the PC
-  caches off the assembled matrix). `types.hpp` owns every Kokkos view typedef, `ubolt.hpp`
+  caches off the assembled matrix), `UboltWriteScalarFluxVTK` (the scalar flux of a
+  solution written through PETSc's VTK viewer onto a dof-1 twin of the backend's DMDA —
+  `.vts`/`.vtr` structured formats only; every solve driver exposes it as
+  `-flux_vtk <file>`). `types.hpp` owns every Kokkos view typedef, `ubolt.hpp`
   is the umbrella header. Every translation unit is a Kokkos one, named `Xk.kokkos.cxx`
   (the suffix triggers PETSc's Kokkos build rules). See `TODO.md` for the roadmap and
   current phase.

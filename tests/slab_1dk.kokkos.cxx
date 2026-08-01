@@ -38,6 +38,11 @@ int main(int argc, char **args) {
    // Total and scattering xsections, constant across the slab
    PetscInt max_exponent = 1;
    PetscCall(PetscOptionsGetInt(NULL, NULL, "-max_exponent", &max_exponent, NULL));
+   // Write the scalar flux of the solution for inspection, e.g.
+   // -flux_vtk flux.vts - the extension picks the format, .vts or .vtr
+   char flux_vtk[PETSC_MAX_PATH_LEN];
+   PetscBool write_flux = PETSC_FALSE;
+   PetscCall(PetscOptionsGetString(NULL, NULL, "-flux_vtk", flux_vtk, sizeof(flux_vtk), &write_flux));
 
    KSPConvergedReason reason;
 
@@ -109,6 +114,8 @@ int main(int argc, char **args) {
       PetscCall(solver.create(PETSC_COMM_WORLD, op, pmat));
       PetscCall(solver.solve(b, x));
       reason = solver.converged_reason();
+
+      if (write_flux) PetscCall(UboltWriteScalarFluxVTK(ps, disc, quad, x, flux_vtk));
 
       PetscCall(solver.destroy());
       PetscCall(op.destroy());
