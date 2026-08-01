@@ -154,7 +154,16 @@ previous one's verification has passed and been reviewed.
   decomposition only); it starts paying for itself in Phase 4.
 
 ## Phase 4 — 2D structured (DMDA 2D)
-- [ ] StructuredFD2D (3-slot rows), 2D angle quadrature table
+- [x] 4a: the abstract Discretisation base (the decision below, taken as called).
+      Done: all 24 baselines re-capture bitwise. `create_matrix`, `coo_pattern`,
+      `boundary_info`, `destroy` and `dm` are on the base, with the state they read
+      (comm, the PhaseSpace copy, the DM handle, the COO coordinate arrays).
+      `TransportOperator::create` and `RemovalTerm::create` take the base;
+      `StreamingTerm::create` keeps StructuredFD1D. One thing beyond the four methods:
+      `set_uniform_pattern(slots_per_row, dirichlet_mask)` builds the slot maps, since 1D
+      and 2D both lay out a fixed number of entries per row with the diagonal LAST — that
+      convention is now stated once rather than in each backend.
+- [x] 4b: StructuredFD2D (3-slot rows), 2D angle quadrature table
       NOTE: this said "4-slot rows" until Aug 2026. It is 3 — upwinding mu dpsi/dx and
       eta dpsi/dy separately contributes ONE neighbour per axis plus a diagonal, the
       direct generalisation of 1D's 2 (upwind neighbour + diagonal). The 5 points are what
@@ -165,28 +174,61 @@ previous one's verification has passed and been reviewed.
       from sign(mu)/sign(eta), exactly as 1D does it, so the value fills never branch on
       direction. A row with mu or eta exactly 0 takes a -1 in that slot, the same trick
       Dirichlet rows already use.
-- Verify: pure-streaming closed-form check; small-grid MatComputeOperator of the shell vs
-  host reference (1e-12); pinned PCAIR iterations. (No hand-layout twin in 2D: DMDA's
-  PETSc ordering differs from natural ordering — and after Phase 3b there is no hand
-  layout in 1D either, so the twin technique is retired for good.)
+      Done. Notes:
+      - The COO COLUMNS come from the DM's local-to-global map, not arithmetic. This is
+        the piece 1D did not need: a 2D DMDA numbers each rank's patch contiguously and
+        lexicographically WITHIN the patch, so `(j * n_cells_x + i)` is wrong the moment
+        more than one rank splits a direction. The map covers the ghost nodes too, which
+        is what lets a column point into a neighbour's patch.
+      - `SNQuadrature2D` is the level-symmetric sets, S2 (4 ordinates) and S4 (12) — four
+        quadrants of {1, 3}. XY geometry is symmetric about z = 0, so only xi > 0 is
+        tracked and the weights are doubled; they sum to the full 4 pi and xi is never
+        needed. A thin `AngularQuadrature` base carries n_angles/sum_weights/w_d, which is
+        all ScatteringTerm and GroupTransfer ever wanted, so both work in either dimension
+        unchanged. Same split as the Discretisation base: the direction cosines stay on
+        the concrete class because only the streaming term reads them.
+      - Dirichlet rows are the INFLOW ones: any node whose x-upwind OR y-upwind neighbour
+        is outside the box, corners included through either test.
+      - `sum_weights` is passed to the base rather than summed from the weights: it is the
+        exact measure of the angular domain, and summing would have moved 1D's 2.0 by a
+        rounding and broken the baselines.
+- Verify: DONE, all three, in `tests/verify_2dk.kokkos.cxx` (+ `tests/box_2dk.kokkos.cxx`
+  for the pinned counts).
+  - Pure-streaming closed form: psi = x + y is linear and first-order upwind differencing
+    is exact on a linear function, so the DISCRETE operator has the PDE's solution.
+    Residual 4e-15 / 8e-15 (S2 / S4) against a 1e-12 tolerance, at np = 1, 2, 3 and 4, and
+    the solve returns the closed form to 4e-14. Pins both upwind signs, dx against dy and
+    the Dirichlet rows at once.
+  - MatComputeOperator of the SHELL (so the matrix-free scatter is in it) against a
+    reference matrix built entry by entry in the driver: max difference 0.0, i.e. bitwise,
+    on 4x3 with S2 and S4. Serial, because the reference is written in natural ordering —
+    which is exactly the difference StructuredFD2D's layout assert exists to police.
+  - Pinned PCAIR iterations: 16 new recipes in tests/Makefile, counts in
+    docs/dev/testing.md.
+  - No 2D residual-history baselines were captured. In 1D they are the numerical-inertness
+    oracle for a refactor; in 2D the reference-matrix check is a strictly sharper one (it
+    compares every entry of the operator, not a residual history that happens to agree),
+    so the baselines would only have added files to keep in sync.
+  (No hand-layout twin in 2D: DMDA's PETSc ordering differs from natural ordering — and
+  after Phase 3b there is no hand layout in 1D either, so the twin technique is retired
+  for good.)
 - Inherited from Phase 3: the DM already owns the decomposition and writes local_cells
   into the PhaseSpace, so StructuredFD2D slots into the same seam. Two things do NOT
   carry over unexamined: CheckDALayout's angle-fastest/contiguous assert (2D ordering is
   the thing that differs, so it has to be rewritten, not copied), and create_matrix's
   hand-built COO preallocation (3 slots per row, see above — NOT the DMDA stencil's 5).
-- DECIDE AT THE START OF PHASE 4: the abstract Discretisation base. Phase 6 below says to
-  introduce it "only now that a second backend exists" — but StructuredFD2D IS a second
-  backend, so Phase 4 is where that bites, not Phase 6. Three signatures take
-  StructuredFD1D by concrete type (TransportOperator::create, StreamingTerm::create,
-  RemovalTerm::create) plus TransportOperator's stored disc_ pointer.
-  The surface is small and splits cleanly, so this is a thin abstraction rather than a
-  redesign:
+  Both were done as called. The 2D assert is weaker on purpose and states what it needs:
+  sizes; angle-fastest contiguous dof; and this rank's owned nodes numbered contiguously
+  from its rstart in the PATCH's own lexicographic order. That last one is what makes
+  "local cell index = (j - ys) * xm + (i - xs)" true, which the per-cell xsection views
+  and RemovalTerm's `r / n_angles` both rely on.
+- DECIDED (Aug 2026), the Discretisation base: taken exactly as proposed below and done in
+  4a. Phase 6's checklist item is reworded to note it has already happened.
   - `create_matrix()`, `coo_pattern()`, `boundary_info()` — all that RemovalTerm and
     TransportOperator use, and all dimension-independent. This is the base class.
   - `dx()` — used ONLY by StreamingTerm, which needs a 2D sibling regardless (it owns the
     upwind slot convention and in 2D needs dx and dy). Dimension-specific terms can keep
     taking the concrete class, so the base does not have to grow a geometry interface.
-  Move the Phase 6 checklist item here if that is the call.
 
 ## Phase 5 — Matrix-free removal / single-streaming-matrix experiment
 - [ ] RemovalTerm::apply_add + -matfree_removal: Assembled{Streaming} +
@@ -208,9 +250,10 @@ previous one's verification has passed and been reviewed.
       volume + face kernels
 - [ ] 6b CGSUPG: PetscFE/PetscDS host-only for quadrature/tabulations copied to device
       once; volume kernels; Dirichlet via identity-row mechanism
-- [ ] Introduce thin abstract Discretisation base — IF Phase 4 has not already had to
-      (see the decision point there; StructuredFD2D is a second backend, so it probably
-      has). This item survives only as the point where a DMPlex backend would widen it.
+- [x] Introduce thin abstract Discretisation base — DONE in Phase 4a, as that phase's
+      decision point predicted. This item survives only as the point where a DMPlex
+      backend would widen it: `set_uniform_pattern` is the part that will not carry over
+      (DG has a variable-nnz COO pattern), while `create_matrix` and the accessors should.
 - Verify: DG0 on uniform mesh reproduces the FD upwind matrix; manufactured-solution
   convergence rates; pinned iterations.
 
@@ -240,7 +283,36 @@ previous one's verification has passed and been reviewed.
       converges faster (me=2: 10 -> 5 its, streaming pmat me=2: 16 -> 10). New counts in
       `docs/dev/testing.md`; recipes re-pinned. diag_scale + me=2 is still pathological.
 
+## Phase 4 postscript — the matrix-free scatter ignores the Dirichlet mask (OPEN)
+- [ ] `ScatteringTerm::apply_add` subtracts `sigma_s phi / sum_weights` from EVERY row,
+      Dirichlet rows included. So the shell's boundary rows are not the identity the
+      assembly wrote — they are `psi_r - (scatter at that node) = incoming`, and the
+      prescribed inflow value is polluted by the scattering source in that cell.
+      Found in Phase 4b while writing the reference matrix in `tests/verify_2dk`, which
+      models the behaviour rather than the intent (and matches it bitwise).
+      Pre-existing since Phase 1 and identical in 1D — the Dirichlet contract in
+      `operator_term.hpp` is written for `assemble_add` only, so `apply_add` was never
+      told about it. Deliberately NOT fixed inside Phase 4: the fix changes the operator
+      and invalidates all 24 baselines, which is its own commit with its own re-capture,
+      exactly as the Phase 1 postscript upwind-sign fix was handled.
+      When it is done: widen the contract in `operator_term.hpp` to cover `apply_add`,
+      give `ScatteringTerm` the Dirichlet mask (it does not take one today — its create
+      does not receive a Discretisation at all), re-capture the baselines, and update the
+      note in `tests/verify_2dk.kokkos.cxx`.
+
 ## Research notes
+- **Scattering ratio 1 in 2D degrades on non-square grids** (found in Phase 4b, and the
+  sharpest statement of the Phase 5 question the current preconditioner poses). With
+  `sigma_s = sigma_t` (pure scattering, no absorption) the composite PC is mesh
+  independent on a square grid — 50x50 takes 18 iterations and 100x100 takes 21 — but on
+  anything non-square it is not: 60x30 and 80x20 (the latter with square cells, just a
+  4:1 box) do not converge in 400. Drop the ratio to 0.5 and every one of those converges
+  in 8 or 9, mesh independently, and pure streaming (`-max_exponent 0`) converges in 3
+  everywhere including the failing shapes. So it is the scattering, not the streaming, the
+  discretisation or PCAIR on it — the operator itself is verified bitwise against a
+  reference matrix on non-square grids. Nothing in the current PC does anything about the
+  scattering; this is the DSA-shaped hole. `-sigma_scatter` on `box_2dk` is what varies the
+  ratio. Recipes cover both regimes: ratio 0.5 everywhere, ratio 1 on square grids only.
 - **Single assembled streaming matrix across all groups** (Phase 5 direction): apply
   removal + scatter matrix-free so only one assembled matrix is stored for all energy
   groups. Open question: an effective preconditioner for streaming-only pmat when removal

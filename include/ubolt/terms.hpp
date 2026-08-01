@@ -6,6 +6,7 @@
 #include "ubolt/phase_space.hpp"
 #include "ubolt/sn_quadrature.hpp"
 #include "ubolt/structured_fd_1d.hpp"
+#include "ubolt/structured_fd_2d.hpp"
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -26,6 +27,32 @@ private:
    PetscInt local_rows_ = 0;
    PetscScalar dx_ = 0.0;
    PetscScalarKokkosView mu_d_;
+   CooPattern pattern_;
+   BoundaryInfo boundary_;
+};
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+// Streaming in 2D: mu dpsi/dx + eta dpsi/dy, each upwinded onto its own axis
+//
+// The sibling of StreamingTerm, not a generalisation of it: the slot convention
+// is per-dimension, and this is the term that owns it. It writes StructuredFD2D's
+// three slots positionally - upwind-x, upwind-y, diagonal - which is the same
+// contract the 1D pair have, one axis wider
+class PETSC_VISIBILITY_PUBLIC StreamingTerm2D : public OperatorTerm {
+public:
+   PetscErrorCode create(const PhaseSpace &ps, const StructuredFD2D &disc, const SNQuadrature2D &quad);
+
+   PetscBool assembled() const override { return PETSC_TRUE; }
+   PetscErrorCode assemble_add(PetscScalarKokkosView &coo_v_d) const override;
+
+private:
+   PetscInt n_angles_ = 0;
+   PetscInt local_rows_ = 0;
+   PetscScalar dx_ = 0.0;
+   PetscScalar dy_ = 0.0;
+   PetscScalarKokkosView mu_d_;
+   PetscScalarKokkosView eta_d_;
    CooPattern pattern_;
    BoundaryInfo boundary_;
 };
@@ -67,7 +94,8 @@ public:
    // sigma_s_d is indexed by local cell and must outlive the term. In a
    // multigroup sweep this is the within-group block sigma_s(g -> g); the
    // off-diagonal blocks go to the rhs through GroupTransfer
-   PetscErrorCode create(const PhaseSpace &ps, const SNQuadrature &quad, const PetscScalarKokkosView &sigma_s_d);
+   // Any quadrature: the scatter only needs the weights, never the directions
+   PetscErrorCode create(const PhaseSpace &ps, const AngularQuadrature &quad, const PetscScalarKokkosView &sigma_s_d);
 
    // Point the term at a different xsection - see RemovalTerm::set_sigma_t
    void set_sigma_s(const PetscScalarKokkosView &sigma_s_d) { sigma_s_d_ = sigma_s_d; }

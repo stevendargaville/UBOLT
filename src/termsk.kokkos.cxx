@@ -66,6 +66,71 @@ PetscErrorCode StreamingTerm::assemble_add(PetscScalarKokkosView &coo_v_d) const
 }
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+// StreamingTerm2D
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+PetscErrorCode StreamingTerm2D::create(const PhaseSpace &ps, const StructuredFD2D &disc, const SNQuadrature2D &quad)
+{
+   PetscFunctionBeginUser;
+
+   PetscCall(ps.check_decomposed());
+
+   n_angles_ = ps.n_angles;
+   local_rows_ = ps.local_rows();
+   dx_ = disc.dx();
+   dy_ = disc.dy();
+   mu_d_ = quad.mu_d();
+   eta_d_ = quad.eta_d();
+   pattern_ = disc.coo_pattern();
+   boundary_ = disc.boundary_info();
+
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+// Add the upwinded mu dpsi/dx + eta dpsi/dy stencil into the shared COO values
+// This happens entirely on the device
+PetscErrorCode StreamingTerm2D::assemble_add(PetscScalarKokkosView &coo_v_d) const
+{
+   const PetscInt n_angles = n_angles_;
+   const PetscScalar dx = dx_;
+   const PetscScalar dy = dy_;
+   const PetscScalarKokkosView mu_d = mu_d_;
+   const PetscScalarKokkosView eta_d = eta_d_;
+   const PetscIntKokkosView row_slot_offset_d = pattern_.row_slot_offset_d;
+   const PetscIntKokkosView diag_slot_d = pattern_.diag_slot_d;
+   const PetscIntKokkosView is_dirichlet_row_d = boundary_.is_dirichlet_row_d;
+
+   PetscFunctionBeginUser;
+
+   Kokkos::parallel_for(
+      Kokkos::RangePolicy<>(0, local_rows_), KOKKOS_LAMBDA(PetscInt r) {
+
+         // Dirichlet rows keep only the identity the assembly puts on them
+         if (is_dirichlet_row_d(r)) return;
+
+         const PetscInt a = r % n_angles;
+         // Slot order is the discretisation's: upwind-x, upwind-y, diagonal.
+         // Unlike 1D there is more than one off-diagonal, so the two are
+         // addressed positionally rather than as "everything but the diagonal"
+         const PetscInt first = row_slot_offset_d(r);
+
+         const PetscScalar cx = fabs(mu_d(a)) / dx;
+         const PetscScalar cy = fabs(eta_d(a)) / dy;
+
+         // Each axis contributes |cosine| / h (psi_here - psi_upwind), whichever
+         // way it points - the direction is already baked into which neighbour
+         // the discretisation put in the slot
+         coo_v_d(diag_slot_d(r)) += cx + cy;
+         coo_v_d(first)     += -cx;
+         coo_v_d(first + 1) += -cy;
+      });
+
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 // RemovalTerm
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -114,7 +179,7 @@ PetscErrorCode RemovalTerm::assemble_add(PetscScalarKokkosView &coo_v_d) const
 // ScatteringTerm
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-PetscErrorCode ScatteringTerm::create(const PhaseSpace &ps, const SNQuadrature &quad, const PetscScalarKokkosView &sigma_s_d)
+PetscErrorCode ScatteringTerm::create(const PhaseSpace &ps, const AngularQuadrature &quad, const PetscScalarKokkosView &sigma_s_d)
 {
    PetscFunctionBeginUser;
 

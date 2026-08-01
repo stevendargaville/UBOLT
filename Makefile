@@ -99,6 +99,7 @@ endif
 OBJS := $(SRCDIR)/sn_quadraturek.o \
 		  $(SRCDIR)/discretisationk.o \
 		  $(SRCDIR)/structured_fd_1dk.o \
+		  $(SRCDIR)/structured_fd_2dk.o \
 		  $(SRCDIR)/termsk.o \
 		  $(SRCDIR)/multigroupk.o \
 		  $(SRCDIR)/transport_operatork.o \
@@ -115,9 +116,9 @@ UBOLT_HEADERS := $(wildcard $(INCLUDEDIR)/ubolt/*.hpp)
 $(OBJS): $(UBOLT_HEADERS)
 
 # Define a variable containing all the tests
-export TEST_TARGETS = slab_1dk slab_1d_mgk
+export TEST_TARGETS = slab_1dk slab_1d_mgk box_2dk verify_2dk
 # Define a variable containing all the tests that the make check runs
-export CHECK_TARGETS = slab_1dk slab_1d_mgk
+export CHECK_TARGETS = slab_1dk slab_1d_mgk box_2dk verify_2dk
 
 # Output the library - either static or dynamic
 ifeq ($(PETSC_USE_SHARED_LIBRARIES),0)

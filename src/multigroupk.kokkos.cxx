@@ -110,7 +110,7 @@ PetscErrorCode GroupXSections::set_sigma_s(PetscInt g_from, PetscInt g_to, Petsc
 // GroupTransfer
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-PetscErrorCode GroupTransfer::create(const PhaseSpace &ps, const SNQuadrature &quad, \
+PetscErrorCode GroupTransfer::create(const PhaseSpace &ps, const AngularQuadrature &quad, \
    const GroupXSections &xs, const BoundaryInfo &boundary)
 {
    PetscFunctionBeginUser;

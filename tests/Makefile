@@ -82,6 +82,10 @@ run_check:
 	$(MPIEXEC) -n 2 ./slab_1dk -precon_stream -ksp_pc_side right -max_exponent 2 -ksp_max_it 10
 	@echo "Check 1D slab multigroup, 4 groups with downscatter"
 	./slab_1d_mgk -n_groups 4 -sigma_transfer 0.5 -max_exponent 2 -ksp_max_it 6
+	@echo "Check 2D box against the closed form and a reference matrix"
+	./verify_2dk
+	@echo "Check 2D box streaming/removal + matrix-free scatter with AIRG"
+	./box_2dk -n_cells_x 50 -n_cells_y 50 -max_exponent 2 -sigma_scatter 1.0 -ksp_max_it 8
 
 # ~~~~~~~~~~~
 # ~~~~~~~~~~~
@@ -123,6 +127,30 @@ run_tests_short_serial:
 	./slab_1d_mgk -n_groups 2 -sigma_transfer 1.0 -n_cells 500 -n_angles 2 -length 2.0 -max_exponent 2 -ksp_max_it 10
 	@echo "Test 1D slab multigroup, per-group refill with one MatSetValuesCOO per term"
 	./slab_1d_mgk -n_groups 4 -sigma_transfer 0.5 -max_exponent 2 -ksp_max_it 6 -ubolt_coo_two_call
+#
+# 2D. verify_2dk is the discretisation check (closed form + reference matrix);
+# the box_2dk recipes pin iteration counts the same way the 1D ones do.
+# -sigma_scatter 1.0 against -max_exponent 2 is a scattering ratio of 0.5; the
+# recipes without it are the ratio 1 (pure scattering) case, which converges
+# well only on a square grid - see ../docs/dev/testing.md
+	@echo "Test 2D box, closed form and reference matrix"
+	./verify_2dk
+	@echo "Test 2D box, streaming/removal pmat, scattering ratio 0.5"
+	./box_2dk -n_cells_x 50 -n_cells_y 50 -max_exponent 2 -sigma_scatter 1.0 -ksp_max_it 8
+	@echo "Test 2D box, non-square grid (dx is not dy)"
+	./box_2dk -n_cells_x 60 -n_cells_y 30 -max_exponent 2 -sigma_scatter 1.0 -ksp_max_it 8
+	@echo "Test 2D box, non-square box with square cells"
+	./box_2dk -n_cells_x 80 -n_cells_y 20 -length_y 0.25 -max_exponent 2 -sigma_scatter 1.0 -ksp_max_it 9
+	@echo "Test 2D box, weak removal (advection dominated)"
+	./box_2dk -n_cells_x 50 -n_cells_y 50 -max_exponent 0 -ksp_max_it 3
+	@echo "Test 2D box, pure scattering (ratio 1), the hardest case for this pc"
+	./box_2dk -n_cells_x 50 -n_cells_y 50 -max_exponent 2 -ksp_max_it 18
+	@echo "Test 2D box, streaming-only pmat"
+	./box_2dk -n_cells_x 50 -n_cells_y 50 -precon_stream -ksp_pc_side right -max_exponent 2 -ksp_max_it 46
+	@echo "Test 2D box, S4 (12 angles)"
+	./box_2dk -n_cells_x 30 -n_cells_y 30 -n_angles 12 -max_exponent 2 -ksp_max_it 28
+	@echo "Test 2D box, one MatSetValuesCOO per term instead of a single summed one"
+	./box_2dk -n_cells_x 50 -n_cells_y 50 -max_exponent 2 -sigma_scatter 1.0 -ksp_max_it 8 -ubolt_coo_two_call
 
 # ~~~~~~~~~~~
 # ~~~~~~~~~~~
@@ -145,6 +173,28 @@ run_tests_short_parallel:
 	$(MPIEXEC) -n 2 ./slab_1d_mgk -n_groups 4 -sigma_transfer 0.5 -precon_stream -ksp_pc_side right -max_exponent 2 -ksp_max_it 13
 	@echo "Test 1D slab multigroup, uncoupled groups in parallel"
 	$(MPIEXEC) -n 2 ./slab_1d_mgk -n_groups 4 -sigma_transfer 0.0 -max_exponent 2 -ksp_max_it 5
+#
+# 2D. -n 4 as well as -n 2 for the closed form: a 2D DMDA splits in one
+# direction only at -n 2, so -n 4 is the first decomposition with a genuinely
+# 2D processor grid, and the patch-lexicographic global numbering the layout
+# assert pins is at its least like the natural one there.
+# The reference matrix check is serial (it is written in natural ordering)
+	@echo "Test 2D box, closed form in parallel"
+	$(MPIEXEC) -n 2 ./verify_2dk -skip_reference
+	@echo "Test 2D box, closed form on a 2D processor grid"
+	$(MPIEXEC) -n 4 ./verify_2dk -skip_reference
+	@echo "Test 2D box, scattering ratio 0.5 in parallel"
+	$(MPIEXEC) -n 2 ./box_2dk -n_cells_x 50 -n_cells_y 50 -max_exponent 2 -sigma_scatter 1.0 -ksp_max_it 8
+	@echo "Test 2D box, non-square grid in parallel"
+	$(MPIEXEC) -n 2 ./box_2dk -n_cells_x 60 -n_cells_y 30 -max_exponent 2 -sigma_scatter 1.0 -ksp_max_it 8
+	@echo "Test 2D box, pure scattering in parallel"
+	$(MPIEXEC) -n 2 ./box_2dk -n_cells_x 50 -n_cells_y 50 -max_exponent 2 -ksp_max_it 20
+	@echo "Test 2D box, streaming-only pmat in parallel"
+	$(MPIEXEC) -n 2 ./box_2dk -n_cells_x 50 -n_cells_y 50 -precon_stream -ksp_pc_side right -max_exponent 2 -ksp_max_it 54
+	@echo "Test 2D box, S4 in parallel"
+	$(MPIEXEC) -n 2 ./box_2dk -n_cells_x 30 -n_cells_y 30 -n_angles 12 -max_exponent 2 -ksp_max_it 28
+	@echo "Test 2D box, one MatSetValuesCOO per term in parallel"
+	$(MPIEXEC) -n 2 ./box_2dk -n_cells_x 50 -n_cells_y 50 -max_exponent 2 -sigma_scatter 1.0 -ksp_max_it 8 -ubolt_coo_two_call
 
 # ~~~~~~~~~~~
 # ~~~~~~~~~~~
@@ -155,6 +205,14 @@ run_tests_serial:
 	./slab_1dk -precon_stream -ksp_pc_side right -max_exponent 0 -ksp_max_it 1
 	@echo "Test 1D slab, diagonally scaled, streaming-only pmat"
 	./slab_1dk -diag_scale -precon_stream -ksp_pc_side right -max_exponent 0 -ksp_max_it 3
+	@echo "Test 2D box, larger grid, scattering ratio 0.5"
+	./box_2dk -n_cells_x 120 -n_cells_y 60 -max_exponent 2 -sigma_scatter 1.0 -ksp_max_it 8
+	@echo "Test 2D box, S4 on a larger grid"
+	./box_2dk -n_cells_x 60 -n_cells_y 60 -n_angles 12 -max_exponent 2 -sigma_scatter 1.0 -ksp_max_it 8
+	@echo "Test 2D box, streaming-only pmat on a larger grid"
+	./box_2dk -n_cells_x 120 -n_cells_y 60 -precon_stream -ksp_pc_side right -max_exponent 2 -sigma_scatter 1.0 -ksp_max_it 20
+	@echo "Test 2D box, pure scattering on a larger grid"
+	./box_2dk -n_cells_x 100 -n_cells_y 100 -max_exponent 2 -ksp_max_it 21
 
 # ~~~~~~~~~~~
 # ~~~~~~~~~~~
@@ -169,6 +227,14 @@ run_tests_parallel:
 	$(MPIEXEC) -n 2 ./slab_1d_mgk -n_groups 4 -sigma_transfer 0.5 -max_exponent 0 -ksp_max_it 1
 	@echo "Test 1D slab multigroup, strong downscatter in parallel"
 	$(MPIEXEC) -n 2 ./slab_1d_mgk -n_groups 4 -sigma_transfer 2.0 -max_exponent 2 -ksp_max_it 7
+	@echo "Test 2D box, larger grid in parallel"
+	$(MPIEXEC) -n 2 ./box_2dk -n_cells_x 120 -n_cells_y 60 -max_exponent 2 -sigma_scatter 1.0 -ksp_max_it 8
+	@echo "Test 2D box, S4 on a larger grid in parallel"
+	$(MPIEXEC) -n 2 ./box_2dk -n_cells_x 60 -n_cells_y 60 -n_angles 12 -max_exponent 2 -sigma_scatter 1.0 -ksp_max_it 8
+	@echo "Test 2D box, weak removal on a larger grid in parallel"
+	$(MPIEXEC) -n 2 ./box_2dk -n_cells_x 100 -n_cells_y 100 -max_exponent 0 -ksp_max_it 3
+	@echo "Test 2D box, pure scattering on a larger grid in parallel"
+	$(MPIEXEC) -n 2 ./box_2dk -n_cells_x 100 -n_cells_y 100 -max_exponent 2 -ksp_max_it 24
 
 # ~~~~~~~~~~~
 # Re-capture reference baselines into baselines/

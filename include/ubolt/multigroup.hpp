@@ -58,7 +58,8 @@ private:
 class PETSC_VISIBILITY_PUBLIC GroupTransfer {
 public:
    // xs and boundary must outlive the object
-   PetscErrorCode create(const PhaseSpace &ps, const SNQuadrature &quad, \
+   // Any quadrature: like the scatter it only needs the weights
+   PetscErrorCode create(const PhaseSpace &ps, const AngularQuadrature &quad, \
       const GroupXSections &xs, const BoundaryInfo &boundary);
    PetscErrorCode destroy();
 

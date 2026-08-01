@@ -13,8 +13,13 @@
   non-converged solve fails the recipe on its own — no `-ksp_error_if_not_converged`
   or `-on_error_abort` needed. Driver diagnostics go to stderr so they never appear in a
   captured baseline. The two non-converging `capture_baselines` lines carry `|| true`.
-- Targets: `make check` (fast sanity, 3 runs) < `make tests_short` < `make tests`.
-  Parallel variants use `$(MPIEXEC) -n 2` and are skipped under MPIUNI.
+- Targets: `make check` (fast sanity, 5 runs) < `make tests_short` < `make tests`.
+  Parallel variants use `$(MPIEXEC) -n 2` — plus one `-n 4` run, see the 2D section — and
+  are skipped under MPIUNI.
+- `tests/verify_2dk` is the exception to "pass/fail is a pinned iteration count": it is a
+  discretisation check and its exit code comes from tolerances on two numerical checks
+  (below). It prints what it measured against the tolerance, so a run that is drifting
+  towards failure is visible before it fails.
 
 ## Baselines (tests/baselines/)
 Captured `-ksp_monitor -ksp_converged_reason` logs. They are the ground truth for a
@@ -23,7 +28,8 @@ refactor: identical numerics means the residual history diffs clean against thes
 
 24 logs in two families: 16 single-group (`slab1d_*`, Phase 0) and 8 multigroup
 (`slab1dmg_*`, Phase 2). `make baselines` captures both. A refactor that claims to be
-numerically inert must diff clean against all 24.
+numerically inert must diff clean against all 24. All of them are 1D — the 2D checks are
+sharper and need no baseline, see below.
 
 ### Single-group baselines
 Re-captured 2026-07-31 after the negative-angle upwind sign fix (see below). Before that
@@ -104,6 +110,57 @@ With `-precon_stream` the streaming-only pmat does not depend on the group, so P
 set up once for the whole sweep; with the default pc the assembled matrix is refilled per
 group and PCAIR re-runs its setup each time. Both are exercised by the recipes.
 
+## 2D verification (Phase 4)
+There are **no 2D baselines**, and that is deliberate. A residual-history baseline is an
+indirect fingerprint of the numerics; in 2D `tests/verify_2dk` compares the operator
+itself, so it is a strictly sharper oracle and there is nothing left for a baseline to
+catch. `make baselines` is still 1D + multigroup only.
+
+`verify_2dk` runs two checks, both S2 (4 angles) and S4 (12), and exits non-zero on either:
+
+1. **Pure-streaming closed form.** `psi = x + y` is linear, and first-order upwind
+   differencing is exact on a linear function, so the *discrete* operator has the PDE's
+   solution: `mu dpsi/dx + eta dpsi/dy = mu + eta`, with `psi = x + y` prescribed on the
+   inflow boundaries. Two halves — the residual `||A psi_exact - b||_inf` (no solver
+   tolerance in the way; ~4e-15 against a 1e-12 tolerance) and then the solve, which says
+   the system really does have that solution and is nonsingular. Run on a 16x12 grid over
+   a 1x2 box, so nothing about it is symmetric in x and y and a mix-up cannot hide.
+2. **Shell operator vs a reference matrix.** `MatComputeOperator` on the *shell*, so the
+   matrix-free scatter is included, against a matrix built entry by entry in the driver on
+   a 4x3 grid. Currently agrees to 0.0, i.e. bitwise. Serial only: the reference is
+   written in the natural ordering, which is what a 2D DMDA uses on one rank.
+   The reference deliberately reimplements the inflow test rather than reading the
+   discretisation's Dirichlet mask — a check that asked the code under test which rows it
+   thought were boundary rows would agree with it by construction.
+   It also models the scatter on the Dirichlet rows, because that is what the code does;
+   see the Phase 4 postscript in `TODO.md`.
+
+**Parallel.** A 2D DMDA at `-n 2` splits in one direction only, so `-n 4` is the first
+decomposition with a genuinely 2D processor grid and the one where the patch-lexicographic
+global numbering is least like the natural one. Both are in `run_tests_short_parallel`.
+
+## 2D iteration counts (`box_2dk`)
+`-max_exponent` sets `sigma_t`; `-sigma_scatter` sets `sigma_s`, defaulting to the same
+value (scattering ratio 1). Ratio 1 is the hardest case for a preconditioner that does
+nothing about the scattering, and in 2D it is mesh independent only on a square grid —
+see the research note in `TODO.md`. Recipes cover ratio 0.5 on every shape and ratio 1 on
+square grids only.
+
+| config | np=1 | np=2 |
+|---|---|---|
+| 50x50, me=2, ratio 0.5 | 8 | 8 |
+| 60x30 (dx != dy), me=2, ratio 0.5 | 8 | 8 |
+| 80x20 in a 1x0.25 box (dx == dy), me=2, ratio 0.5 | 9 | 10 |
+| 120x60, me=2, ratio 0.5 | 8 | 8 |
+| 60x60 S4, me=2, ratio 0.5 | 8 | 8 |
+| 120x60, streaming-only pmat, me=2, ratio 0.5 | 20 | — |
+| 50x50, me=0 (pure streaming) | 3 | 3 |
+| 100x100, me=0 | 3 | 3 |
+| 50x50, me=2, ratio 1 | 18 | 20 |
+| 100x100, me=2, ratio 1 | 21 | 24 |
+| 50x50, streaming-only pmat, me=2, ratio 1 | 46 | 54 |
+| 30x30 S4, me=2, ratio 1 | 28 | 28 |
+
 ## Adding a test driver
 1. Add the executable name to `TEST_TARGETS` (and `CHECK_TARGETS` if it belongs in
    `make check`) in the top `Makefile`.
@@ -114,9 +171,9 @@ group and PCAIR re-runs its setup each time. Both are exercised by the recipes.
    with `-ksp_max_it` pinned to the observed converged count.
 4. Driver rules: exit non-zero unless `KSPGetConvergedReason() > 0`; no output files.
 
-## DMDA layout (Phase 3)
-`StructuredFD1D` builds its layout from a 1D DMDA, which is also what decides the parallel
-decomposition. There is no second layout path and no option to select one: Phase 3a carried
+## DMDA layout (Phases 3 and 4)
+Every discretisation backend builds its layout from a DMDA, which is also what decides the
+parallel decomposition. There is no second layout path and no option to select one: Phase 3a carried
 a hand-rolled twin behind `-ubolt_use_dm` purely to verify the DM extraction, and 3b deleted
 it. What replaced the twin as the check is `tests/baselines/` — all 24 logs reproduce
 bitwise, which is what 3a and 3b were each verified against.
@@ -133,8 +190,19 @@ contiguous one every COO index is written against. That property holds for 1D DM
 ordering coincides with natural ordering) but it is load-bearing, and a violation would
 otherwise surface as a wrong answer rather than an error.
 
+**2D is where that stops being free.** A 2D DMDA numbers each rank's patch contiguously
+and *lexicographically within the patch*, so the global natural ordering `j * n_cells_x + i`
+is wrong as soon as more than one rank splits a direction. `StructuredFD2D` therefore takes
+its COO **columns** from the DM's local-to-global map (which covers the ghost nodes, so a
+column can point into a neighbour's patch) rather than computing them, and its own
+`CheckDALayout` asserts the weaker property that actually holds: sizes; angle-fastest
+contiguous dof; and this rank's owned nodes numbered contiguously from its `rstart` in the
+patch's own lexicographic order. That last one is what makes
+`local cell index = (j - ys) * xm + (i - xs)` true, which is the indexing the per-cell
+xsection views and `RemovalTerm`'s `r / n_angles` both depend on.
+
 **Ordering constraint (Phase 3b).** `PhaseSpace::create` no longer decides the
-decomposition — it leaves `local_cells` as `PETSC_DECIDE` and `StructuredFD1D::create`
+decomposition — it leaves `local_cells` as `PETSC_DECIDE` and the backend's `create()`
 fills it in. So the discretisation must be created *before* anything sized off the phase
 space. Everything that reads `local_cells`/`local_rows()` calls `ps.check_decomposed()`
 first, which fails with `PETSC_ERR_ARG_WRONGSTATE` and a pointed message rather than
