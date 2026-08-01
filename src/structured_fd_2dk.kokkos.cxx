@@ -98,10 +98,52 @@ static PetscErrorCode CheckDALayout(DM da, const PhaseSpace &ps, const PetscInt 
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
+enum class RowKind { INTERIOR, DIRICHLET, REFLECT };
+
+// Classify one (node, angle) row, and for a reflective row say which angle it
+// couples to
+//
+// The label decides only which BC family each face belongs to; whether a row
+// is a boundary row at all is the physics - the existing upwind test, which is
+// the sign of the direction against the face. A direction incoming through no
+// face is an interior unknown. If ANY incoming face is vacuum the row is
+// Dirichlet - vacuum wins at mixed corners - else the direction reflects in
+// every incoming axis: a corner between two reflective faces flips both
+// cosines, which is still one partner angle and so one column
+static RowKind ClassifyRow(PetscInt i, PetscInt j, PetscInt a, \
+   const PetscScalar *mu, const PetscScalar *eta, PetscInt n_cells_x, PetscInt n_cells_y, \
+   BCType left, BCType right, BCType bottom, BCType top, \
+   const PetscInt *reflect_mu, const PetscInt *reflect_eta, PetscInt *partner)
+{
+   const PetscInt upwind_i = (mu[a] > 0) ? i - 1 : ((mu[a] < 0) ? i + 1 : i);
+   const PetscInt upwind_j = (eta[a] > 0) ? j - 1 : ((eta[a] < 0) ? j + 1 : j);
+   const PetscBool has_x = (PetscBool)(mu[a] != 0.0);
+   const PetscBool has_y = (PetscBool)(eta[a] != 0.0);
+   const PetscBool x_outside = (PetscBool)(has_x && (upwind_i < 0 || upwind_i >= n_cells_x));
+   const PetscBool y_outside = (PetscBool)(has_y && (upwind_j < 0 || upwind_j >= n_cells_y));
+
+   *partner = -1;
+   if (!x_outside && !y_outside) return RowKind::INTERIOR;
+
+   // Which face the direction comes in through on each outside axis
+   const BCType x_bc = (mu[a] > 0) ? left : right;
+   const BCType y_bc = (eta[a] > 0) ? bottom : top;
+   if ((x_outside && x_bc == BCType::VACUUM) || (y_outside && y_bc == BCType::VACUUM)) \
+      return RowKind::DIRICHLET;
+
+   PetscInt ap = a;
+   if (x_outside) ap = reflect_mu[ap];
+   if (y_outside) ap = reflect_eta[ap];
+   *partner = ap;
+   return RowKind::REFLECT;
+}
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
 // Build the COO sparsity and the slot maps
 // This happens on the host but we only need to do it once
 PetscErrorCode StructuredFD2D::create(MPI_Comm comm, PhaseSpace &ps, PetscInt n_cells_x, PetscInt n_cells_y, \
-   PetscReal length_x, PetscReal length_y, const SNQuadrature2D &quad)
+   PetscReal length_x, PetscReal length_y, const SNQuadrature2D &quad, const BCSpec &bcs)
 {
    const PetscInt *ltog = NULL;
    ISLocalToGlobalMapping ltog_map = NULL;
@@ -139,8 +181,9 @@ PetscErrorCode StructuredFD2D::create(MPI_Comm comm, PhaseSpace &ps, PetscInt n_
    PetscCall(DMDAGetCorners(dm_, &xs, &ys, NULL, &xm, &ym, NULL));
    // The ghosted patch is what the local-to-global map is indexed over. With
    // DM_BOUNDARY_NONE it is clipped at the physical boundary, so a node just
-   // outside the box is not in it at all - which is fine, those rows are the
-   // Dirichlet ones and never ask for a column
+   // outside the box is not in it at all - which is fine: a Dirichlet row
+   // never asks for a column, and the column a reflective row asks for is its
+   // own cell's mirrored angle, an owned node
    PetscCall(DMDAGetGhostCorners(dm_, &gxs, &gys, NULL, &gxm, NULL, NULL));
    cell_start_x_ = xs;
    cell_start_y_ = ys;
@@ -169,12 +212,22 @@ PetscErrorCode StructuredFD2D::create(MPI_Comm comm, PhaseSpace &ps, PetscInt n_
    // upwind-x, upwind-y, diagonal
    // ~~~~~~~~~~
    // A -1 row/col index in the COO format says just ignore this entry. Rows
-   // that should not have one of these entries - an inflow boundary row, or a
-   // direction with no component along that axis - keep the slot and hand the
-   // preallocation a -1, so the value fills never branch
+   // that should not have one of these entries - a Dirichlet boundary row, or
+   // a direction with no component along that axis - keep the slot and hand
+   // the preallocation a -1, so the value fills never branch. A reflective
+   // boundary row instead repurposes its first slot for the coupling to the
+   // mirrored angle
    oor_.assign(3 * local_rows, 0);
    ooc_.assign(3 * local_rows, 0);
-   std::vector<PetscInt> is_dirichlet_row(local_rows, 0);
+   std::vector<PetscInt> is_bc_row(local_rows, 0);
+   std::vector<PetscInt> reflect_slot(local_rows, -1);
+
+   const BCType left   = bcs.type(FACE_LEFT);
+   const BCType right  = bcs.type(FACE_RIGHT);
+   const BCType bottom = bcs.type(FACE_BOTTOM);
+   const BCType top    = bcs.type(FACE_TOP);
+   const PetscInt *reflect_mu = quad.reflect_mu_host();
+   const PetscInt *reflect_eta = quad.reflect_eta_host();
 
    for (PetscInt j = ys; j < ys + ym; j++) {
       for (PetscInt i = xs; i < xs + xm; i++) {
@@ -193,33 +246,65 @@ PetscErrorCode StructuredFD2D::create(MPI_Comm comm, PhaseSpace &ps, PetscInt n_
             const PetscInt upwind_j = (eta[a] > 0) ? j - 1 : ((eta[a] < 0) ? j + 1 : j);
             const PetscBool has_x = (PetscBool)(mu[a] != 0.0);
             const PetscBool has_y = (PetscBool)(eta[a] != 0.0);
-            const PetscBool x_outside = (PetscBool)(has_x && (upwind_i < 0 || upwind_i >= n_cells_x));
-            const PetscBool y_outside = (PetscBool)(has_y && (upwind_j < 0 || upwind_j >= n_cells_y));
 
-            // An inflow row: this direction enters the box through a face this
-            // node is on, so the boundary condition gives the node its value
-            // outright and the equation is replaced by the identity. Corner
-            // nodes reach here through either test
-            if (x_outside || y_outside) is_dirichlet_row[r] = 1;
+            // An inflow row - this direction enters the box through a face
+            // this node is on - has its equation replaced by the boundary
+            // condition: the identity on a Dirichlet (vacuum) row, the
+            // reflection condition psi(a) - psi(partner) = 0 on a reflective
+            // one. Corner nodes classify through either axis
+            PetscInt partner = -1;
+            const RowKind kind = ClassifyRow(i, j, a, mu, eta, n_cells_x, n_cells_y, \
+               left, right, bottom, top, reflect_mu, reflect_eta, &partner);
+            if (kind != RowKind::INTERIOR) is_bc_row[r] = 1;
 
-            oor_[3 * r]     = (is_dirichlet_row[r] || !has_x) ? -1 : row;
-            ooc_[3 * r]     = (is_dirichlet_row[r] || !has_x) ? -1 : \
-               GlobalDof(ltog, upwind_i, j, a, gxs, gys, gxm, n_angles);
+            if (kind == RowKind::REFLECT)
+            {
+               // The partner is outgoing through every face this direction
+               // came in through, so its row is a real unknown - unless a
+               // direction of the grid is a single cell wide and the opposite
+               // face catches it, which there is no sensible matrix for
+               PetscInt partner2 = -1;
+               PetscCheck(ClassifyRow(i, j, partner, mu, eta, n_cells_x, n_cells_y, \
+                  left, right, bottom, top, reflect_mu, reflect_eta, &partner2) == RowKind::INTERIOR, \
+                  comm, PETSC_ERR_SUP, "the reflection partner of node (%" PetscInt_FMT ", %" \
+                  PetscInt_FMT ") angle %" PetscInt_FMT " is itself a boundary row - a reflective " \
+                  "face on a single-cell-wide direction is not supported", i, j, a);
 
-            oor_[3 * r + 1] = (is_dirichlet_row[r] || !has_y) ? -1 : row;
-            ooc_[3 * r + 1] = (is_dirichlet_row[r] || !has_y) ? -1 : \
-               GlobalDof(ltog, i, upwind_j, a, gxs, gys, gxm, n_angles);
+               // Same cell, mirrored angle - an owned node, so always in the
+               // ltog map and always rank-local
+               oor_[3 * r] = row;
+               ooc_[3 * r] = GlobalDof(ltog, i, j, partner, gxs, gys, gxm, n_angles);
+               reflect_slot[r] = 3 * r;
+
+               oor_[3 * r + 1] = -1;
+               ooc_[3 * r + 1] = -1;
+            }
+            else
+            {
+               const PetscBool null_x = (PetscBool)(kind == RowKind::DIRICHLET || !has_x);
+               const PetscBool null_y = (PetscBool)(kind == RowKind::DIRICHLET || !has_y);
+
+               oor_[3 * r]     = null_x ? -1 : row;
+               ooc_[3 * r]     = null_x ? -1 : \
+                  GlobalDof(ltog, upwind_i, j, a, gxs, gys, gxm, n_angles);
+
+               oor_[3 * r + 1] = null_y ? -1 : row;
+               ooc_[3 * r + 1] = null_y ? -1 : \
+                  GlobalDof(ltog, i, upwind_j, a, gxs, gys, gxm, n_angles);
+            }
 
             oor_[3 * r + 2] = row;
             ooc_[3 * r + 2] = row;
 
             // A ghost node the star stencil does not communicate carries a -1
-            // in the map. We only ever ask for face neighbours, so this cannot
-            // fire - but a stray -1 column would silently drop a coefficient
-            // rather than fail, so say it out loud
-            PetscCheck(ooc_[3 * r] >= 0 || is_dirichlet_row[r] || !has_x, comm, PETSC_ERR_PLIB, \
+            // in the map. We only ever ask for face neighbours or an owned
+            // node, so this cannot fire - but a stray -1 column would silently
+            // drop a coefficient rather than fail, so say it out loud. A slot
+            // that was deliberately nulled has its ROW index at -1 too, which
+            // is what separates it from a lookup that failed
+            PetscCheck(ooc_[3 * r] >= 0 || oor_[3 * r] == -1, comm, PETSC_ERR_PLIB, \
                "no global index for the x-upwind neighbour of node (%" PetscInt_FMT ", %" PetscInt_FMT ")", i, j);
-            PetscCheck(ooc_[3 * r + 1] >= 0 || is_dirichlet_row[r] || !has_y, comm, PETSC_ERR_PLIB, \
+            PetscCheck(ooc_[3 * r + 1] >= 0 || oor_[3 * r + 1] == -1, comm, PETSC_ERR_PLIB, \
                "no global index for the y-upwind neighbour of node (%" PetscInt_FMT ", %" PetscInt_FMT ")", i, j);
          }
       }
@@ -229,7 +314,7 @@ PetscErrorCode StructuredFD2D::create(MPI_Comm comm, PhaseSpace &ps, PetscInt n_
 
    // Slot maps - row r owns COO slots 3r (upwind-x), 3r + 1 (upwind-y) and
    // 3r + 2 (diagonal)
-   PetscCall(set_uniform_pattern(3, is_dirichlet_row));
+   PetscCall(set_uniform_pattern(3, is_bc_row, reflect_slot));
 
    PetscFunctionReturn(PETSC_SUCCESS);
 }

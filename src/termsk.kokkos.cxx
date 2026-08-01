@@ -38,15 +38,15 @@ PetscErrorCode StreamingTerm::assemble_add(PetscScalarKokkosView &coo_v_d) const
    const PetscScalarKokkosView mu_d = mu_d_;
    const PetscIntKokkosView row_slot_offset_d = pattern_.row_slot_offset_d;
    const PetscIntKokkosView diag_slot_d = pattern_.diag_slot_d;
-   const PetscIntKokkosView is_dirichlet_row_d = boundary_.is_dirichlet_row_d;
+   const PetscIntKokkosView is_bc_row_d = boundary_.is_bc_row_d;
 
    PetscFunctionBeginUser;
 
    Kokkos::parallel_for(
       Kokkos::RangePolicy<>(0, local_rows_), KOKKOS_LAMBDA(PetscInt r) {
 
-         // Dirichlet rows keep only the identity the assembly puts on them
-         if (is_dirichlet_row_d(r)) return;
+         // BC rows carry only what the assembly puts on them
+         if (is_bc_row_d(r)) return;
 
          const PetscInt a = r % n_angles;
          const PetscInt diag = diag_slot_d(r);
@@ -100,15 +100,15 @@ PetscErrorCode StreamingTerm2D::assemble_add(PetscScalarKokkosView &coo_v_d) con
    const PetscScalarKokkosView eta_d = eta_d_;
    const PetscIntKokkosView row_slot_offset_d = pattern_.row_slot_offset_d;
    const PetscIntKokkosView diag_slot_d = pattern_.diag_slot_d;
-   const PetscIntKokkosView is_dirichlet_row_d = boundary_.is_dirichlet_row_d;
+   const PetscIntKokkosView is_bc_row_d = boundary_.is_bc_row_d;
 
    PetscFunctionBeginUser;
 
    Kokkos::parallel_for(
       Kokkos::RangePolicy<>(0, local_rows_), KOKKOS_LAMBDA(PetscInt r) {
 
-         // Dirichlet rows keep only the identity the assembly puts on them
-         if (is_dirichlet_row_d(r)) return;
+         // BC rows carry only what the assembly puts on them
+         if (is_bc_row_d(r)) return;
 
          const PetscInt a = r % n_angles;
          // Slot order is the discretisation's: upwind-x, upwind-y, diagonal.
@@ -158,7 +158,7 @@ PetscErrorCode RemovalTerm::assemble_add(PetscScalarKokkosView &coo_v_d) const
    const PetscInt n_angles = n_angles_;
    const PetscScalarKokkosView sigma_t_d = sigma_t_d_;
    const PetscIntKokkosView diag_slot_d = pattern_.diag_slot_d;
-   const PetscIntKokkosView is_dirichlet_row_d = boundary_.is_dirichlet_row_d;
+   const PetscIntKokkosView is_bc_row_d = boundary_.is_bc_row_d;
 
    PetscFunctionBeginUser;
 
@@ -166,7 +166,7 @@ PetscErrorCode RemovalTerm::assemble_add(PetscScalarKokkosView &coo_v_d) const
       Kokkos::RangePolicy<>(0, local_rows_), KOKKOS_LAMBDA(PetscInt r) {
 
          // Add nothing to the bcs
-         if (is_dirichlet_row_d(r)) return;
+         if (is_bc_row_d(r)) return;
 
          // The xsections are per cell, the rows are per cell and angle
          coo_v_d(diag_slot_d(r)) += sigma_t_d(r / n_angles);
@@ -212,7 +212,7 @@ PetscErrorCode ScatteringTerm::apply_add(Vec x, Vec y) const
    const PetscScalar sum_weights = sum_weights_;
    const PetscScalarKokkosView sigma_s_d = sigma_s_d_;
    const PetscScalar2DKokkosView scalar_flux_d = scalar_flux_d_;
-   const PetscIntKokkosView is_dirichlet_row_d = boundary_.is_dirichlet_row_d;
+   const PetscIntKokkosView is_bc_row_d = boundary_.is_bc_row_d;
 
    PetscFunctionBeginUser;
 
@@ -249,13 +249,14 @@ PetscErrorCode ScatteringTerm::apply_add(Vec x, Vec y) const
          Kokkos::parallel_for(
             Kokkos::TeamThreadRange(t, n_angles), [&](const PetscInt j) {
 
-               // Add nothing to the bcs - the assembled part put the identity
-               // on those rows and this would take it back off. Note the
-               // scalar flux itself is still integrated over EVERY angle,
-               // Dirichlet ones included: the prescribed incoming flux is a
-               // real part of the flux in that cell, so the interior angles
-               // scatter off it
-               if (is_dirichlet_row_d(i * n_angles + j)) return;
+               // Add nothing to the bcs - the assembled part wrote those rows
+               // and this would take that back off. Note the scalar flux
+               // itself is still integrated over EVERY angle, BC ones
+               // included, and for a reflective row that is REQUIRED, not
+               // just permitted: the prescribed incoming flux, or the
+               // reflected outgoing flux, is a real part of the flux in that
+               // cell, so the interior angles scatter off it
+               if (is_bc_row_d(i * n_angles + j)) return;
 
                // Minus the scattering term as it's on the lhs
                y_d(i * n_angles + j) -= scalar_flux_d(i, 0);

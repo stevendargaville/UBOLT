@@ -86,6 +86,8 @@ run_check:
 	./verify_2dk
 	@echo "Check 2D box streaming/removal + matrix-free scatter with AIRG"
 	./box_2dk -n_cells_x 50 -n_cells_y 50 -max_exponent 2 -ksp_max_it 6
+	@echo "Check 2D box, reflective left + bottom faces"
+	./box_2dk -n_cells_x 50 -n_cells_y 50 -bc_left reflect -bc_bottom reflect -max_exponent 2 -sigma_scatter 1.0 -ksp_max_it 6
 
 # ~~~~~~~~~~~
 # ~~~~~~~~~~~
@@ -109,6 +111,16 @@ run_tests_short_serial:
 	@echo "Test 1D slab, one MatSetValuesCOO per term instead of a single summed one"
 	./slab_1dk -max_exponent 2 -ksp_max_it 6 -ubolt_coo_two_call
 #
+# Reflective boundaries. The infinite-medium runs also check the solution
+# against the exact 1 / (sigma_t - sigma_s); all-reflect needs absorption, so
+# they carry -sigma_scatter - see ../docs/dev/testing.md
+	@echo "Test 1D slab, reflective left face"
+	./slab_1dk -bc_left reflect -max_exponent 2 -ksp_max_it 8
+	@echo "Test 1D slab, all faces reflective against the infinite-medium solution"
+	./slab_1dk -bc_left reflect -bc_right reflect -max_exponent 2 -sigma_scatter 1.0 -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 10
+	@echo "Test 1D slab, reflective face with one MatSetValuesCOO per term"
+	./slab_1dk -bc_left reflect -max_exponent 2 -ksp_max_it 8 -ubolt_coo_two_call
+#
 # Multigroup. -ksp_max_it is a single pin for the whole sweep, so it is the MAX
 # over the groups - see ../docs/dev/testing.md
 	@echo "Test 1D slab multigroup, one group reproduces the single-group problem"
@@ -127,6 +139,8 @@ run_tests_short_serial:
 	./slab_1d_mgk -n_groups 2 -sigma_transfer 1.0 -n_cells 500 -n_angles 2 -length 2.0 -max_exponent 2 -ksp_max_it 9
 	@echo "Test 1D slab multigroup, per-group refill with one MatSetValuesCOO per term"
 	./slab_1d_mgk -n_groups 4 -sigma_transfer 0.5 -max_exponent 2 -ksp_max_it 6 -ubolt_coo_two_call
+	@echo "Test 1D slab multigroup, reflective left face (right stays vacuum - the last group has ratio 1)"
+	./slab_1d_mgk -n_groups 4 -sigma_transfer 0.5 -max_exponent 2 -bc_left reflect -ksp_max_it 8
 #
 # 2D. verify_2dk is the discretisation check (closed form + reference matrix);
 # the box_2dk recipes pin iteration counts the same way the 1D ones do.
@@ -151,6 +165,12 @@ run_tests_short_serial:
 	./box_2dk -n_cells_x 30 -n_cells_y 30 -n_angles 12 -max_exponent 2 -ksp_max_it 6
 	@echo "Test 2D box, one MatSetValuesCOO per term instead of a single summed one"
 	./box_2dk -n_cells_x 50 -n_cells_y 50 -max_exponent 2 -ksp_max_it 6 -ubolt_coo_two_call
+	@echo "Test 2D box, reflective left + bottom faces"
+	./box_2dk -n_cells_x 50 -n_cells_y 50 -bc_left reflect -bc_bottom reflect -max_exponent 2 -sigma_scatter 1.0 -ksp_max_it 6
+	@echo "Test 2D box, S4 with reflective left + bottom faces"
+	./box_2dk -n_cells_x 50 -n_cells_y 50 -n_angles 12 -bc_left reflect -bc_bottom reflect -max_exponent 2 -sigma_scatter 1.0 -ksp_max_it 6
+	@echo "Test 2D box, all faces reflective against the infinite-medium solution"
+	./box_2dk -n_cells_x 50 -n_cells_y 50 -bc_left reflect -bc_right reflect -bc_bottom reflect -bc_top reflect -max_exponent 2 -sigma_scatter 1.0 -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 10
 
 # ~~~~~~~~~~~
 # ~~~~~~~~~~~
@@ -167,6 +187,8 @@ run_tests_short_parallel:
 	$(MPIEXEC) -n 2 ./slab_1dk -n_cells 500 -n_angles 2 -length 2.0 -max_exponent 2 -ksp_max_it 9
 	@echo "Test 1D slab, one MatSetValuesCOO per term in parallel"
 	$(MPIEXEC) -n 2 ./slab_1dk -max_exponent 2 -ksp_max_it 6 -ubolt_coo_two_call
+	@echo "Test 1D slab, all faces reflective against the infinite-medium solution in parallel"
+	$(MPIEXEC) -n 2 ./slab_1dk -bc_left reflect -bc_right reflect -max_exponent 2 -sigma_scatter 1.0 -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 11
 	@echo "Test 1D slab multigroup, 4 groups with downscatter in parallel"
 	$(MPIEXEC) -n 2 ./slab_1d_mgk -n_groups 4 -sigma_transfer 0.5 -max_exponent 2 -ksp_max_it 6
 	@echo "Test 1D slab multigroup, streaming-only pmat in parallel"
@@ -197,6 +219,10 @@ run_tests_short_parallel:
 	$(MPIEXEC) -n 2 ./box_2dk -n_cells_x 30 -n_cells_y 30 -n_angles 12 -max_exponent 2 -ksp_max_it 6
 	@echo "Test 2D box, one MatSetValuesCOO per term in parallel"
 	$(MPIEXEC) -n 2 ./box_2dk -n_cells_x 50 -n_cells_y 50 -max_exponent 2 -ksp_max_it 6 -ubolt_coo_two_call
+	@echo "Test 2D box, reflective left + bottom faces in parallel"
+	$(MPIEXEC) -n 2 ./box_2dk -n_cells_x 50 -n_cells_y 50 -bc_left reflect -bc_bottom reflect -max_exponent 2 -sigma_scatter 1.0 -ksp_max_it 6
+	@echo "Test 2D box, all faces reflective against the infinite-medium solution in parallel"
+	$(MPIEXEC) -n 2 ./box_2dk -n_cells_x 50 -n_cells_y 50 -bc_left reflect -bc_right reflect -bc_bottom reflect -bc_top reflect -max_exponent 2 -sigma_scatter 1.0 -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 10
 
 # ~~~~~~~~~~~
 # ~~~~~~~~~~~

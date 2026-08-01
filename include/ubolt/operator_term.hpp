@@ -11,9 +11,10 @@
 // both. New physics = a new subclass; nothing else has to change
 //
 // Contract: a term must contribute NOTHING to rows flagged in the BoundaryInfo
-// Dirichlet mask - not from assemble_add, and not from apply_add either. The
-// assembly step puts the identity on those rows, and a matrix-free term adding
-// to them afterwards would take it straight back off, leaving the operator's
+// BC row mask - not from assemble_add, and not from apply_add either. The
+// assembly step writes those rows itself - the identity, plus the -1.0
+// reflection coupling on reflective rows - and a matrix-free term adding to
+// them afterwards would take that straight back off, leaving the operator's
 // boundary rows something other than the boundary condition
 //
 // This used to be stated for assemble_add alone, and ScatteringTerm::apply_add

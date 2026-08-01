@@ -125,7 +125,7 @@ PetscErrorCode GroupTransfer::create(const PhaseSpace &ps, const AngularQuadratu
    sum_weights_ = quad.sum_weights();
    xs_ = &xs;
    w_d_ = quad.w_d();
-   is_dirichlet_row_d_ = boundary.is_dirichlet_row_d;
+   is_bc_row_d_ = boundary.is_bc_row_d;
    scalar_flux_d_ = PetscScalar2DKokkosView("scalar_flux_d", local_cells_, 1);
 
    phi_.resize(ps.n_groups);
@@ -145,7 +145,7 @@ PetscErrorCode GroupTransfer::destroy()
 
    // The device views have to go before PetscFinalize takes Kokkos down
    w_d_ = PetscScalar2DKokkosView();
-   is_dirichlet_row_d_ = PetscIntKokkosView();
+   is_bc_row_d_ = PetscIntKokkosView();
    scalar_flux_d_ = PetscScalar2DKokkosView();
    phi_.clear();
    phi_set_.clear();
@@ -179,7 +179,7 @@ PetscErrorCode GroupTransfer::add_source(PetscInt g_from, PetscInt g_to, Vec b) 
    const PetscInt local_cells = local_cells_;
    const PetscScalar sum_weights = sum_weights_;
    const PetscScalar2DKokkosView scalar_flux_d = scalar_flux_d_;
-   const PetscIntKokkosView is_dirichlet_row_d = is_dirichlet_row_d_;
+   const PetscIntKokkosView is_bc_row_d = is_bc_row_d_;
    const PetscScalarKokkosView sigma_s_d = xs_->sigma_s(g_from, g_to);
 
    PetscFunctionBeginUser;
@@ -217,8 +217,8 @@ PetscErrorCode GroupTransfer::add_source(PetscInt g_from, PetscInt g_to, Vec b) 
             Kokkos::TeamThreadRange(t, n_angles), [&](const PetscInt j) {
 
                const PetscInt r = i * n_angles + j;
-               // The rhs on a Dirichlet row is the incoming flux
-               if (is_dirichlet_row_d(r)) return;
+               // The rhs on a BC row belongs to the boundary condition
+               if (is_bc_row_d(r)) return;
                b_d(r) += scalar_flux_d(i, 0);
          });
    });

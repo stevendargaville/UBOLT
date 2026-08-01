@@ -2,23 +2,27 @@
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-// Put the identity on the Dirichlet rows. Terms contribute nothing there, so
-// this is the whole of those rows
+// Write the boundary rows. Terms contribute nothing there, so this is the
+// whole of those rows: the identity on a Dirichlet row, and on a reflective
+// row additionally the -1.0 coupling to the mirrored angle, in the slot whose
+// column the discretisation pointed at the partner at preallocation time
 // A free function rather than a local lambda: an extended device lambda can't
 // be defined inside another lambda
-static void SetDirichletIdentity(PetscScalarKokkosView coo_v_d, \
+static void SetBoundaryRows(PetscScalarKokkosView coo_v_d, \
    PetscIntKokkosView row_slot_offset_d, \
    PetscIntKokkosView diag_slot_d, \
-   PetscIntKokkosView is_dirichlet_row_d, \
+   PetscIntKokkosView is_bc_row_d, \
+   PetscIntKokkosView reflect_slot_d, \
    PetscInt local_rows)
 {
    Kokkos::parallel_for(
       Kokkos::RangePolicy<>(0, local_rows), KOKKOS_LAMBDA(PetscInt r) {
 
-         if (!is_dirichlet_row_d(r)) return;
+         if (!is_bc_row_d(r)) return;
 
          for (PetscInt s = row_slot_offset_d(r); s < row_slot_offset_d(r + 1); s++) coo_v_d(s) = 0.0;
          coo_v_d(diag_slot_d(r)) = 1.0;
+         if (reflect_slot_d(r) >= 0) coo_v_d(reflect_slot_d(r)) = -1.0;
       });
 }
 
@@ -147,7 +151,8 @@ PetscErrorCode TransportOperator::assemble_into(Mat mat, PetscInt n_terms, const
    PetscScalarKokkosView coo_v_d = coo_v_d_;
    const PetscIntKokkosView row_slot_offset_d = disc_->coo_pattern().row_slot_offset_d;
    const PetscIntKokkosView diag_slot_d = disc_->coo_pattern().diag_slot_d;
-   const PetscIntKokkosView is_dirichlet_row_d = disc_->boundary_info().is_dirichlet_row_d;
+   const PetscIntKokkosView is_bc_row_d = disc_->boundary_info().is_bc_row_d;
+   const PetscIntKokkosView reflect_slot_d = disc_->boundary_info().reflect_slot_d;
    const PetscInt local_rows = ps_.local_rows();
 
    PetscBool two_call = PETSC_FALSE;
@@ -163,7 +168,7 @@ PetscErrorCode TransportOperator::assemble_into(Mat mat, PetscInt n_terms, const
 
       Kokkos::deep_copy(coo_v_d, 0.0);
       for (PetscInt t = 0; t < n_terms; t++) PetscCall(terms[t]->assemble_add(coo_v_d));
-      SetDirichletIdentity(coo_v_d, row_slot_offset_d, diag_slot_d, is_dirichlet_row_d, local_rows);
+      SetBoundaryRows(coo_v_d, row_slot_offset_d, diag_slot_d, is_bc_row_d, reflect_slot_d, local_rows);
       // This should all happen on the gpu
       PetscCall(MatSetValuesCOO(mat, coo_v_d.data(), INSERT_VALUES));
 
@@ -173,9 +178,9 @@ PetscErrorCode TransportOperator::assemble_into(Mat mat, PetscInt n_terms, const
 
          Kokkos::deep_copy(coo_v_d, 0.0);
          PetscCall(terms[t]->assemble_add(coo_v_d));
-         // The identity rides along with the first call and the later ADDs
-         // leave it alone, since terms contribute nothing to those rows
-         if (t == 0) SetDirichletIdentity(coo_v_d, row_slot_offset_d, diag_slot_d, is_dirichlet_row_d, local_rows);
+         // The boundary rows ride along with the first call and the later ADDs
+         // leave them alone, since terms contribute nothing to those rows
+         if (t == 0) SetBoundaryRows(coo_v_d, row_slot_offset_d, diag_slot_d, is_bc_row_d, reflect_slot_d, local_rows);
          PetscCall(MatSetValuesCOO(mat, coo_v_d.data(), t == 0 ? INSERT_VALUES : ADD_VALUES));
       }
    }

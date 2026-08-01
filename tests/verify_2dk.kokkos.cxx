@@ -27,19 +27,51 @@
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-// Is this direction entering the box through a face this node sits on
+// What this direction's row at this node should be, and for a reflective row
+// which angle it couples to
 //
-// Written out again here rather than read back from the discretisation's
-// Dirichlet mask on purpose: a check that asked the code under test which rows
-// it thought were boundary rows would agree with it by construction
-static PetscBool IsInflowNode(PetscScalar mu, PetscScalar eta, PetscInt i, PetscInt j, \
+// Written out again here rather than read back from the discretisation's BC
+// mask, reflect slots or reflection maps on purpose: a check that asked the
+// code under test which rows it thought were boundary rows - or which angle
+// mirrors which - would agree with it by construction. The partner is found by
+// this file's own search over the cosines
+enum class RefKind { INTERIOR, DIRICHLET, REFLECT };
+
+static RefKind ClassifyNode(const SNQuadrature2D &quad, PetscInt a, PetscInt i, PetscInt j, \
+   PetscInt n_cells_x, PetscInt n_cells_y, BCType left, BCType right, BCType bottom, BCType top, \
+   PetscInt *partner)
+{
+   const PetscScalar *mu = quad.mu_host();
+   const PetscScalar *eta = quad.eta_host();
+
+   const bool in_x = (mu[a] > 0.0 && i == 0) || (mu[a] < 0.0 && i == n_cells_x - 1);
+   const bool in_y = (eta[a] > 0.0 && j == 0) || (eta[a] < 0.0 && j == n_cells_y - 1);
+
+   *partner = -1;
+   if (!in_x && !in_y) return RefKind::INTERIOR;
+
+   // Vacuum wins at mixed corners; only a direction whose every incoming face
+   // is reflective reflects, flipping the cosine on each incoming axis
+   const BCType x_bc = (mu[a] > 0.0) ? left : right;
+   const BCType y_bc = (eta[a] > 0.0) ? bottom : top;
+   if ((in_x && x_bc == BCType::VACUUM) || (in_y && y_bc == BCType::VACUUM)) return RefKind::DIRICHLET;
+
+   const PetscScalar mu_want = in_x ? -mu[a] : mu[a];
+   const PetscScalar eta_want = in_y ? -eta[a] : eta[a];
+   for (PetscInt b = 0; b < quad.n_angles(); b++) {
+      if (mu[b] == mu_want && eta[b] == eta_want) { *partner = b; break; }
+   }
+   return RefKind::REFLECT;
+}
+
+// Is this direction entering the box through a face this node sits on - the
+// all-vacuum special case the closed-form check uses
+static PetscBool IsInflowNode(const SNQuadrature2D &quad, PetscInt a, PetscInt i, PetscInt j, \
    PetscInt n_cells_x, PetscInt n_cells_y)
 {
-   if (mu > 0.0 && i == 0) return PETSC_TRUE;
-   if (mu < 0.0 && i == n_cells_x - 1) return PETSC_TRUE;
-   if (eta > 0.0 && j == 0) return PETSC_TRUE;
-   if (eta < 0.0 && j == n_cells_y - 1) return PETSC_TRUE;
-   return PETSC_FALSE;
+   PetscInt partner = -1;
+   return (PetscBool)(ClassifyNode(quad, a, i, j, n_cells_x, n_cells_y, BCType::VACUUM, \
+      BCType::VACUUM, BCType::VACUUM, BCType::VACUUM, &partner) == RefKind::DIRICHLET);
 }
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -105,7 +137,7 @@ static PetscErrorCode CheckStreamingClosedForm(PetscInt n_cells_x, PetscInt n_ce
             psi_a[r] = x + y;
             // Inflow rows carry the boundary value, the rest the source that
             // the linear solution streams: mu d(x+y)/dx + eta d(x+y)/dy
-            b_a[r] = IsInflowNode(mu[a], eta[a], i, j, n_cells_x, n_cells_y) ? (x + y) : (mu[a] + eta[a]);
+            b_a[r] = IsInflowNode(quad, a, i, j, n_cells_x, n_cells_y) ? (x + y) : (mu[a] + eta[a]);
          }
       }
 
@@ -170,9 +202,13 @@ static PetscErrorCode CheckStreamingClosedForm(PetscInt n_cells_x, PetscInt n_ce
 // A Dirichlet row is the identity and NOTHING else - the scatter is a term like
 // any other and owes the mask the same contract. That is worth checking rather
 // than assuming: this check is what caught the matrix-free scatter writing to
-// those rows in the first place (fixed Aug 2026, see TODO.md)
+// those rows in the first place (fixed Aug 2026, see TODO.md). A reflective
+// row is the identity plus the -1 on its mirrored angle and nothing else, so
+// the same check pins the reflect slots, the partner angles and the vacuum-wins
+// corner rule per entry
 static PetscErrorCode CheckOperatorAgainstReference(PetscInt n_cells_x, PetscInt n_cells_y, PetscInt n_angles, \
-   PetscReal length_x, PetscReal length_y, PetscScalar sigma_t, PetscScalar sigma_s, PetscBool *ok)
+   PetscReal length_x, PetscReal length_y, PetscScalar sigma_t, PetscScalar sigma_s, \
+   BCType left, BCType right, BCType bottom, BCType top, const char *bc_desc, PetscBool *ok)
 {
    PhaseSpace ps;
    SNQuadrature2D quad;
@@ -192,9 +228,15 @@ static PetscErrorCode CheckOperatorAgainstReference(PetscInt n_cells_x, PetscInt
    PetscCheck(size == 1, PETSC_COMM_WORLD, PETSC_ERR_SUP, \
       "the reference matrix is written in the natural ordering, which a 2D DMDA only uses on one rank");
 
+   BCSpec bcs;
+   bcs.set(StructuredFD2D::FACE_LEFT, left);
+   bcs.set(StructuredFD2D::FACE_RIGHT, right);
+   bcs.set(StructuredFD2D::FACE_BOTTOM, bottom);
+   bcs.set(StructuredFD2D::FACE_TOP, top);
+
    PetscCall(ps.create(PETSC_COMM_WORLD, n_cells_x * n_cells_y, n_angles));
    PetscCall(quad.create(n_angles));
-   PetscCall(disc.create(PETSC_COMM_WORLD, ps, n_cells_x, n_cells_y, length_x, length_y, quad));
+   PetscCall(disc.create(PETSC_COMM_WORLD, ps, n_cells_x, n_cells_y, length_x, length_y, quad, bcs));
 
    PetscScalarKokkosView sigma_t_d("sigma_t_d", ps.local_cells);
    PetscScalarKokkosView sigma_s_d("sigma_s_d", ps.local_cells);
@@ -235,11 +277,24 @@ static PetscErrorCode CheckOperatorAgainstReference(PetscInt n_cells_x, PetscInt
                const PetscInt row = (j * n_cells_x + i) * n_angles + a;
                ref.assign(N, 0.0);
 
-               if (IsInflowNode(mu[a], eta[a], i, j, n_cells_x, n_cells_y)) {
+               PetscInt partner = -1;
+               const RefKind kind = ClassifyNode(quad, a, i, j, n_cells_x, n_cells_y, \
+                  left, right, bottom, top, &partner);
+
+               if (kind == RefKind::DIRICHLET) {
 
                   // An inflow row is the identity, and nothing gets to add to
                   // it - not the assembled terms and not the scatter
                   ref[row] = 1.0;
+
+               } else if (kind == RefKind::REFLECT) {
+
+                  // A reflective row is the reflection condition and nothing
+                  // else: psi(a) - psi(mirrored a) = 0 in the same cell
+                  PetscCheck(partner >= 0, PETSC_COMM_WORLD, PETSC_ERR_PLIB, \
+                     "no mirrored ordinate found for angle %" PetscInt_FMT, a);
+                  ref[row] = 1.0;
+                  ref[(j * n_cells_x + i) * n_angles + partner] = -1.0;
 
                } else {
 
@@ -276,8 +331,8 @@ static PetscErrorCode CheckOperatorAgainstReference(PetscInt n_cells_x, PetscInt
    if (max_diff > tol) *ok = PETSC_FALSE;
    PetscCall(PetscPrintf(PETSC_COMM_WORLD, \
       "  shell operator vs reference matrix on %" PetscInt_FMT " x %" PetscInt_FMT " x %" PetscInt_FMT \
-      " angles: max entry difference %.3e (tol %.0e)\n", n_cells_x, n_cells_y, n_angles, \
-      (double)max_diff, (double)tol));
+      " angles, %s bcs: max entry difference %.3e (tol %.0e)\n", n_cells_x, n_cells_y, n_angles, \
+      bc_desc, (double)max_diff, (double)tol));
 
    PetscCall(MatDestroy(&explicit_mat));
    PetscCall(op.destroy());
@@ -312,8 +367,16 @@ int main(int argc, char **args) {
       PetscCall(CheckStreamingClosedForm(16, 12, 12, 1.0, 2.0, &ok));
 
       if (!skip_reference) {
-         PetscCall(CheckOperatorAgainstReference(4, 3, 4, 1.0, 2.0, 1.5, 0.7, &ok));
-         PetscCall(CheckOperatorAgainstReference(4, 3, 12, 1.0, 2.0, 1.5, 0.7, &ok));
+         const BCType V = BCType::VACUUM, R = BCType::REFLECT;
+         // All vacuum (the original check), all reflect, and a mixed config
+         // with reflect on left + bottom so both flip maps and the vacuum-wins
+         // corners are all in the checked matrix
+         PetscCall(CheckOperatorAgainstReference(4, 3, 4, 1.0, 2.0, 1.5, 0.7, V, V, V, V, "vacuum", &ok));
+         PetscCall(CheckOperatorAgainstReference(4, 3, 12, 1.0, 2.0, 1.5, 0.7, V, V, V, V, "vacuum", &ok));
+         PetscCall(CheckOperatorAgainstReference(4, 3, 4, 1.0, 2.0, 1.5, 0.7, R, R, R, R, "reflect", &ok));
+         PetscCall(CheckOperatorAgainstReference(4, 3, 12, 1.0, 2.0, 1.5, 0.7, R, R, R, R, "reflect", &ok));
+         PetscCall(CheckOperatorAgainstReference(4, 3, 4, 1.0, 2.0, 1.5, 0.7, R, V, R, V, "mixed", &ok));
+         PetscCall(CheckOperatorAgainstReference(4, 3, 12, 1.0, 2.0, 1.5, 0.7, R, V, R, V, "mixed", &ok));
       }
    }
 

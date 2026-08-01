@@ -38,6 +38,27 @@ int main(int argc, char **args) {
    // Total and scattering xsections, constant across the slab
    PetscInt max_exponent = 1;
    PetscCall(PetscOptionsGetInt(NULL, NULL, "-max_exponent", &max_exponent, NULL));
+   // Scattering xsection, defaulting to the total one as before this option
+   // existed - that is a scattering ratio of exactly 1, i.e. no absorption at
+   // all. Set it lower to get some; an all-reflective slab NEEDS some, or the
+   // operator has the constants in its kernel
+   PetscReal sigma_scatter = (PetscReal)max_exponent;
+   PetscCall(PetscOptionsGetReal(NULL, NULL, "-sigma_scatter", &sigma_scatter, NULL));
+   // The boundary condition on each face: vacuum (prescribed inflow, from the
+   // rhs) or reflect
+   const char *const bc_names[] = {"vacuum", "reflect"};
+   PetscInt bc_left = 0, bc_right = 0;
+   PetscCall(PetscOptionsGetEList(NULL, NULL, "-bc_left", bc_names, 2, &bc_left, NULL));
+   PetscCall(PetscOptionsGetEList(NULL, NULL, "-bc_right", bc_names, 2, &bc_right, NULL));
+   // Check the solve against the infinite-medium solution: with every face
+   // reflective, a uniform unit source and uniform xsections the exact
+   // discrete solution is psi = 1 / (sigma_t - sigma_s) everywhere
+   PetscBool check_inf_medium = PETSC_FALSE;
+   PetscCall(PetscOptionsGetBool(NULL, NULL, "-check_inf_medium", &check_inf_medium, NULL));
+   PetscCheck(!check_inf_medium || (bc_left == 1 && bc_right == 1), PETSC_COMM_WORLD, \
+      PETSC_ERR_ARG_INCOMP, "-check_inf_medium needs -bc_left reflect -bc_right reflect");
+   PetscCheck(!check_inf_medium || sigma_scatter < (PetscReal)max_exponent, PETSC_COMM_WORLD, \
+      PETSC_ERR_ARG_INCOMP, "-check_inf_medium needs absorption: -sigma_scatter below -max_exponent");
    // Write the scalar flux of the solution for inspection, e.g.
    // -flux_vtk flux.vts - the extension picks the format, .vts or .vtr
    char flux_vtk[PETSC_MAX_PATH_LEN];
@@ -45,15 +66,20 @@ int main(int argc, char **args) {
    PetscCall(PetscOptionsGetString(NULL, NULL, "-flux_vtk", flux_vtk, sizeof(flux_vtk), &write_flux));
 
    KSPConvergedReason reason;
+   PetscReal inf_medium_err = 0.0;
 
    // Device memory has to be gone before PetscFinalize takes Kokkos down
    {
+      BCSpec bcs;
+      if (bc_left == 1) bcs.set(StructuredFD1D::FACE_LEFT, BCType::REFLECT);
+      if (bc_right == 1) bcs.set(StructuredFD1D::FACE_RIGHT, BCType::REFLECT);
+
       PhaseSpace ps;
       PetscCall(ps.create(PETSC_COMM_WORLD, n_cells, n_angles));
       SNQuadrature quad;
       PetscCall(quad.create(n_angles));
       StructuredFD1D disc;
-      PetscCall(disc.create(PETSC_COMM_WORLD, ps, length, quad));
+      PetscCall(disc.create(PETSC_COMM_WORLD, ps, length, quad, bcs));
 
       // ~~~~~~~~~~~~~
       // Cross sections, one per local cell
@@ -61,7 +87,7 @@ int main(int argc, char **args) {
       PetscScalarKokkosView sigma_t_d("sigma_t_d", ps.local_cells);
       PetscScalarKokkosView sigma_s_d("sigma_s_d", ps.local_cells);
       Kokkos::deep_copy(sigma_t_d, (PetscScalar)max_exponent);
-      Kokkos::deep_copy(sigma_s_d, (PetscScalar)max_exponent);
+      Kokkos::deep_copy(sigma_s_d, (PetscScalar)sigma_scatter);
 
       // ~~~~~~~~~~~~~
       // The operator: streaming + removal assembled, scattering matrix-free
@@ -87,6 +113,9 @@ int main(int argc, char **args) {
       PetscCall(MatCreateVecs(op.assembled_mat(), &x, &b));
       PetscCall(VecDuplicate(x, &diag_vec));
       PetscCall(VecSet(b, 1.0));
+      // A reflective row's rhs is zero - psi_r = psi_partner - so the source
+      // has to come off those rows again, before any diagonal scaling
+      PetscCall(UboltZeroReflectRows(disc.boundary_info(), b));
 
       // Diagonally scale the streaming/removal operator
       if (diag_scale) {
@@ -115,6 +144,17 @@ int main(int argc, char **args) {
       PetscCall(solver.solve(b, x));
       reason = solver.converged_reason();
 
+      // The infinite-medium check: uniform source, uniform xsections and no
+      // boundary to leak through leave nothing for the streaming term to do,
+      // so the exact discrete solution is the constant 1 / (sigma_t - sigma_s)
+      // in every cell and angle - to solver tolerance, not discretisation error
+      if (check_inf_medium) {
+         const PetscScalar expected = 1.0 / ((PetscScalar)max_exponent - (PetscScalar)sigma_scatter);
+         PetscCall(VecShift(x, -expected));
+         PetscCall(VecNorm(x, NORM_INFINITY, &inf_medium_err));
+         PetscCall(VecShift(x, expected));
+      }
+
       if (write_flux) PetscCall(UboltWriteScalarFluxVTK(ps, disc, quad, x, flux_vtk));
 
       PetscCall(solver.destroy());
@@ -131,6 +171,13 @@ int main(int argc, char **args) {
    // tests/baselines are captured from
    if (reason <= 0) PetscCall(PetscFPrintf(PETSC_COMM_WORLD, stderr, "KSP did not converge: %s\n", KSPConvergedReasons[reason]));
 
+   // Print what the infinite-medium check measured, so a run drifting towards
+   // failure is visible before it fails
+   const PetscBool inf_medium_ok = (PetscBool)(!check_inf_medium || inf_medium_err < 1e-9);
+   if (check_inf_medium) PetscCall(PetscFPrintf(PETSC_COMM_WORLD, stderr, \
+      "infinite-medium check: max error %g against tolerance 1e-9 - %s\n", \
+      (double)inf_medium_err, inf_medium_ok ? "pass" : "FAIL"));
+
    PetscCall(PetscFinalize());
-   return (reason > 0) ? 0 : 1;
+   return (reason > 0 && inf_medium_ok) ? 0 : 1;
 }

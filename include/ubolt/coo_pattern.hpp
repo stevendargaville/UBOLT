@@ -18,15 +18,30 @@ struct CooPattern {
    PetscCount n_slots = 0;
 };
 
-// Which rows carry a Dirichlet condition
+// Which rows carry a boundary condition, and what kind
 //
 // Contract: a term must contribute NOTHING to a flagged row - not from its
 // assembled contribution and not from its matrix-free apply. The assembly step
-// puts the identity on them afterwards, so a term never has to know what the
-// boundary condition is
+// writes the boundary rows afterwards, so a term never has to know what the
+// boundary condition is. Two kinds exist:
+// - Dirichlet (prescribed inflow, the "vacuum" family): the row is the
+//   identity, and the rhs there carries the incoming flux value
+// - reflective: psi_r - psi_partner = 0, the identity plus a -1.0 in one
+//   repurposed slot whose column the backend pointed at (same cell, mirrored
+//   angle) at preallocation time. The rhs there must be zero
 struct BoundaryInfo {
-   // 1 on Dirichlet rows, 0 elsewhere. Sized local_rows
-   PetscIntKokkosView is_dirichlet_row_d;
+   // 1 on rows the assembly owns (Dirichlet AND reflective), 0 elsewhere.
+   // Sized local_rows
+   PetscIntKokkosView is_bc_row_d;
+   // The COO values-array slot carrying the -1.0 reflection coupling, -1 if
+   // the row is not reflective - so >= 0 doubles as "is a reflect row".
+   // Sized local_rows
+   PetscIntKokkosView reflect_slot_d;
 };
+
+// Zero b on the reflective rows: their equation is psi_r - psi_partner = 0, so
+// whatever the driver filled b with (source, inflow value) must not stand
+// there. Call after filling b and before any diagonal scaling
+PETSC_EXTERN PetscErrorCode UboltZeroReflectRows(const BoundaryInfo &boundary, Vec b);
 
 #endif

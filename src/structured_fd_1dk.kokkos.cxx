@@ -65,7 +65,8 @@ static PetscErrorCode CheckDALayout(DM da, const PhaseSpace &ps, PetscInt cell_s
 
 // Build the COO sparsity and the slot maps
 // This happens on the host but we only need to do it once
-PetscErrorCode StructuredFD1D::create(MPI_Comm comm, PhaseSpace &ps, PetscReal length, const SNQuadrature &quad)
+PetscErrorCode StructuredFD1D::create(MPI_Comm comm, PhaseSpace &ps, PetscReal length, const SNQuadrature &quad, \
+   const BCSpec &bcs)
 {
    PetscFunctionBeginUser;
 
@@ -140,39 +141,74 @@ PetscErrorCode StructuredFD1D::create(MPI_Comm comm, PhaseSpace &ps, PetscReal l
    }
 
    // ~~~~~~~~~~
-   // Dirichlet conditions on the left and right boundaries
+   // Boundary conditions on the left and right boundaries
    // ~~~~~~~~~~
-   // A -1 row/col index in the COO format says just ignore this entry, so the
-   // boundary rows keep only their diagonal
-   std::vector<PetscInt> is_dirichlet_row(local_rows, 0);
+   // Incoming directions get their equation replaced by the boundary
+   // condition. On a vacuum face that is the identity: a -1 row/col index in
+   // the COO format says just ignore this entry, so the row keeps only its
+   // diagonal and the rhs supplies the incoming flux. On a reflective face the
+   // row is psi(cell, a) - psi(cell, a') = 0 with a' the mirrored angle, so
+   // the upwind slot is repurposed to point at the partner - same cell, so the
+   // column is always rank-local - and the assembly writes the -1.0 there
+   std::vector<PetscInt> is_bc_row(local_rows, 0);
+   std::vector<PetscInt> reflect_slot(local_rows, -1);
+   const PetscInt *reflect_mu = quad.reflect_mu_host();
 
    // All positive angles are incoming on the left boundary
    if (on_left_boundary)
    {
+      const BCType left_bc = bcs.type(FACE_LEFT);
       for (PetscInt a = 0; a < n_angles; a++) {
          if (mu[a] > 0)
          {
-            oor_[a * 2] = -1;
-            ooc_[a * 2] = -1;
-            is_dirichlet_row[a] = 1;
+            is_bc_row[a] = 1;
+            if (left_bc == BCType::REFLECT)
+            {
+               // The mirrored angle is outgoing here, so its row is a real
+               // unknown - unless the slab is a single cell and the other
+               // face makes it a BC row too
+               PetscCheck(ps.n_cells > 1, comm_, PETSC_ERR_SUP, \
+                  "a reflective face on a single-cell slab couples two boundary rows");
+               oor_[a * 2] = a + global_row_start;
+               ooc_[a * 2] = reflect_mu[a] + global_row_start;
+               reflect_slot[a] = a * 2;
+            }
+            else
+            {
+               oor_[a * 2] = -1;
+               ooc_[a * 2] = -1;
+            }
          }
       }
    }
    // All negative angles are incoming on the right boundary
    if (on_right_boundary)
    {
+      const BCType right_bc = bcs.type(FACE_RIGHT);
       for (PetscInt a = 0; a < n_angles; a++) {
          if (mu[a] < 0)
          {
-            oor_[(local_cells - 1) * n_angles * 2 + a * 2] = -1;
-            ooc_[(local_cells - 1) * n_angles * 2 + a * 2] = -1;
-            is_dirichlet_row[(local_cells - 1) * n_angles + a] = 1;
+            const PetscInt r = (local_cells - 1) * n_angles + a;
+            is_bc_row[r] = 1;
+            if (right_bc == BCType::REFLECT)
+            {
+               PetscCheck(ps.n_cells > 1, comm_, PETSC_ERR_SUP, \
+                  "a reflective face on a single-cell slab couples two boundary rows");
+               oor_[r * 2] = r + global_row_start;
+               ooc_[r * 2] = (local_cells - 1) * n_angles + reflect_mu[a] + global_row_start;
+               reflect_slot[r] = r * 2;
+            }
+            else
+            {
+               oor_[r * 2] = -1;
+               ooc_[r * 2] = -1;
+            }
          }
       }
    }
 
    // Slot maps - row r owns COO slots 2r (upwind neighbour) and 2r + 1 (diagonal)
-   PetscCall(set_uniform_pattern(2, is_dirichlet_row));
+   PetscCall(set_uniform_pattern(2, is_bc_row, reflect_slot));
 
    PetscFunctionReturn(PETSC_SUCCESS);
 }

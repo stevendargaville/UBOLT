@@ -5,6 +5,7 @@
 #include "ubolt/discretisation.hpp"
 #include "ubolt/phase_space.hpp"
 #include "ubolt/sn_quadrature.hpp"
+#include "ubolt/bc_spec.hpp"
 #include <petscdmda.h>
 
 // Uniform-grid upwinded finite difference discretisation of a 2D (XY) box
@@ -21,19 +22,35 @@
 // branch on direction. A row whose mu or eta is exactly zero takes a -1 in that
 // slot, the same trick the Dirichlet rows use
 //
-// Dirichlet rows are the inflow ones: a node on a boundary face that its own
+// BC rows are the inflow ones: a node on a boundary face that its own
 // direction points in through. In 2D that means any node whose x-upwind OR
-// y-upwind neighbour is outside the box, corners included
+// y-upwind neighbour is outside the box, corners included. What the row then
+// holds depends on the face's BC family: vacuum makes it a Dirichlet row (both
+// upwind slots nulled, the rhs carries the incoming flux), reflective
+// repurposes the first slot for the -1 coupling to the mirrored angle in the
+// same cell. A direction incoming through BOTH faces of a corner reflects in
+// both axes if both faces are reflective, and is Dirichlet if either is
+// vacuum - vacuum wins at mixed corners
 class PETSC_VISIBILITY_PUBLIC StructuredFD2D : public Discretisation {
 public:
-   // The quadrature decides which neighbours are upwind for each angle.
+   // The boundary label ids this backend hands to the BCSpec - the ids
+   // PETSc's DMPlexCreateBoxMesh "Face Sets" convention gives a 2D box, so
+   // the future unstructured backend agrees with these
+   static constexpr PetscInt FACE_BOTTOM = 1;
+   static constexpr PetscInt FACE_RIGHT = 2;
+   static constexpr PetscInt FACE_TOP = 3;
+   static constexpr PetscInt FACE_LEFT = 4;
+
+   // The quadrature decides which neighbours are upwind for each angle, and on
+   // a reflective face which angle mirrors which. A default bcs is vacuum
+   // (prescribed inflow) on all four faces
    //
    // ps.n_cells must be n_cells_x * n_cells_y. The layout comes from a 2D
    // DMDA, which also decides the parallel decomposition: `ps` is filled in
    // (ps.local_cells) rather than read, so this must be created before
    // anything sized off the phase space
    PetscErrorCode create(MPI_Comm comm, PhaseSpace &ps, PetscInt n_cells_x, PetscInt n_cells_y, \
-      PetscReal length_x, PetscReal length_y, const SNQuadrature2D &quad);
+      PetscReal length_x, PetscReal length_y, const SNQuadrature2D &quad, const BCSpec &bcs = BCSpec());
 
    // Uniform grid so every cell has the same width
    PetscScalar dx() const { return dx_; }

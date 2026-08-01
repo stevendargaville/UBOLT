@@ -14,8 +14,8 @@
 // A backend owns a DM, and through it the mesh, the layout and the parallel
 // decomposition; it writes local_cells back into the PhaseSpace and fixes the
 // COO sparsity once. What it hands out is a CooPattern (slot maps) plus a
-// BoundaryInfo (Dirichlet row mask), and matrices preallocated for that
-// sparsity. Terms and TransportOperator address entries through the slot maps
+// BoundaryInfo (BC row mask + reflect slots), and matrices preallocated for
+// that sparsity. Terms and TransportOperator address entries through the slot maps
 // and never see a raw index, which is exactly why all of that is
 // dimension-independent and can live here
 //
@@ -53,11 +53,14 @@ protected:
 
    // Build the slot maps for a backend whose rows all carry the same number of
    // COO entries, with the diagonal LAST (1D: upwind, diagonal; 2D: upwind-x,
-   // upwind-y, diagonal). Uploads the Dirichlet mask at the same time
+   // upwind-y, diagonal). Uploads the BC row mask and the reflect slots at the
+   // same time (reflect_slot is per row: the COO slot carrying the -1.0
+   // reflection coupling, -1 on every row that is not reflective)
    //
    // ps_ must already carry the decomposition, and oor_/ooc_ must already be
    // filled - this only turns them into the device-side maps terms read
-   PetscErrorCode set_uniform_pattern(PetscInt slots_per_row, const std::vector<PetscInt> &is_dirichlet_row);
+   PetscErrorCode set_uniform_pattern(PetscInt slots_per_row, const std::vector<PetscInt> &is_bc_row, \
+      const std::vector<PetscInt> &reflect_slot);
 
    MPI_Comm comm_ = MPI_COMM_NULL;
    // Taken once the DM has said what the decomposition is

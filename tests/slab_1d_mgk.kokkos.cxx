@@ -52,6 +52,14 @@ int main(int argc, char **args) {
    // which is what makes -n_groups 1 the single-group problem exactly
    PetscReal sigma_transfer = 0.0;
    PetscCall(PetscOptionsGetReal(NULL, NULL, "-sigma_transfer", &sigma_transfer, NULL));
+   // The boundary condition on each face: vacuum (prescribed inflow, from the
+   // rhs) or reflect. Keep at least one face vacuum: the last group's
+   // scattering ratio is exactly 1 here, and an all-reflective group with no
+   // absorption is singular
+   const char *const bc_names[] = {"vacuum", "reflect"};
+   PetscInt bc_left = 0, bc_right = 0;
+   PetscCall(PetscOptionsGetEList(NULL, NULL, "-bc_left", bc_names, 2, &bc_left, NULL));
+   PetscCall(PetscOptionsGetEList(NULL, NULL, "-bc_right", bc_names, 2, &bc_right, NULL));
    // Write the scalar flux of the solution for inspection, one file per group:
    // -flux_vtk flux.vts writes flux_g0.vts, flux_g1.vts, ... The extension
    // picks the format, .vts or .vtr
@@ -63,12 +71,16 @@ int main(int argc, char **args) {
 
    // Device memory has to be gone before PetscFinalize takes Kokkos down
    {
+      BCSpec bcs;
+      if (bc_left == 1) bcs.set(StructuredFD1D::FACE_LEFT, BCType::REFLECT);
+      if (bc_right == 1) bcs.set(StructuredFD1D::FACE_RIGHT, BCType::REFLECT);
+
       PhaseSpace ps;
       PetscCall(ps.create(PETSC_COMM_WORLD, n_cells, n_angles, n_groups));
       SNQuadrature quad;
       PetscCall(quad.create(n_angles));
       StructuredFD1D disc;
-      PetscCall(disc.create(PETSC_COMM_WORLD, ps, length, quad));
+      PetscCall(disc.create(PETSC_COMM_WORLD, ps, length, quad, bcs));
 
       // ~~~~~~~~~~~~~
       // Cross sections, per group and local cell
@@ -147,8 +159,11 @@ int main(int argc, char **args) {
          else PetscCall(solver.refresh());
 
          // Rhs: the external source, the incoming flux on the Dirichlet rows,
-         // and everything downscattered out of the groups already solved
+         // and everything downscattered out of the groups already solved. A
+         // reflective row's rhs is zero, so the source comes off those rows
+         // (add_source skips every BC row on its own)
          PetscCall(VecSet(b, 1.0));
+         PetscCall(UboltZeroReflectRows(disc.boundary_info(), b));
          for (PetscInt g_from = 0; g_from < g; g_from++) {
             PetscCall(transfer.add_source(g_from, g, b));
          }

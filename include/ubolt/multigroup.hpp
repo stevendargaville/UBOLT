@@ -75,9 +75,10 @@ public:
    // b += sigma_s(g_from -> g_to) phi(g_from) / sum_weights, on every angle.
    // set_scalar_flux(g_from, ...) must have been called first
    //
-   // Dirichlet rows are skipped: the rhs there is the incoming flux boundary
-   // value and a scattering source must not touch it, the same contract the
-   // terms have with the Dirichlet mask
+   // BC rows are skipped: the rhs there belongs to the boundary condition (the
+   // incoming flux value on a Dirichlet row, zero on a reflective one) and a
+   // scattering source must not touch it, the same contract the terms have
+   // with the BC row mask
    PetscErrorCode add_source(PetscInt g_from, PetscInt g_to, Vec b) const;
 
 private:
@@ -86,7 +87,7 @@ private:
    PetscScalar sum_weights_ = 0.0;
    const GroupXSections *xs_ = nullptr;
    PetscScalar2DKokkosView w_d_;
-   PetscIntKokkosView is_dirichlet_row_d_;
+   PetscIntKokkosView is_bc_row_d_;
    // The cached scalar flux of each group, (local_cells, 1) apiece. Separate
    // allocations rather than one (group, cell) table: the angular integral
    // writes a 2D gemm output, and a slice of a 2D table would be a rank-2 view

@@ -28,6 +28,28 @@ PetscErrorCode AngularQuadrature::set_weights(const std::vector<PetscScalar> &w,
 }
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+// Find the ordinate whose cosines equal (mu, eta) exactly - eta is ignored when
+// there is none (1D). The cosine tables are sign-symmetric literals, so exact
+// comparison holds; the PetscCheck is the load-bearing part, making a future
+// non-symmetric set fail loudly rather than silently reflect into a wrong angle
+static PetscErrorCode FindOrdinate(const PetscScalar *mu, const PetscScalar *eta, \
+   PetscInt n_angles, PetscScalar mu_want, PetscScalar eta_want, PetscInt *found)
+{
+   PetscFunctionBeginUser;
+
+   *found = -1;
+   for (PetscInt b = 0; b < n_angles; b++) {
+      if (mu[b] == mu_want && (!eta || eta[b] == eta_want)) { *found = b; break; }
+   }
+   PetscCheck(*found >= 0, PETSC_COMM_SELF, PETSC_ERR_PLIB, \
+      "Quadrature set is not symmetric: no ordinate at the reflection of (%g, %g)", \
+      (double)PetscRealPart(mu_want), (double)PetscRealPart(eta_want));
+
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 // SNQuadrature (1D)
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -57,6 +79,16 @@ PetscErrorCode SNQuadrature::create(PetscInt n_angles)
    }
    // In 1D we integrate over [-1, 1] so the sum of weights is 2
    PetscCall(set_weights(w_h, 2.0));
+
+   // The reflection map: the Gauss points come in +/- pairs with equal weights,
+   // and the search (rather than index arithmetic) is what a reflective
+   // boundary's correctness rests on
+   reflect_mu_h_.resize(n_angles);
+   for (PetscInt a = 0; a < n_angles; a++) {
+      PetscCall(FindOrdinate(mu, NULL, n_angles, -mu[a], 0.0, &reflect_mu_h_[a]));
+      PetscCheck(w_h[reflect_mu_h_[a]] == w_h[a], PETSC_COMM_SELF, PETSC_ERR_PLIB, \
+         "Quadrature weights are not symmetric under mu -> -mu");
+   }
 
    // Copy the ordinates to device memory
    mu_d_ = PetscScalarKokkosView("mu_d", n_angles);
@@ -124,6 +156,20 @@ PetscErrorCode SNQuadrature2D::create(PetscInt n_angles)
       }
    }
    PetscCall(set_weights(w_h, 4.0 * PETSC_PI));
+
+   // The reflection maps: a level-symmetric set carries every sign combination
+   // of its base cosines (equal weights within the set), so both single-axis
+   // flips land on an ordinate. Built by search so the assertion in
+   // FindOrdinate, not the quadrant ordering above, is what reflective
+   // boundaries rest on
+   reflect_mu_h_.resize(n_angles);
+   reflect_eta_h_.resize(n_angles);
+   for (PetscInt a = 0; a < n_angles; a++) {
+      PetscCall(FindOrdinate(mu_h_.data(), eta_h_.data(), n_angles, -mu_h_[a], eta_h_[a], \
+         &reflect_mu_h_[a]));
+      PetscCall(FindOrdinate(mu_h_.data(), eta_h_.data(), n_angles, mu_h_[a], -eta_h_[a], \
+         &reflect_eta_h_[a]));
+   }
 
    // Copy the ordinates to device memory
    mu_d_  = PetscScalarKokkosView("mu_d", n_angles);

@@ -55,9 +55,14 @@ public:
 
    const PetscScalar *mu_host() const { return mu_h_.data(); }
    const PetscScalarKokkosView &mu_d() const { return mu_d_; }
+   // reflect_mu_host()[a] is the ordinate with mu = -mu_a and the same weight -
+   // the partner a reflective boundary couples angle a to. Host only: the COO
+   // preallocation is the only consumer
+   const PetscInt *reflect_mu_host() const { return reflect_mu_h_.data(); }
 
 private:
    std::vector<PetscScalar> mu_h_;
+   std::vector<PetscInt> reflect_mu_h_;
    PetscScalarKokkosView mu_d_;
 };
 
@@ -78,10 +83,17 @@ public:
    const PetscScalar *eta_host() const { return eta_h_.data(); }
    const PetscScalarKokkosView &mu_d() const { return mu_d_; }
    const PetscScalarKokkosView &eta_d() const { return eta_d_; }
+   // The reflection partners: reflect_mu_host()[a] flips the sign of mu and
+   // keeps eta (an x-face reflection), reflect_eta_host()[a] the other way
+   // round. Host only: the COO preallocation is the only consumer
+   const PetscInt *reflect_mu_host() const { return reflect_mu_h_.data(); }
+   const PetscInt *reflect_eta_host() const { return reflect_eta_h_.data(); }
 
 private:
    std::vector<PetscScalar> mu_h_;
    std::vector<PetscScalar> eta_h_;
+   std::vector<PetscInt> reflect_mu_h_;
+   std::vector<PetscInt> reflect_eta_h_;
    PetscScalarKokkosView mu_d_;
    PetscScalarKokkosView eta_d_;
 };
