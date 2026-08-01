@@ -41,7 +41,7 @@ static PetscErrorCode ShellMatMultApply(Mat A, Vec x, Vec y)
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-PetscErrorCode TransportOperator::create(MPI_Comm comm, const PhaseSpace &ps, const StructuredFD1D &disc)
+PetscErrorCode TransportOperator::create(MPI_Comm comm, const PhaseSpace &ps, const Discretisation &disc)
 {
    PetscFunctionBeginUser;
 

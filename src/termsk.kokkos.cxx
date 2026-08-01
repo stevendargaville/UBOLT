@@ -69,7 +69,7 @@ PetscErrorCode StreamingTerm::assemble_add(PetscScalarKokkosView &coo_v_d) const
 // RemovalTerm
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-PetscErrorCode RemovalTerm::create(const PhaseSpace &ps, const StructuredFD1D &disc, const PetscScalarKokkosView &sigma_t_d)
+PetscErrorCode RemovalTerm::create(const PhaseSpace &ps, const Discretisation &disc, const PetscScalarKokkosView &sigma_t_d)
 {
    PetscFunctionBeginUser;
 

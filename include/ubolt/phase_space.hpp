@@ -11,7 +11,7 @@
 // over rows it can, e.g. 1000 cells x 4 angles on 3 ranks)
 //
 // This struct does NOT decide the decomposition - the discretisation's DM does,
-// and StructuredFD1D::create writes local_cells back here (Phase 3b). Until
+// and the backend's create() writes local_cells back here (Phase 3b). Until
 // then local_cells is PETSC_DECIDE, so anything sized off it must be built
 // AFTER the discretisation and calls check_decomposed() to say so
 //
@@ -40,7 +40,7 @@ struct PhaseSpace {
       PetscFunctionBeginUser;
 
       PetscCheck(local_cells >= 0, PETSC_COMM_SELF, PETSC_ERR_ARG_WRONGSTATE, \
-         "PhaseSpace has no decomposition yet - the discretisation (StructuredFD1D::create) " \
+         "PhaseSpace has no decomposition yet - the discretisation's create() " \
          "decides it, so build this after the discretisation");
 
       PetscFunctionReturn(PETSC_SUCCESS);

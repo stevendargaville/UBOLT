@@ -97,6 +97,7 @@ endif
 # Every translation unit is a Kokkos one: the Xk.o objects come from
 # Xk.kokkos.cxx via PETSc's Kokkos build rules
 OBJS := $(SRCDIR)/sn_quadraturek.o \
+		  $(SRCDIR)/discretisationk.o \
 		  $(SRCDIR)/structured_fd_1dk.o \
 		  $(SRCDIR)/termsk.o \
 		  $(SRCDIR)/multigroupk.o \

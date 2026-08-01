@@ -2,6 +2,7 @@
 #define UBOLT_TERMS_HPP
 
 #include "ubolt/operator_term.hpp"
+#include "ubolt/discretisation.hpp"
 #include "ubolt/phase_space.hpp"
 #include "ubolt/sn_quadrature.hpp"
 #include "ubolt/structured_fd_1d.hpp"
@@ -9,6 +10,10 @@
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 // Streaming: mu dpsi/dx, upwinded onto the discretisation's stencil
+//
+// Takes the 1D backend by concrete type, not the Discretisation base: it needs
+// the geometry (dx) and it owns the upwind slot convention, both of which are
+// per-dimension. A 2D mesh wants a 2D sibling, not this term
 class PETSC_VISIBILITY_PUBLIC StreamingTerm : public OperatorTerm {
 public:
    PetscErrorCode create(const PhaseSpace &ps, const StructuredFD1D &disc, const SNQuadrature &quad);
@@ -28,10 +33,13 @@ private:
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 // Removal: sigma_t psi, a pure diagonal contribution
+//
+// Nothing here is dimension-specific - it writes the diagonal slot and skips
+// the Dirichlet rows - so it takes any Discretisation
 class PETSC_VISIBILITY_PUBLIC RemovalTerm : public OperatorTerm {
 public:
    // sigma_t_d is indexed by local cell and must outlive the term
-   PetscErrorCode create(const PhaseSpace &ps, const StructuredFD1D &disc, const PetscScalarKokkosView &sigma_t_d);
+   PetscErrorCode create(const PhaseSpace &ps, const Discretisation &disc, const PetscScalarKokkosView &sigma_t_d);
 
    // Point the term at a different xsection. The group sweep calls this and
    // then TransportOperator::assemble() to refill the values, which is why

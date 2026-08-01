@@ -2,8 +2,8 @@
 #define UBOLT_TRANSPORT_OPERATOR_HPP
 
 #include "ubolt/operator_term.hpp"
+#include "ubolt/discretisation.hpp"
 #include "ubolt/phase_space.hpp"
-#include "ubolt/structured_fd_1d.hpp"
 #include <vector>
 
 // The transport operator: the assembled terms in one MATAIJKOKKOS matrix plus
@@ -12,7 +12,9 @@
 // Terms are not owned - the caller keeps them alive for as long as the operator
 class PETSC_VISIBILITY_PUBLIC TransportOperator {
 public:
-   PetscErrorCode create(MPI_Comm comm, const PhaseSpace &ps, const StructuredFD1D &disc);
+   // Any discretisation backend: everything used here (the slot maps, the
+   // Dirichlet mask, the preallocated matrices) is dimension-independent
+   PetscErrorCode create(MPI_Comm comm, const PhaseSpace &ps, const Discretisation &disc);
    PetscErrorCode destroy();
 
    PetscErrorCode add_term(const OperatorTerm *term);
@@ -38,7 +40,7 @@ private:
 
    MPI_Comm comm_ = MPI_COMM_NULL;
    PhaseSpace ps_;
-   const StructuredFD1D *disc_ = nullptr;
+   const Discretisation *disc_ = nullptr;
    std::vector<const OperatorTerm *> terms_;
    std::vector<const OperatorTerm *> matrix_free_;
    // Shared COO values - every assembled term adds into this one array

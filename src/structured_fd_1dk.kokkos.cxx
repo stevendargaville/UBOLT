@@ -87,16 +87,16 @@ PetscErrorCode StructuredFD1D::create(MPI_Comm comm, PhaseSpace &ps, PetscReal l
    // before anything that reads local_cells - starting with the PhaseSpace,
    // which we fill in rather than read
    PetscInt cell_start = 0, local_cells = 0;
-   PetscCall(CreateDA(comm, ps, &da_));
+   PetscCall(CreateDA(comm, ps, &dm_));
    // DMDAGetCorners divides the dof back out, so these come out in cells
-   PetscCall(DMDAGetCorners(da_, &cell_start, NULL, NULL, &local_cells, NULL, NULL));
+   PetscCall(DMDAGetCorners(dm_, &cell_start, NULL, NULL, &local_cells, NULL, NULL));
    ps.local_cells = local_cells;
-   PetscCall(CheckDALayout(da_, ps, cell_start));
+   PetscCall(CheckDALayout(dm_, ps, cell_start));
 
    ps_ = ps;
    const PetscInt local_rows = ps.local_rows();
+   const PetscInt global_row_start = cell_start * n_angles;
 
-   global_row_start_ = cell_start * n_angles;
    const PetscBool on_left_boundary  = (PetscBool)(cell_start == 0);
    const PetscBool on_right_boundary = (PetscBool)(cell_start + local_cells == ps.n_cells);
 
@@ -121,11 +121,11 @@ PetscErrorCode StructuredFD1D::create(MPI_Comm comm, PhaseSpace &ps, PetscReal l
          // the value fills don't have to detect the direction
          const PetscInt upwind_cell = (mu[a] > 0) ? i - 1 : i + 1;
 
-         oor_[counter] = i * n_angles + a + global_row_start_;
-         ooc_[counter] = upwind_cell * n_angles + a + global_row_start_;
+         oor_[counter] = i * n_angles + a + global_row_start;
+         ooc_[counter] = upwind_cell * n_angles + a + global_row_start;
 
-         oor_[counter + 1] = i * n_angles + a + global_row_start_;
-         ooc_[counter + 1] = i * n_angles + a + global_row_start_;
+         oor_[counter + 1] = i * n_angles + a + global_row_start;
+         ooc_[counter + 1] = i * n_angles + a + global_row_start;
 
          counter = counter + 2;
       }
@@ -163,68 +163,8 @@ PetscErrorCode StructuredFD1D::create(MPI_Comm comm, PhaseSpace &ps, PetscReal l
       }
    }
 
-   // ~~~~~~~~~~
    // Slot maps - row r owns COO slots 2r (upwind neighbour) and 2r + 1 (diagonal)
-   // ~~~~~~~~~~
-   std::vector<PetscInt> row_slot_offset(local_rows + 1);
-   std::vector<PetscInt> diag_slot(local_rows);
-   for (PetscInt r = 0; r < local_rows; r++)
-   {
-      row_slot_offset[r] = 2 * r;
-      diag_slot[r] = 2 * r + 1;
-   }
-   row_slot_offset[local_rows] = 2 * local_rows;
-
-   pattern_.n_slots = 2 * local_rows;
-   pattern_.row_slot_offset_d = PetscIntKokkosView("row_slot_offset_d", local_rows + 1);
-   pattern_.diag_slot_d = PetscIntKokkosView("diag_slot_d", local_rows);
-   boundary_.is_dirichlet_row_d = PetscIntKokkosView("is_dirichlet_row_d", local_rows);
-
-   PetscIntKokkosViewHostUnmanaged row_slot_offset_h(row_slot_offset.data(), local_rows + 1);
-   PetscIntKokkosViewHostUnmanaged diag_slot_h(diag_slot.data(), local_rows);
-   PetscIntKokkosViewHostUnmanaged is_dirichlet_row_h(is_dirichlet_row.data(), local_rows);
-   Kokkos::deep_copy(pattern_.row_slot_offset_d, row_slot_offset_h);
-   Kokkos::deep_copy(pattern_.diag_slot_d, diag_slot_h);
-   Kokkos::deep_copy(boundary_.is_dirichlet_row_d, is_dirichlet_row_h);
-
-   PetscFunctionReturn(PETSC_SUCCESS);
-}
-
-// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-// The DM is the only PETSc handle we own. DMDestroy on a NULL handle is a
-// no-op, so this is safe on a never-created discretisation too
-PetscErrorCode StructuredFD1D::destroy()
-{
-   PetscFunctionBeginUser;
-
-   PetscCall(DMDestroy(&da_));
-
-   PetscFunctionReturn(PETSC_SUCCESS);
-}
-
-// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-// A matrix with our sparsity preallocated for COO assembly
-PetscErrorCode StructuredFD1D::create_matrix(Mat *mat) const
-{
-   PetscFunctionBeginUser;
-
-   const PetscInt local_rows = ps_.local_rows();
-   const PetscInt global_rows = ps_.global_rows();
-
-   PetscCall(MatCreate(comm_, mat));
-   PetscCall(MatSetSizes(*mat, local_rows, local_rows, global_rows, global_rows));
-   // pflare only takes its Kokkos paths when handed MATAIJKOKKOS
-   PetscCall(MatSetType(*mat, MATAIJKOKKOS));
-   PetscCall(MatSetFromOptions(*mat));
-   PetscCall(MatSetUp(*mat));
-
-   // MatSetPreallocationCOO takes non-const arrays, so hand it a copy and keep
-   // ours for the next matrix built from this discretisation
-   std::vector<PetscInt> oor(oor_);
-   std::vector<PetscInt> ooc(ooc_);
-   PetscCall(MatSetPreallocationCOO(*mat, pattern_.n_slots, oor.data(), ooc.data()));
+   PetscCall(set_uniform_pattern(2, is_dirichlet_row));
 
    PetscFunctionReturn(PETSC_SUCCESS);
 }
