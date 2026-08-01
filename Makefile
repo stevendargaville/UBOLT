@@ -103,6 +103,16 @@ OBJS := $(SRCDIR)/sn_quadraturek.o \
 		  $(SRCDIR)/transport_operatork.o \
 		  $(SRCDIR)/transport_solverk.o
 
+# PETSc's rules generate no .d files, so nothing knows that an object depends on
+# the headers it includes. Depend on all of them: coarse (touching one header
+# rebuilds the whole library) but that is a handful of translation units, and
+# getting it wrong is not a link error - a struct whose layout changed reads its
+# members at the wrong offset and surfaces as a garbage-sized Kokkos allocation.
+# This adds prerequisites only; the compile still goes through PETSc's rules
+# with PETSc's flags
+UBOLT_HEADERS := $(wildcard $(INCLUDEDIR)/ubolt/*.hpp)
+$(OBJS): $(UBOLT_HEADERS)
+
 # Define a variable containing all the tests
 export TEST_TARGETS = slab_1dk slab_1d_mgk
 # Define a variable containing all the tests that the make check runs
@@ -146,14 +156,26 @@ else
 endif
 endif
 
+# The same header problem for the drivers, but they cannot be fixed the same
+# way: PETSc's `% : %.kokkos.cxx` rule compiles and links in one go and hands
+# every remaining prerequisite to the linker, so giving an executable a header
+# dependency would pass mpicxx a .hpp as an input file. Drop the stale driver
+# objects and binaries instead and let PETSc's own rules rebuild them - no
+# rule and no flag of PETSc's is touched either way
+HEADER_STAMP := $(LIBDIR)/.ubolt_headers_stamp
+$(HEADER_STAMP): $(UBOLT_HEADERS)
+	@mkdir -p $(LIBDIR)
+	@$(RM) $(foreach t,$(TEST_TARGETS),tests/$(t) tests/$(t).o)
+	@touch $@
+
 # Build the tests (in parallel)
 .PHONY: build_tests
-build_tests: $(OUT)
+build_tests: $(OUT) $(HEADER_STAMP)
 	+$(MAKE) -C tests $(TEST_TARGETS)
 
 # Build the tests used in the check
 .PHONY: build_tests_check
-build_tests_check: $(OUT)
+build_tests_check: $(OUT) $(HEADER_STAMP)
 	+$(MAKE) -C tests $(CHECK_TARGETS)
 
 .PHONY: tests_short_serial

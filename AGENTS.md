@@ -36,11 +36,13 @@ Build
 1. In top repo directory: `make -j3 build_tests` (PETSc >= 3.25 configured with Kokkos
    required). This builds `lib/libubolt.{so,a}` first; `make` on its own builds just the library.
 2. Rule: fix all compile warnings (CI will build with `-Werror`).
-3. There is NO header dependency tracking (PETSc's basic rules generate no `.d` files), so
-   an edit to a header does not rebuild the `.o` files that include it. After touching
-   anything in `include/ubolt/`, `make clean` first. Getting this wrong is not a link
-   error: a struct whose layout changed (e.g. adding a field to `PhaseSpace`) silently
-   reads members at the wrong offset and shows up as a garbage-sized Kokkos allocation.
+3. PETSc's rules generate no `.d` files, so header dependencies are declared by hand in the
+   Makefiles: `$(OBJS)` depends on `$(UBOLT_HEADERS)`, and the drivers are handled by
+   `$(HEADER_STAMP)`, which deletes the stale driver objects/binaries so PETSc's own rules
+   rebuild them. The drivers cannot just take the headers as prerequisites — PETSc's
+   `% : %.kokkos.cxx` rule compiles and links in one go and passes every remaining
+   prerequisite to the linker. Keep everything compiling through PETSc's rules with
+   PETSc's configured flags; add prerequisites, never flags.
 
 Tests
 1. Run the test targets below once. Trust `make`'s exit code: 0 means all tests passed;
