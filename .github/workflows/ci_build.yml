@@ -1,0 +1,81 @@
+name: Docker Image CI
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  # run on the 1st of the month for the refreshed petsc_kokkos base image
+  # do it at 6am UTC so that the base image builds have finished
+  schedule:
+    - cron: '0 6 1 * *'
+
+  # Allows you to run this workflow manually from the Actions tab
+  workflow_dispatch:
+
+jobs:
+  gnu_opt_kokkos:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build Docker image with KOKKOS and PETSc
+        uses: docker/build-push-action@v6
+        with:
+          platforms: linux/amd64
+          push: false
+          context: .
+          file: ./dockerfiles/Dockerfile_kokkos
+          build-args: |
+            ARCH=arch-linux-c-opt
+
+  gnu_debug_kokkos:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build Docker image with KOKKOS and debug PETSc
+        uses: docker/build-push-action@v6
+        with:
+          platforms: linux/amd64
+          push: false
+          context: .
+          file: ./dockerfiles/Dockerfile_kokkos
+          build-args: |
+            ARCH=arch-linux-c-debug
+
+  gnu_opt_64_bit_kokkos:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build Docker image with KOKKOS and 64-bit PETSc
+        uses: docker/build-push-action@v6
+        with:
+          platforms: linux/amd64
+          push: false
+          context: .
+          file: ./dockerfiles/Dockerfile_kokkos
+          build-args: |
+            ARCH=arch-linux-c-opt-64bit
+
+  # Use 2 OMP threads by default as the github action runners have 2 cores by default
+  gnu_opt_omp_kokkos:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build Docker image with KOKKOS OMP backend and PETSc
+        uses: docker/build-push-action@v6
+        with:
+          platforms: linux/amd64
+          push: false
+          context: .
+          file: ./dockerfiles/Dockerfile_kokkos
+          build-args: |
+            OMP_NUM_THREADS=2
+            ARCH=arch-linux-c-opt-omp

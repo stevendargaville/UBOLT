@@ -1,0 +1,15 @@
+# Build artifacts
+*.o
+*.mod
+lib/
+
+# Compiled test executables (every driver is a Kokkos TU, so the binary ends in k)
+tests/*k
+!tests/*.cxx
+!tests/*.hpp
+
+# Old root-level executable (pre-Phase-0 layout)
+UBOLTk
+
+# Editor
+.vscode/
