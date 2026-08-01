@@ -154,7 +154,17 @@ previous one's verification has passed and been reviewed.
   decomposition only); it starts paying for itself in Phase 4.
 
 ## Phase 4 — 2D structured (DMDA 2D)
-- [ ] StructuredFD2D (4-slot rows), 2D angle quadrature table
+- [ ] StructuredFD2D (3-slot rows), 2D angle quadrature table
+      NOTE: this said "4-slot rows" until Aug 2026. It is 3 — upwinding mu dpsi/dx and
+      eta dpsi/dy separately contributes ONE neighbour per axis plus a diagonal, the
+      direct generalisation of 1D's 2 (upwind neighbour + diagonal). The 5 points are what
+      the DMDA star stencil preallocates, not what the operator touches; keep the two
+      apart, which is the same reason create_matrix must not become DMCreateMatrix.
+      Slot order convention, extending 1D's "off-diagonals first, diagonal last": upwind-x,
+      upwind-y, diagonal. Which x/y neighbour is upwind is fixed per angle at preallocation
+      from sign(mu)/sign(eta), exactly as 1D does it, so the value fills never branch on
+      direction. A row with mu or eta exactly 0 takes a -1 in that slot, the same trick
+      Dirichlet rows already use.
 - Verify: pure-streaming closed-form check; small-grid MatComputeOperator of the shell vs
   host reference (1e-12); pinned PCAIR iterations. (No hand-layout twin in 2D: DMDA's
   PETSc ordering differs from natural ordering — and after Phase 3b there is no hand
@@ -163,7 +173,20 @@ previous one's verification has passed and been reviewed.
   into the PhaseSpace, so StructuredFD2D slots into the same seam. Two things do NOT
   carry over unexamined: CheckDALayout's angle-fastest/contiguous assert (2D ordering is
   the thing that differs, so it has to be rewritten, not copied), and create_matrix's
-  hand-built COO preallocation (a 2D stencil is 5 points, the operator 4 slots + diagonal).
+  hand-built COO preallocation (3 slots per row, see above — NOT the DMDA stencil's 5).
+- DECIDE AT THE START OF PHASE 4: the abstract Discretisation base. Phase 6 below says to
+  introduce it "only now that a second backend exists" — but StructuredFD2D IS a second
+  backend, so Phase 4 is where that bites, not Phase 6. Three signatures take
+  StructuredFD1D by concrete type (TransportOperator::create, StreamingTerm::create,
+  RemovalTerm::create) plus TransportOperator's stored disc_ pointer.
+  The surface is small and splits cleanly, so this is a thin abstraction rather than a
+  redesign:
+  - `create_matrix()`, `coo_pattern()`, `boundary_info()` — all that RemovalTerm and
+    TransportOperator use, and all dimension-independent. This is the base class.
+  - `dx()` — used ONLY by StreamingTerm, which needs a 2D sibling regardless (it owns the
+    upwind slot convention and in 2D needs dx and dy). Dimension-specific terms can keep
+    taking the concrete class, so the base does not have to grow a geometry interface.
+  Move the Phase 6 checklist item here if that is the call.
 
 ## Phase 5 — Matrix-free removal / single-streaming-matrix experiment
 - [ ] RemovalTerm::apply_add + -matfree_removal: Assembled{Streaming} +
@@ -185,7 +208,9 @@ previous one's verification has passed and been reviewed.
       volume + face kernels
 - [ ] 6b CGSUPG: PetscFE/PetscDS host-only for quadrature/tabulations copied to device
       once; volume kernels; Dirichlet via identity-row mechanism
-- [ ] Introduce thin abstract Discretisation base (only now that a second backend exists)
+- [ ] Introduce thin abstract Discretisation base — IF Phase 4 has not already had to
+      (see the decision point there; StructuredFD2D is a second backend, so it probably
+      has). This item survives only as the point where a DMPlex backend would widen it.
 - Verify: DG0 on uniform mesh reproduces the FD upwind matrix; manufactured-solution
   convergence rates; pinned iterations.
 
