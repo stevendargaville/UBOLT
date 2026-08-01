@@ -2,19 +2,28 @@ UBOLT: fixed-source Boltzmann (radiation transport) solver library on PETSc + Ko
 Architecture: assemble the streaming/removal operator (MATAIJKOKKOS via the PETSc COO
 interface so assembly runs on device), apply scattering matrix-free (MatShell + Kokkos),
 precondition with PCComposite = removal shell PC + PCAIR (pflare inverts streaming).
+Energy groups are solved one at a time in a group Gauss-Seidel sweep, so the sparsity is
+preallocated once and each group is a values-only refill of the same matrix.
 
 Codebase map
 - `tests/`: test drivers (they are also the examples) + a Makefile of literal run commands.
-  `tests/slab_1dk.kokkos.cxx`: 1D slab single-group SN driver. `tests/baselines/`: captured
-  reference `-ksp_monitor` logs — never regenerate casually (see `docs/dev/testing.md`).
+  `tests/slab_1dk.kokkos.cxx`: 1D slab single-group SN driver.
+  `tests/slab_1d_mgk.kokkos.cxx`: the multigroup one (`-n_groups`, `-sigma_transfer`); it
+  is also where the group sweep itself lives, until a second sweep strategy justifies
+  promoting it into the library. `tests/baselines/`: captured reference `-ksp_monitor`
+  logs — never regenerate casually (see `docs/dev/testing.md`).
 - `src/` + `include/ubolt/`: the libubolt library. `PhaseSpace` (sizes + the cell-based
-  decomposition), `SNQuadrature`, `StructuredFD1D` (the discretisation: owns the mesh and
-  the COO sparsity, hands out `CooPattern` + `BoundaryInfo`), `OperatorTerm` and the
-  `Streaming`/`Removal`/`Scattering` terms, `TransportOperator` (assembled terms in one
-  matrix + matrix-free terms behind a MatShell), `TransportSolver` (KSP + the composite
-  PC). `types.hpp` owns every Kokkos view typedef, `ubolt.hpp` is the umbrella header.
-  Every translation unit is a Kokkos one, named `Xk.kokkos.cxx` (the suffix triggers
-  PETSc's Kokkos build rules). See `TODO.md` for the roadmap and current phase.
+  decomposition; `n_groups` is metadata on it, NOT part of the row count), `SNQuadrature`
+  (+ `UboltAngularIntegral`, the shared angular integral), `StructuredFD1D` (the
+  discretisation: owns the mesh and the COO sparsity, hands out `CooPattern` +
+  `BoundaryInfo`), `OperatorTerm` and the `Streaming`/`Removal`/`Scattering` terms,
+  `GroupXSections` + `GroupTransfer` (multigroup xsection tables and the group-to-group
+  source), `TransportOperator` (assembled terms in one matrix + matrix-free terms behind a
+  MatShell), `TransportSolver` (KSP + the composite PC, plus `refresh()` for what the PC
+  caches off the assembled matrix). `types.hpp` owns every Kokkos view typedef, `ubolt.hpp`
+  is the umbrella header. Every translation unit is a Kokkos one, named `Xk.kokkos.cxx`
+  (the suffix triggers PETSc's Kokkos build rules). See `TODO.md` for the roadmap and
+  current phase.
 - Library conventions: methods return `PetscErrorCode` and every PETSc call is wrapped in
   `PetscCall` (PETSc marks `PetscErrorCode` `nodiscard`, so unchecked calls warn);
   construction is a `create(...)` method, not a constructor, so it can return errors, and
@@ -24,13 +33,18 @@ Codebase map
 - New physics = subclass `OperatorTerm` (assembled contribution into the shared COO values
   and/or matrix-free apply). Discretisation backends produce a `CooPattern` (slot maps) +
   `BoundaryInfo` (Dirichlet row mask); terms write through those, never raw indices.
+  Anything that builds a right hand side rather than acting on the unknowns being solved
+  for is NOT an `OperatorTerm` — see `GroupTransfer` — but it still owes the Dirichlet mask
+  the same contract: leave flagged rows alone, they carry the boundary condition.
 - PETSc source is at `$PETSC_DIR/$PETSC_ARCH`. Both env variables must be set.
   PFLARE is at `$PFLARE_DIR` (defaults to `/home/sdargavi/projects/PFLARE` in the Makefile).
 
 Read only when the task needs it
 - `TODO.md` — roadmap, current phase, per-phase verification criteria, research notes
 - `docs/dev/testing.md` — before adding or modifying tests, and before touching baselines
-- `docs/dev/kokkos.md` — before touching `*.kokkos.cxx`, COO assembly or MatShell code
+- `docs/dev/kokkos.md` — before touching `*.kokkos.cxx`, COO assembly or MatShell code, and
+  before adding any multi-dimensional view (layouts differ between host and device
+  backends, and the obvious compile-time contiguity guard does not work)
 
 Build
 1. In top repo directory: `make -j3 build_tests` (PETSc >= 3.25 configured with Kokkos

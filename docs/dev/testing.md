@@ -12,8 +12,8 @@
 - The drivers return 1 unless `KSPGetConvergedReason() > 0` (since Phase 1a), so a
   non-converged solve fails the recipe on its own — no `-ksp_error_if_not_converged`
   or `-on_error_abort` needed. Driver diagnostics go to stderr so they never appear in a
-  captured baseline. The four non-converging `capture_baselines` lines carry `|| true`.
-- Targets: `make check` (fast sanity, 2 runs) < `make tests_short` < `make tests`.
+  captured baseline. The two non-converging `capture_baselines` lines carry `|| true`.
+- Targets: `make check` (fast sanity, 3 runs) < `make tests_short` < `make tests`.
   Parallel variants use `$(MPIEXEC) -n 2` and are skipped under MPIUNI.
 
 ## Baselines (tests/baselines/)
@@ -21,6 +21,11 @@ Captured `-ksp_monitor -ksp_converged_reason` logs. They are the ground truth fo
 refactor: identical numerics means the residual history diffs clean against these files
 (iteration counts exactly, residuals to ~1e-14).
 
+24 logs in two families: 16 single-group (`slab1d_*`, Phase 0) and 8 multigroup
+(`slab1dmg_*`, Phase 2). `make baselines` captures both. A refactor that claims to be
+numerically inert must diff clean against all 24.
+
+### Single-group baselines
 Re-captured 2026-07-31 after the negative-angle upwind sign fix (see below). Before that
 they came from the pre-refactor code (the single-file `UBOLTk.kokkos.cxx`), and Phase 1a
 and Phase 1b each reproduced all 16 of them bitwise — which is what the phases were
@@ -40,29 +45,7 @@ verified against. The `-ubolt_coo_two_call` assembly fallback also reproduces th
 - np=1 and np=2 logs differ in the trailing digits (parallel reduction order); compare a
   log against the baseline for the *same* np, never across np.
 
-### Multigroup baselines (added in Phase 2)
-`slab1dmg_<default|stream>_me<0|2>_g4_t<0|05>_np<1|2>.log` — `slab_1d_mgk` with 4 groups,
-`t0`/`t05` being `-sigma_transfer` 0.0/0.5. Each log is the whole group sweep: one KSP
-history after another, in group order, so it pins the per-group iteration counts and the
-downscatter source arithmetic that no single `-ksp_max_it` can.
-
-The `t0` logs are exactly four byte-for-byte copies of the matching single-group
-`slab1d_default_me2_np<n>.log`. That is the Phase 2 uncoupled-groups verification, and
-it is worth re-checking directly rather than only diffing the file.
-
-| multigroup config | per-group iterations (np=1 and np=2) |
-|---|---|
-| default pc, me=0, transfer 0.5 | 1, 1, 1, 1 |
-| default pc, me=2, transfer 0.0 | 5, 5, 5, 5 (= single group, four times) |
-| default pc, me=2, transfer 0.5 | 5, 6, 6, 6 |
-| default pc, me=2, transfer 2.0 | 5, 7, 6, 6 (recipe only, not captured) |
-| precon_stream, me=2, transfer 0.5 | 12, 13, 13, 11 |
-
-Group 0 matches the single-group count because its rhs is just the external source; the
-later groups carry a downscatter source as well. The last group has no outgoing transfer,
-so its `sigma_t` is lower than the others' — that is why the counts are not uniform.
-
-## Baseline iteration counts
+## Single-group baseline iteration counts
 Captured 2026-07-31, capped at `-ksp_max_it 200`. The pre-fix column is what the
 pre-refactor code did, kept because Phases 1a and 1b were verified against it:
 
@@ -93,6 +76,33 @@ History of these baselines:
   scaling makes the removal shell PC an identity and degrades the composite. The sign fix
   improved it a lot but did not cure it. Known current behavior, not a target — excluded
   from pass/fail recipes; revisit when the diag_scale semantics are looked at again.
+
+## Multigroup baselines (Phase 2)
+`slab1dmg_<default|stream>_me<0|2>_g4_t<0|05>_np<1|2>.log` — `slab_1d_mgk` with 4 groups,
+`t0`/`t05` being `-sigma_transfer` 0.0/0.5. Each log is the whole group sweep: one KSP
+history after another, in group order. That is what pins the per-group iteration counts
+and the downscatter source arithmetic, neither of which a single `-ksp_max_it` can reach.
+
+The `t0` logs are exactly four byte-for-byte copies of the matching single-group
+`slab1d_default_me2_np<n>.log`. That is the Phase 2 uncoupled-groups verification, and it
+is worth re-checking as a structural property rather than only diffing the file — a change
+that broke both files the same way would still diff clean.
+
+| multigroup config | per-group iterations (np=1 and np=2) |
+|---|---|
+| default pc, me=0, transfer 0.5 | 1, 1, 1, 1 |
+| default pc, me=2, transfer 0.0 | 5, 5, 5, 5 (= single group, four times) |
+| default pc, me=2, transfer 0.5 | 5, 6, 6, 6 |
+| default pc, me=2, transfer 2.0 | 5, 7, 6, 6 (recipe only, not captured) |
+| precon_stream, me=2, transfer 0.5 | 12, 13, 13, 11 |
+
+Group 0 matches the single-group count because its rhs is just the external source; the
+later groups carry a downscatter source as well. The last group has no outgoing transfer,
+so its `sigma_t` is lower than the others' — that is why the counts are not uniform.
+
+With `-precon_stream` the streaming-only pmat does not depend on the group, so PCAIR is
+set up once for the whole sweep; with the default pc the assembled matrix is refilled per
+group and PCAIR re-runs its setup each time. Both are exercised by the recipes.
 
 ## Adding a test driver
 1. Add the executable name to `TEST_TARGETS` (and `CHECK_TARGETS` if it belongs in

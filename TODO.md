@@ -56,7 +56,8 @@ previous one's verification has passed and been reviewed.
   math; keep a two-call debug fallback); runtime sizes replace #defines.
 
 ## Phase 2 — Multigroup with sparsity reuse
-- [x] n_groups in PhaseSpace; per-group xsections as 2D LayoutRight views
+- [x] n_groups in PhaseSpace; per-group xsections as explicit-LayoutRight views
+      (sigma_t 2D as planned, sigma_s 3D — see the note below)
 - [x] One Vec per group, outer group loop (Gauss-Seidel, downscatter-only first);
       per-group values-refill via assemble(), no re-preallocation
 - [x] Driver tests/slab_1d_mgk.kokkos.cxx with -n_groups
@@ -136,9 +137,20 @@ previous one's verification has passed and been reviewed.
 
 ## Phase 7 — deferred
 - [ ] CI: clone PFLARE's docker model + docs/dev/ci.md
-- [ ] Pn / wavelet angular discretizations (sibling structs to SNQuadrature + own terms)
-- [ ] Performance passes (kernel fusion in the MatShell loop, avoid the -precon_stream
-      MatDuplicate)
+- [ ] Pn / wavelet angular discretizations (sibling structs to SNQuadrature + own terms).
+      `UboltAngularIntegral` already has the right shape for this: it is written as a gemm
+      against a (n_angles, n_moments) weight matrix that SN happens to use with
+      n_moments = 1. Pn widens that column dimension and the integral becomes a genuine
+      gemm — do NOT "simplify" it to a gemv on the grounds that N is currently 1.
+- [ ] Performance passes (kernel fusion in the MatShell loop). The `-precon_stream`
+      MatDuplicate this used to name is already gone: Phase 1b replaced the
+      MatDuplicate/MatCopy pair with `assemble_subset`, which preallocates from the same
+      CooPattern.
+- [ ] The group-to-group transfer is applied one (g_from, g_to) pair at a time, so a sweep
+      does O(G^2) small kernels. With the scalar fluxes now cached per group they sit in
+      G contiguous (local_cells, 1) arrays, so the whole `sum_g' sigma_s(g',g) phi(g')`
+      contraction could become one batched kernel — a real gemm per cell if the xsections
+      were spatially constant, a batched one as they are. Only worth it at large G.
 
 ## Phase 1 postscript — negative-angle upwind sign (own commit, after 1b)
 - [x] `StreamingTerm` wrote the upwind neighbour coefficient as `-mu/dx`: correct for
@@ -167,6 +179,13 @@ previous one's verification has passed and been reviewed.
 - **Angle-major ordering** (vs current angle-fastest): per-angle contiguous blocks or
   MatNest of per-angle streaming blocks each with its own AIR — plausible PCAIR win,
   DofOrdering enum reserves the decision.
+- **Kokkos layouts are not the same on host and device** (found in Phase 2): the default
+  layout of a rank-2+ View is LayoutRight on a host space but LayoutLeft on CUDA/HIP, so
+  anything whose element ordering matters must state its layout. Worse, the obvious
+  compile-time contiguity guard does not work — Kokkos allows assigning a rank-1 view of
+  ANY layout to another, so a strided slice compiles and then aborts at run time. Test for
+  `Kokkos::LayoutStride` instead. Full writeup in `docs/dev/kokkos.md`; this will matter
+  again for the Phase 4 2D slices and the Phase 6 flattened DMPlex views.
 - **Latent bug fixed in Phase 1a**: PETSC_DECIDE row split can land mid-cell (np=3 with
   1000x4); the decomposition is decided in cells (PetscSplitOwnership over n_cells) from
   Phase 1a on. np=1,2 are unaffected (the splits coincide), np=3 now converges in 10 its
