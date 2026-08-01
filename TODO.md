@@ -306,6 +306,34 @@ previous one's verification has passed and been reviewed.
       got worse (175 its -> capped at 200; breakdown at 90 -> 150). In 2D it is a large
       win — see the research note below, which the fix rewrote.
 
+## Phase 4 postscript — scalar flux VTK output (own commit, Aug 2026)
+- [x] `UboltWriteScalarFluxVTK(ps, disc, quad, psi, filename)`: the scalar flux of a
+      solution, written for inspection in ParaView/VisIt. Not a roadmap phase — added on
+      request once there were 2D solutions worth looking at. How it works: the shared
+      `UboltAngularIntegral` (so the written flux is bit-identical with what the terms
+      integrate), onto a dof-1 `DMDACreateCompatibleDMDA` twin of the backend's DMDA, out
+      through PETSc's VTK viewer, which does the parallel gather. Dimension-independent:
+      it takes the `Discretisation` base and never sees the geometry.
+      - A DMDA is a structured grid, so the formats are `.vts`/`.vtr` (the extension
+        picks); `.vtu` is PETSc's DMPlex format and is rejected with an error saying so.
+        A DMPlex backend (Phase 6) is where a `.vtu` path would appear.
+      - The backends now set uniform coordinates on their DMDA at create — node (i, j) at
+        (i dx, j dy), the `verify_2dk` convention — so the files carry real mesh
+        positions. Nothing in the solve reads them, and the compatible DMDA carries them
+        over to the flux vector for free. A direction with a single node keeps no
+        coordinates (PETSc's uniform spacing divides by n - 1).
+      - The dof-1 copy relies on the same layout property `CheckDALayout` asserts: a DMDA
+        global vector holds the owned patch contiguously in patch-lexicographic order,
+        which IS the local cell order the scalar flux view is indexed by.
+      - Every solve driver exposes `-flux_vtk <file>`; the multigroup driver writes one
+        file per group (`flux.vts` -> `flux_g0.vts`, ...), only after a full sweep.
+      Verified: serial vs np=4 (a genuinely 2D processor grid) fields agree to 1e-13 at
+      `-ksp_rtol 1e-12`, so the gather/ordering is exact; coordinates land on [0, L - dx]
+      exactly; `make check`/`tests_short` pass and the baselines still reproduce bitwise
+      (spot-checked np=1 single-group and np=2 multigroup), so the change is numerically
+      inert — as it must be, since coordinates are the only thing the solve path even
+      sees, and nothing reads them.
+
 ## Research notes
 - **"Scattering ratio 1 in 2D degrades on non-square grids" — RESOLVED, it was the
   Dirichlet bug** (observed in Phase 4b, explained by the postscript fix above; recorded

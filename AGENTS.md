@@ -4,8 +4,9 @@ interface so assembly runs on device), apply scattering matrix-free (MatShell + 
 precondition with PCComposite = removal shell PC + PCAIR (pflare inverts streaming).
 Energy groups are solved one at a time in a group Gauss-Seidel sweep, so the sparsity is
 preallocated once and each group is a values-only refill of the same matrix.
-The discretisation is DM-backed (1D and 2D DMDAs): the DM owns the mesh, the layout and
-the parallel decomposition, but deliberately creates no matrices or vectors itself.
+The discretisation is DM-backed (1D and 2D DMDAs): the DM owns the mesh (including its
+coordinates, set by the backend for output), the layout and the parallel decomposition,
+but deliberately creates no solver matrices or vectors itself.
 
 Codebase map
 - `tests/`: test drivers (they are also the examples) + a Makefile of literal run commands.

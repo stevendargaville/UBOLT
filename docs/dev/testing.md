@@ -188,7 +188,9 @@ box (not a recipe) is 5, the same as 80x20.
 3. Add invocation lines to the appropriate `run_*` recipe in `tests/Makefile`:
    an `@echo` label plus the literal `./exe -options` line, serial and `-n 2` variants,
    with `-ksp_max_it` pinned to the observed converged count.
-4. Driver rules: exit non-zero unless `KSPGetConvergedReason() > 0`; no output files.
+4. Driver rules: exit non-zero unless `KSPGetConvergedReason() > 0`; no output files from
+   any recipe. Opt-in output flags (`-flux_vtk`, the scalar flux VTK writer) are fine on a
+   driver but must not appear in a `run_*` recipe — a test run leaves nothing behind.
 
 ## DMDA layout (Phases 3 and 4)
 Every discretisation backend builds its layout from a DMDA, which is also what decides the

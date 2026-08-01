@@ -131,10 +131,13 @@ fill runs on device (MATAIJKOKKOS dispatches `MatSetValuesCOO` to the GPU):
   and that is still true now the discretisation is DM-backed: a backend's DMDA supplies
   the layout, the decomposition and (in 2D) the global indices, but creates **no** solver
   objects, so there is nothing for `-dm_mat_type`/`-dm_vec_type` to reach and they are not
-  needed. The one exception is transient — `CheckDALayout` calls `DMCreateGlobalVector` to
-  read the ownership range and destroys it immediately. If a later phase starts
-  creating matrices or vectors through the DM, it has to set the types on the DM (or run
-  with `-dm_mat_type aijkokkos -dm_vec_type kokkos`) or pflare will silently fall back to
-  the CPU paths.
+  needed. The vectors that DO come through a DM never reach pflare: `CheckDALayout` creates
+  a transient global vector to read the ownership range; the backends put mesh coordinates
+  on their DMDA (a host vector held by the coordinate DM, read only by output); and the
+  scalar flux VTK writer creates a host global vector from a dof-1 compatible DMDA purely
+  to hand to the viewer. If a later phase starts creating matrices or vectors through the
+  DM *for the solve*, it has to set the types on the DM (or run with
+  `-dm_mat_type aijkokkos -dm_vec_type kokkos`) or pflare will silently fall back to the
+  CPU paths.
 - `PFLARE_KOKKOS_DEBUG=1` makes pflare run CPU and Kokkos paths side by side and abort on
   mismatch — useful when a solve misbehaves only on device.
