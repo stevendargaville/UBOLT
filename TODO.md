@@ -100,16 +100,70 @@ previous one's verification has passed and been reviewed.
   group loop out of the driver into a MultigroupSolver (wait for a second sweep strategy).
 
 ## Phase 3 — DMDA adoption (behavior-preserving)
-- [ ] StructuredFD1D constructor from 1D DMDA (dof=n_angles, stencil 1); extraction to the
-      same CooPattern/BoundaryInfo; kernels unchanged; -use_dm option, hand layout stays
-- Verify: -use_dm vs hand layout bitwise-compare residual histories, np=1,2.
-  (1D DMDA ordering coincides with natural ordering; assert dof-interleaving in setup.)
+- [x] 3a: StructuredFD1D layout from a 1D DMDA (dof=n_angles, stencil 1); extraction to
+      the same CooPattern/BoundaryInfo; kernels unchanged; -ubolt_use_dm option, hand
+      layout stays as the verification twin.
+      Done: both paths reproduce all 24 baselines bitwise at np=1,2, and agree with each
+      other at np=3 (uneven 334/333/333 split). Notes:
+      - The option is `-ubolt_use_dm`, not `-use_dm`: library-internal switches carry the
+        `ubolt_` prefix (cf. `-ubolt_coo_two_call`); unprefixed options are the drivers'.
+      - The two paths differ in exactly ONE place, where cell_start/local_cells come from
+        (MPI_Exscan vs DMDAGetCorners). Everything downstream is shared, so the twin test
+        exercises the DM extraction rather than a second copy of the sparsity logic.
+      - The DM is NOT given DMSetFromOptions: that would expose -da_grid_x, which could
+        resize the mesh out from under the PhaseSpace everything else is sized from.
+      - StructuredFD1D now owns a PETSc handle, so it has a destroy(); both drivers call it.
+      - The matrix still comes from MatSetPreallocationCOO, not DMCreateMatrix (below).
+- [x] 3b: delete the hand-rolled path and the -ubolt_use_dm option, DMDA becomes the only
+      way StructuredFD1D::create builds a layout, and it also owns the decomposition -
+      PhaseSpace no longer calls PetscSplitOwnership.
+      Done: all 24 baselines still reproduce bitwise. Notes:
+      - StructuredFD1D::create now takes the PhaseSpace by non-const reference and FILLS
+        local_cells from DMDAGetCorners. PhaseSpace::create leaves it PETSC_DECIDE.
+      - That imposes an ordering constraint - the discretisation must be built before
+        anything sized off the phase space - so PhaseSpace grew check_decomposed(), and
+        the six creates that read local_cells/local_rows() (the three terms,
+        TransportOperator, GroupXSections, GroupTransfer) call it. Without it the failure
+        would be a Kokkos view allocated with a negative extent somewhere downstream
+        rather than an error at the call that got the order wrong.
+      - CheckDALayout lost its local_cells-vs-PhaseSpace check, which became tautological
+        once the DM is the authority. The sizes and the angle-fastest/contiguous ordering
+        checks stay - those are still real.
+- Verify: DONE. 3a bitwise-compared -ubolt_use_dm against the hand layout; both phases
+  reproduce all 24 tests/baselines/ logs bitwise at np=1,2, and 3a additionally agreed
+  with the hand layout at np=3.
+- DECIDED (Aug 2026): the hand-rolled layout was transitional, not a permanent second
+  backend. It existed in 3a only as the bitwise oracle and went in 3b. It was 1D-only by
+  construction, and Phase 4 already says there is no hand-layout twin in 2D, so carrying
+  it past Phase 3 would have bought nothing and cost a path to keep alive.
+- Design constraints, both about keeping "behavior-preserving" true:
+  - Build the matrix with MatSetPreallocationCOO exactly as now, NOT DMCreateMatrix.
+    DMDA preallocates from the stencil (3 points x dof couplings per row); the upwind
+    operator has 2 entries per row. A different sparsity is a different matrix and PCAIR
+    would see it. The DM supplies ownership and indices, not the matrix.
+  - Let DMDACreate1d choose its own distribution (lx = NULL) rather than handing it
+    PhaseSpace's. There was going to be a staged step for this, on the assumption the two
+    might differ; they cannot. PETSc's default 1D DMDA split is
+    `M/size + ((M % size) > rank)` (src/dm/impls/da/da1.c), the same formula
+    PetscSplitOwnership uses. So the DM decided from 3a on, with a CheckDALayout assert
+    holding the two to agreement through 3a and the np=2 twin diff as the empirical proof;
+    3b made the DM the sole authority and dropped the now-tautological assert. This is what
+    folded the old 3c into 3a/3b.
+- Note: assembly uses global column indices and the matrix-free scatter is cell-local, so
+  nothing in Phase 3 needs the DM's ghost exchange. The DM is bookkeeping here (layout and
+  decomposition only); it starts paying for itself in Phase 4.
 
 ## Phase 4 — 2D structured (DMDA 2D)
 - [ ] StructuredFD2D (4-slot rows), 2D angle quadrature table
 - Verify: pure-streaming closed-form check; small-grid MatComputeOperator of the shell vs
   host reference (1e-12); pinned PCAIR iterations. (No hand-layout twin in 2D: DMDA's
-  PETSc ordering differs from natural ordering.)
+  PETSc ordering differs from natural ordering — and after Phase 3b there is no hand
+  layout in 1D either, so the twin technique is retired for good.)
+- Inherited from Phase 3: the DM already owns the decomposition and writes local_cells
+  into the PhaseSpace, so StructuredFD2D slots into the same seam. Two things do NOT
+  carry over unexamined: CheckDALayout's angle-fastest/contiguous assert (2D ordering is
+  the thing that differs, so it has to be rewritten, not copied), and create_matrix's
+  hand-built COO preallocation (a 2D stencil is 5 points, the operator 4 slots + diagonal).
 
 ## Phase 5 — Matrix-free removal / single-streaming-matrix experiment
 - [ ] RemovalTerm::apply_add + -matfree_removal: Assembled{Streaming} +
@@ -177,8 +231,12 @@ previous one's verification has passed and been reviewed.
 - **libCEED** (parked): `--download-libceed` exists; good for high-order CG volume terms
   matrix-free; no DG face integrals; CUDA/HIP backends, not Kokkos-native.
 - **Angle-major ordering** (vs current angle-fastest): per-angle contiguous blocks or
-  MatNest of per-angle streaming blocks each with its own AIR — plausible PCAIR win,
-  DofOrdering enum reserves the decision.
+  MatNest of per-angle streaming blocks each with its own AIR — plausible PCAIR win.
+  There is NO DofOrdering enum reserving this (an earlier note here claimed there was);
+  angle-fastest is currently hardcoded, stated in PhaseSpace's header comment as
+  `row = cell * n_angles + angle`. Since Phase 3 it is also asserted against the DM's
+  global numbering in `CheckDALayout`, so that assert is the other place a change of
+  ordering has to be taught about.
 - **Kokkos layouts are not the same on host and device** (found in Phase 2): the default
   layout of a rank-2+ View is LayoutRight on a host space but LayoutLeft on CUDA/HIP, so
   anything whose element ordering matters must state its layout. Worse, the obvious

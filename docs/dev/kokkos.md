@@ -61,6 +61,10 @@ fill runs on device (MATAIJKOKKOS dispatches `MatSetValuesCOO` to the GPU):
   discretisation (`StructuredFD1D::create_matrix`) shares the sparsity. Repeated assembly
   (per group, per parameter change) is values-only: terms fill a device view with a
   `Kokkos::parallel_for` and `TransportOperator` calls `MatSetValuesCOO`.
+- The matrix is built by hand from that COO pattern and NOT by `DMCreateMatrix`, even
+  though the discretisation now owns a DM. A DMDA preallocates from its stencil (3 stencil
+  points x dof couplings per row) while the upwind operator has exactly 2 entries per row,
+  so `DMCreateMatrix` would hand PCAIR a different sparsity. Don't "simplify" it.
 - Dirichlet trick: a `-1` row/col index in the preallocation means "ignore this entry", so
   boundary rows keep only their diagonal. The ordering of entries per row is fixed at
   preallocation time (1D: off-diagonal first, diagonal second, every row regardless of
@@ -98,8 +102,12 @@ fill runs on device (MATAIJKOKKOS dispatches `MatSetValuesCOO` to the GPU):
 
 ## pflare / GPU dispatch
 - pflare dispatches on the matrix type at RUNTIME: PCAIR only takes its Kokkos/GPU paths
-  when handed MATAIJKOKKOS matrices and VECKOKKOS vectors. UBOLT sets these types in code;
-  when a DM creates objects (Phase 3+) run with
-  `-dm_mat_type aijkokkos -dm_vec_type kokkos`.
+  when handed MATAIJKOKKOS matrices and VECKOKKOS vectors. UBOLT sets these types in code,
+  and that is still true now the discretisation is DM-backed: the DMDA from Phase 3
+  supplies the layout only and creates **no** solver objects, so there is nothing for
+  `-dm_mat_type`/`-dm_vec_type` to reach and they are not needed. If a later phase starts
+  creating matrices or vectors through the DM, it has to set the types on the DM (or run
+  with `-dm_mat_type aijkokkos -dm_vec_type kokkos`) or pflare will silently fall back to
+  the CPU paths.
 - `PFLARE_KOKKOS_DEBUG=1` makes pflare run CPU and Kokkos paths side by side and abort on
   mismatch — useful when a solve misbehaves only on device.

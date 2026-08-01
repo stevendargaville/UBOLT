@@ -4,6 +4,8 @@ interface so assembly runs on device), apply scattering matrix-free (MatShell + 
 precondition with PCComposite = removal shell PC + PCAIR (pflare inverts streaming).
 Energy groups are solved one at a time in a group Gauss-Seidel sweep, so the sparsity is
 preallocated once and each group is a values-only refill of the same matrix.
+The discretisation is DM-backed (a 1D DMDA so far): the DM owns the mesh, the layout and
+the parallel decomposition, but deliberately creates no matrices or vectors itself.
 
 Codebase map
 - `tests/`: test drivers (they are also the examples) + a Makefile of literal run commands.
@@ -12,11 +14,12 @@ Codebase map
   is also where the group sweep itself lives, until a second sweep strategy justifies
   promoting it into the library. `tests/baselines/`: captured reference `-ksp_monitor`
   logs — never regenerate casually (see `docs/dev/testing.md`).
-- `src/` + `include/ubolt/`: the libubolt library. `PhaseSpace` (sizes + the cell-based
-  decomposition; `n_groups` is metadata on it, NOT part of the row count), `SNQuadrature`
-  (+ `UboltAngularIntegral`, the shared angular integral), `StructuredFD1D` (the
-  discretisation: owns the mesh and the COO sparsity, hands out `CooPattern` +
-  `BoundaryInfo`), `OperatorTerm` and the `Streaming`/`Removal`/`Scattering` terms,
+- `src/` + `include/ubolt/`: the libubolt library. `PhaseSpace` (sizes only — `n_groups` is
+  metadata on it, NOT part of the row count, and it does NOT decide the decomposition),
+  `SNQuadrature` (+ `UboltAngularIntegral`, the shared angular integral), `StructuredFD1D`
+  (the discretisation: owns a 1D DMDA and through it the mesh, the cell-based
+  decomposition and the COO sparsity; hands out `CooPattern` + `BoundaryInfo`),
+  `OperatorTerm` and the `Streaming`/`Removal`/`Scattering` terms,
   `GroupXSections` + `GroupTransfer` (multigroup xsection tables and the group-to-group
   source), `TransportOperator` (assembled terms in one matrix + matrix-free terms behind a
   MatShell), `TransportSolver` (KSP + the composite PC, plus `refresh()` for what the PC
@@ -30,6 +33,12 @@ Codebase map
   the objects that own PETSc handles have a matching `destroy()`. Exported classes are
   tagged `PETSC_VISIBILITY_PUBLIC` and exported free functions `PETSC_EXTERN`, because
   PETSc compiles with `-fvisibility=hidden`.
+- Construction ORDER matters: `StructuredFD1D::create` is what decides the parallel
+  decomposition (its DMDA does) and it writes `local_cells` back into the `PhaseSpace`,
+  which `PhaseSpace::create` leaves as `PETSC_DECIDE`. So the discretisation comes first,
+  and anything sized off the phase space comes after. Every `create` that reads
+  `local_cells`/`local_rows()` calls `ps.check_decomposed()` to say so out loud —
+  add that call to new ones.
 - New physics = subclass `OperatorTerm` (assembled contribution into the shared COO values
   and/or matrix-free apply). Discretisation backends produce a `CooPattern` (slot maps) +
   `BoundaryInfo` (Dirichlet row mask); terms write through those, never raw indices.

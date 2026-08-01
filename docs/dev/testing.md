@@ -114,9 +114,36 @@ group and PCAIR re-runs its setup each time. Both are exercised by the recipes.
    with `-ksp_max_it` pinned to the observed converged count.
 4. Driver rules: exit non-zero unless `KSPGetConvergedReason() > 0`; no output files.
 
+## DMDA layout (Phase 3)
+`StructuredFD1D` builds its layout from a 1D DMDA, which is also what decides the parallel
+decomposition. There is no second layout path and no option to select one: Phase 3a carried
+a hand-rolled twin behind `-ubolt_use_dm` purely to verify the DM extraction, and 3b deleted
+it. What replaced the twin as the check is `tests/baselines/` — all 24 logs reproduce
+bitwise, which is what 3a and 3b were each verified against.
+
+The DM chooses its own distribution. PETSc's default 1D DMDA split is
+`M/size + ((M % size) > rank)` (`src/dm/impls/da/da1.c`), the same formula
+`PetscSplitOwnership` uses, so this is the same decomposition UBOLT had when `PhaseSpace`
+computed it — 3a confirmed that empirically at np=1,2,3 (including the uneven 334/333/333
+split) before 3b handed the decision over.
+
+`CheckDALayout` in `src/structured_fd_1dk.kokkos.cxx` asserts at setup that the DM's sizes
+match the phase space and that its global numbering really is the angle-fastest,
+contiguous one every COO index is written against. That property holds for 1D DMDA (PETSc
+ordering coincides with natural ordering) but it is load-bearing, and a violation would
+otherwise surface as a wrong answer rather than an error.
+
+**Ordering constraint (Phase 3b).** `PhaseSpace::create` no longer decides the
+decomposition — it leaves `local_cells` as `PETSC_DECIDE` and `StructuredFD1D::create`
+fills it in. So the discretisation must be created *before* anything sized off the phase
+space. Everything that reads `local_cells`/`local_rows()` calls `ps.check_decomposed()`
+first, which fails with `PETSC_ERR_ARG_WRONGSTATE` and a pointed message rather than
+letting a Kokkos view be allocated with a negative extent further downstream.
+
 ## np=3 caveat
 From Phase 1a the parallel decomposition is decided in cells (rows = local_cells *
-n_angles). The pre-refactor code used PETSC_DECIDE over rows, which can split mid-cell
+n_angles) — by `PetscSplitOwnership` then, by the DMDA since Phase 3, which is the same
+split. The pre-refactor code used PETSC_DECIDE over rows, which can split mid-cell
 (e.g. 1000 cells x 4 angles on 3 ranks) — so np=3 results legitimately differ from the
 pre-refactor binary (np=3, me=2 converges in the same 5 iterations as serial).
 Baselines and tests use np=1,2 only, where the decompositions coincide.
