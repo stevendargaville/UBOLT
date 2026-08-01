@@ -5,6 +5,26 @@
 // - a member access inside a KOKKOS_LAMBDA would dereference a host pointer on
 // the device
 
+// The per-group slices handed to the terms must be CONTIGUOUS, not strided.
+// Cell is the fastest extent of both tables, so fixing the group index (or
+// pair) leaves one dense run of local_cells. That is what the kernels want on
+// either backend: a stride-1 walk vectorises on a CPU and coalesces on a GPU,
+// where consecutive threads would otherwise be n_groups apart.
+//
+// Test the LAYOUT, not assignability: Kokkos allows assigning a rank-1 view of
+// ANY layout to another (is_assignable_layout is true whenever the destination
+// rank is 1), so a strided slice compiles fine and then aborts at runtime with
+// "View assignment must have compatible layouts". A subview that is not
+// contiguous comes back as LayoutStride, and that is the thing to catch
+namespace {
+   using SigmaTSlice = decltype(Kokkos::subview(PetscScalar2DRightKokkosView(), 0, Kokkos::ALL()));
+   using SigmaSSlice = decltype(Kokkos::subview(PetscScalar3DRightKokkosView(), 0, 0, Kokkos::ALL()));
+   static_assert(!std::is_same_v<typename SigmaTSlice::array_layout, Kokkos::LayoutStride>,
+      "sigma_t slice is strided - cell must stay the fastest extent of sigma_t_d_");
+   static_assert(!std::is_same_v<typename SigmaSSlice::array_layout, Kokkos::LayoutStride>,
+      "sigma_s slice is strided - cell must stay the fastest extent of sigma_s_d_");
+}
+
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 // GroupXSections
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

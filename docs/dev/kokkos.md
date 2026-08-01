@@ -10,6 +10,36 @@
 - No `KOKKOS_LAMBDA` in public headers: kernels stay in `src/*.kokkos.cxx` so consumers of
   libubolt compile with a plain C++ compiler.
 
+## Layout: CPU vs GPU
+The default layout of `Kokkos::View<T**, DefaultMemorySpace>` is **not the same on both
+backends** — `LayoutRight` on a host space, `LayoutLeft` on CUDA/HIP. Any multi-dimensional
+view whose element ordering matters must therefore state its layout explicitly, and every
+one in `types.hpp` that matters does:
+
+- `PetscScalar2DConstKokkosView` — `LayoutRight`, so a 1D Vec reshapes to (cell, angle)
+  with angle contiguous. This is *correctness*: the dof ordering is angle-fastest, and the
+  default layout would transpose the meaning of the reshape on a GPU build.
+- `PetscScalar2DRightKokkosView` / `PetscScalar3DRightKokkosView` (the multigroup xsection
+  tables) — `LayoutRight` with cell as the **fastest** extent, so fixing the group index
+  or pair slices out a contiguous run of `local_cells`. That is the right choice on both
+  backends for the same reason it is one array: a stride-1 walk vectorises on a CPU and
+  coalesces on a GPU. Reversing it to cell-slowest would put consecutive threads
+  `n_groups` (or `n_groups^2`) elements apart.
+- Views with a trailing extent of 1 (`w_d_`, `scalar_flux_d_`) are identical under either
+  layout, which is why they can keep the default typedef.
+
+**Do not guard contiguity with `std::is_assignable`.** Kokkos sets `is_assignable_layout`
+whenever the *destination* rank is 1, so assigning a strided rank-1 subview to a
+`LayoutRight` view compiles cleanly and then aborts at run time with "View assignment must
+have compatible layouts". Test the layout instead — a non-contiguous subview comes back as
+`Kokkos::LayoutStride`:
+
+```cpp
+using Slice = decltype(Kokkos::subview(SomeView(), 0, 0, Kokkos::ALL()));
+static_assert(!std::is_same_v<typename Slice::array_layout, Kokkos::LayoutStride>, "...");
+```
+`src/multigroupk.kokkos.cxx` does this for both xsection tables.
+
 ## Include order
 - `petscvec_kokkos.hpp` must be the FIRST PETSc header in a C++ translation unit (it
   `#error`s otherwise). `types.hpp` pulls it in, so ubolt headers that need views include
