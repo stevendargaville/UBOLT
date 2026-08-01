@@ -57,13 +57,11 @@ Codebase map
 - New physics = subclass `OperatorTerm` (assembled contribution into the shared COO values
   and/or matrix-free apply). Discretisation backends produce a `CooPattern` (slot maps) +
   `BoundaryInfo` (Dirichlet row mask); terms write through those, never raw indices.
-  Anything that builds a right hand side rather than acting on the unknowns being solved
-  for is NOT an `OperatorTerm` — see `GroupTransfer` — but it still owes the Dirichlet mask
-  the same contract: leave flagged rows alone, they carry the boundary condition.
-  KNOWN GAP: the contract is written for `assemble_add`, and `ScatteringTerm::apply_add`
-  does not honour it, so the shell's Dirichlet rows are not the identity the assembly
-  wrote. Pre-existing and the same in 1D and 2D — see the Phase 4 postscript in `TODO.md`
-  before touching it, fixing it re-captures every baseline.
+  The Dirichlet contract binds BOTH halves of a term, `assemble_add` and `apply_add`:
+  leave flagged rows alone, they carry the boundary condition, and the assembly has already
+  put the identity there. Anything that builds a right hand side rather than acting on the
+  unknowns being solved for is NOT an `OperatorTerm` — see `GroupTransfer` — but it owes
+  the mask the same thing.
 - PETSc source is at `$PETSC_DIR/$PETSC_ARCH`. Both env variables must be set.
   PFLARE is at `$PFLARE_DIR` (defaults to `/home/sdargavi/projects/PFLARE` in the Makefile).
 

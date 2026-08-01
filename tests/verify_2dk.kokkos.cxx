@@ -167,10 +167,10 @@ static PetscErrorCode CheckStreamingClosedForm(PetscInt n_cells_x, PetscInt n_ce
 // that difference is precisely what StructuredFD2D's layout assert exists for,
 // and it is checked there rather than papered over here
 //
-// NOTE the reference includes the scatter on the DIRICHLET rows too, because
-// that is what the code does: the Dirichlet contract is stated for assembled
-// terms, and the matrix-free scatter does not observe it. Pre-existing from
-// Phase 1 and the same in 1D - see TODO.md
+// A Dirichlet row is the identity and NOTHING else - the scatter is a term like
+// any other and owes the mask the same contract. That is worth checking rather
+// than assuming: this check is what caught the matrix-free scatter writing to
+// those rows in the first place (fixed Aug 2026, see TODO.md)
 static PetscErrorCode CheckOperatorAgainstReference(PetscInt n_cells_x, PetscInt n_cells_y, PetscInt n_angles, \
    PetscReal length_x, PetscReal length_y, PetscScalar sigma_t, PetscScalar sigma_s, PetscBool *ok)
 {
@@ -203,7 +203,7 @@ static PetscErrorCode CheckOperatorAgainstReference(PetscInt n_cells_x, PetscInt
 
    PetscCall(streaming.create(ps, disc, quad));
    PetscCall(removal.create(ps, disc, sigma_t_d));
-   PetscCall(scattering.create(ps, quad, sigma_s_d));
+   PetscCall(scattering.create(ps, disc, quad, sigma_s_d));
 
    PetscCall(op.create(PETSC_COMM_WORLD, ps, disc));
    PetscCall(op.add_term(&streaming));
@@ -237,7 +237,8 @@ static PetscErrorCode CheckOperatorAgainstReference(PetscInt n_cells_x, PetscInt
 
                if (IsInflowNode(mu[a], eta[a], i, j, n_cells_x, n_cells_y)) {
 
-                  // The assembly replaces an inflow row with the identity
+                  // An inflow row is the identity, and nothing gets to add to
+                  // it - not the assembled terms and not the scatter
                   ref[row] = 1.0;
 
                } else {
@@ -251,12 +252,15 @@ static PetscErrorCode CheckOperatorAgainstReference(PetscInt n_cells_x, PetscInt
                      const PetscInt upwind_j = (eta[a] > 0.0) ? j - 1 : j + 1;
                      ref[(upwind_j * n_cells_x + i) * n_angles + a] += -PetscAbsScalar(eta[a]) / dy;
                   }
-               }
 
-               // The scatter is on the lhs, so it comes off every angle of the
-               // node - see the note above about the Dirichlet rows
-               for (PetscInt a2 = 0; a2 < n_angles; a2++) {
-                  ref[(j * n_cells_x + i) * n_angles + a2] += -scat * w;
+                  // The scatter is on the lhs, so it comes off this angle for
+                  // every angle it scatters from - including its own, which is
+                  // why it reaches the diagonal too. Note it integrates over
+                  // EVERY angle of the node, Dirichlet ones included: the
+                  // prescribed incoming flux is a real part of the flux there
+                  for (PetscInt a2 = 0; a2 < n_angles; a2++) {
+                     ref[(j * n_cells_x + i) * n_angles + a2] += -scat * w;
+                  }
                }
 
                PetscCall(MatGetValues(explicit_mat, 1, &row, N, cols.data(), got.data()));

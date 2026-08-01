@@ -94,8 +94,11 @@ public:
    // sigma_s_d is indexed by local cell and must outlive the term. In a
    // multigroup sweep this is the within-group block sigma_s(g -> g); the
    // off-diagonal blocks go to the rhs through GroupTransfer
-   // Any quadrature: the scatter only needs the weights, never the directions
-   PetscErrorCode create(const PhaseSpace &ps, const AngularQuadrature &quad, const PetscScalarKokkosView &sigma_s_d);
+   // Any discretisation and any quadrature: the scatter is cell-local, so all
+   // it wants from the discretisation is the Dirichlet mask, and all it wants
+   // from the quadrature is the weights, never the directions
+   PetscErrorCode create(const PhaseSpace &ps, const Discretisation &disc, \
+      const AngularQuadrature &quad, const PetscScalarKokkosView &sigma_s_d);
 
    // Point the term at a different xsection - see RemovalTerm::set_sigma_t
    void set_sigma_s(const PetscScalarKokkosView &sigma_s_d) { sigma_s_d_ = sigma_s_d; }
@@ -108,6 +111,7 @@ private:
    PetscScalar sum_weights_ = 0.0;
    PetscScalarKokkosView sigma_s_d_;
    PetscScalar2DKokkosView w_d_;
+   BoundaryInfo boundary_;
    // Persistent scratch - never allocate device memory inside an apply
    PetscScalar2DKokkosView scalar_flux_d_;
 };

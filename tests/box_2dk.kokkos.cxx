@@ -78,7 +78,7 @@ int main(int argc, char **args) {
       RemovalTerm removal;
       PetscCall(removal.create(ps, disc, sigma_t_d));
       ScatteringTerm scattering;
-      PetscCall(scattering.create(ps, quad, sigma_s_d));
+      PetscCall(scattering.create(ps, disc, quad, sigma_s_d));
 
       TransportOperator op;
       PetscCall(op.create(PETSC_COMM_WORLD, ps, disc));

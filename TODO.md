@@ -203,8 +203,9 @@ previous one's verification has passed and been reviewed.
     reference matrix built entry by entry in the driver: max difference 0.0, i.e. bitwise,
     on 4x3 with S2 and S4. Serial, because the reference is written in natural ordering —
     which is exactly the difference StructuredFD2D's layout assert exists to police.
-  - Pinned PCAIR iterations: 16 new recipes in tests/Makefile, counts in
-    docs/dev/testing.md.
+  - Pinned PCAIR iterations: recipes in tests/Makefile, counts in docs/dev/testing.md.
+    (Both the counts and the reference matrix moved straight after Phase 4, when the
+    postscript below fixed the Dirichlet bug this verification found.)
   - No 2D residual-history baselines were captured. In 1D they are the numerical-inertness
     oracle for a refactor; in 2D the reference-matrix check is a strictly sharper one (it
     compares every entry of the operator, not a residual history that happens to agree),
@@ -283,36 +284,46 @@ previous one's verification has passed and been reviewed.
       converges faster (me=2: 10 -> 5 its, streaming pmat me=2: 16 -> 10). New counts in
       `docs/dev/testing.md`; recipes re-pinned. diag_scale + me=2 is still pathological.
 
-## Phase 4 postscript — the matrix-free scatter ignores the Dirichlet mask (OPEN)
-- [ ] `ScatteringTerm::apply_add` subtracts `sigma_s phi / sum_weights` from EVERY row,
-      Dirichlet rows included. So the shell's boundary rows are not the identity the
-      assembly wrote — they are `psi_r - (scatter at that node) = incoming`, and the
-      prescribed inflow value is polluted by the scattering source in that cell.
-      Found in Phase 4b while writing the reference matrix in `tests/verify_2dk`, which
-      models the behaviour rather than the intent (and matches it bitwise).
-      Pre-existing since Phase 1 and identical in 1D — the Dirichlet contract in
-      `operator_term.hpp` is written for `assemble_add` only, so `apply_add` was never
-      told about it. Deliberately NOT fixed inside Phase 4: the fix changes the operator
-      and invalidates all 24 baselines, which is its own commit with its own re-capture,
-      exactly as the Phase 1 postscript upwind-sign fix was handled.
-      When it is done: widen the contract in `operator_term.hpp` to cover `apply_add`,
-      give `ScatteringTerm` the Dirichlet mask (it does not take one today — its create
-      does not receive a Discretisation at all), re-capture the baselines, and update the
-      note in `tests/verify_2dk.kokkos.cxx`.
+## Phase 4 postscript — the matrix-free scatter ignored the Dirichlet mask (own commit)
+- [x] `ScatteringTerm::apply_add` subtracted `sigma_s phi / sum_weights` from EVERY row,
+      Dirichlet rows included. So the shell's boundary rows were not the identity the
+      assembly wrote — they were `psi_r - (scatter at that node) = incoming`, and the
+      prescribed inflow value was polluted by the scattering source in that cell.
+      Found in Phase 4b while writing the reference matrix in `tests/verify_2dk`. Present
+      since Phase 1 and identical in 1D: the Dirichlet contract in `operator_term.hpp` was
+      written for `assemble_add` only, so `apply_add` was never told about it. Fixed on its
+      own with a full baseline re-capture, exactly as the Phase 1 upwind-sign fix was.
+      What changed: the contract in `operator_term.hpp` now covers both halves of a term;
+      `ScatteringTerm::create` takes a `Discretisation` so it can hold the mask; the apply
+      skips flagged rows. The scalar flux is still integrated over EVERY angle, Dirichlet
+      ones included — the prescribed incoming flux is a real part of the flux in that cell,
+      so the interior angles must scatter off it. Only the write to a flagged row is
+      dropped. `verify_2dk`'s reference matrix now says a Dirichlet row is the identity and
+      nothing else, and the operator matches it bitwise.
+      Everything with `sigma_s = 0` is unchanged; everything else moved. In 1D the
+      well-behaved configs are a wash (me=2: 5 -> 6, streaming pmat me=2: 10 -> 9,
+      multigroup streaming sweep max 13 -> 11) and the pathological diag_scale + me=2 pair
+      got worse (175 its -> capped at 200; breakdown at 90 -> 150). In 2D it is a large
+      win — see the research note below, which the fix rewrote.
 
 ## Research notes
-- **Scattering ratio 1 in 2D degrades on non-square grids** (found in Phase 4b, and the
-  sharpest statement of the Phase 5 question the current preconditioner poses). With
-  `sigma_s = sigma_t` (pure scattering, no absorption) the composite PC is mesh
-  independent on a square grid — 50x50 takes 18 iterations and 100x100 takes 21 — but on
-  anything non-square it is not: 60x30 and 80x20 (the latter with square cells, just a
-  4:1 box) do not converge in 400. Drop the ratio to 0.5 and every one of those converges
-  in 8 or 9, mesh independently, and pure streaming (`-max_exponent 0`) converges in 3
-  everywhere including the failing shapes. So it is the scattering, not the streaming, the
-  discretisation or PCAIR on it — the operator itself is verified bitwise against a
-  reference matrix on non-square grids. Nothing in the current PC does anything about the
-  scattering; this is the DSA-shaped hole. `-sigma_scatter` on `box_2dk` is what varies the
-  ratio. Recipes cover both regimes: ratio 0.5 everywhere, ratio 1 on square grids only.
+- **"Scattering ratio 1 in 2D degrades on non-square grids" — RESOLVED, it was the
+  Dirichlet bug** (observed in Phase 4b, explained by the postscript fix above; recorded
+  because the wrong conclusion is an easy one to reach again). The observation was real:
+  with `sigma_s = sigma_t` the composite PC looked mesh independent on a square grid
+  (50x50 in 18 iterations, 100x100 in 21) and not on any other shape (60x30 and 80x20 did
+  not converge in 400), while dropping the ratio to 0.5 fixed it. The tempting reading —
+  that this is the missing-DSA hole and therefore Phase 5's problem — was wrong. It was
+  the matrix-free scatter writing to the Dirichlet rows: the amount it wrote is
+  proportional to `sigma_s`, which is why the ratio looked like the variable, and it broke
+  the boundary rows, which is why the shape of the boundary mattered. With the fix every
+  one of those shapes converges in 5 to 7 iterations, mesh independently: 60x30 -> 6 and
+  120x60 -> 7; 200x50 in a 1x0.25 box -> 5; S4 at 100x100 -> 6, down from 87. There is
+  still no DSA and a genuinely diffusive problem will still want one, but nothing in the
+  current test set demonstrates that — the lesson is to suspect the operator before the
+  preconditioner when a count depends on something the operator should not care about.
+  `-sigma_scatter` on `box_2dk`, added to investigate this, stays: varying the ratio
+  independently of `sigma_t` is worth having.
 - **Single assembled streaming matrix across all groups** (Phase 5 direction): apply
   removal + scatter matrix-free so only one assembled matrix is stored for all energy
   groups. Open question: an effective preconditioner for streaming-only pmat when removal

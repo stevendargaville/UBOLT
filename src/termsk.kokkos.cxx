@@ -179,7 +179,8 @@ PetscErrorCode RemovalTerm::assemble_add(PetscScalarKokkosView &coo_v_d) const
 // ScatteringTerm
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-PetscErrorCode ScatteringTerm::create(const PhaseSpace &ps, const AngularQuadrature &quad, const PetscScalarKokkosView &sigma_s_d)
+PetscErrorCode ScatteringTerm::create(const PhaseSpace &ps, const Discretisation &disc, \
+   const AngularQuadrature &quad, const PetscScalarKokkosView &sigma_s_d)
 {
    PetscFunctionBeginUser;
 
@@ -192,6 +193,7 @@ PetscErrorCode ScatteringTerm::create(const PhaseSpace &ps, const AngularQuadrat
    sum_weights_ = quad.sum_weights();
    sigma_s_d_ = sigma_s_d;
    w_d_ = quad.w_d();
+   boundary_ = disc.boundary_info();
    // Persistent scratch for the scalar flux, sized by the local cells - the
    // scatter is applied to the local part of the vectors only
    scalar_flux_d_ = PetscScalar2DKokkosView("scalar_flux_d", ps.local_cells, 1);
@@ -210,6 +212,7 @@ PetscErrorCode ScatteringTerm::apply_add(Vec x, Vec y) const
    const PetscScalar sum_weights = sum_weights_;
    const PetscScalarKokkosView sigma_s_d = sigma_s_d_;
    const PetscScalar2DKokkosView scalar_flux_d = scalar_flux_d_;
+   const PetscIntKokkosView is_dirichlet_row_d = boundary_.is_dirichlet_row_d;
 
    PetscFunctionBeginUser;
 
@@ -245,6 +248,14 @@ PetscErrorCode ScatteringTerm::apply_add(Vec x, Vec y) const
          // For all the angles
          Kokkos::parallel_for(
             Kokkos::TeamThreadRange(t, n_angles), [&](const PetscInt j) {
+
+               // Add nothing to the bcs - the assembled part put the identity
+               // on those rows and this would take it back off. Note the
+               // scalar flux itself is still integrated over EVERY angle,
+               // Dirichlet ones included: the prescribed incoming flux is a
+               // real part of the flux in that cell, so the interior angles
+               // scatter off it
+               if (is_dirichlet_row_d(i * n_angles + j)) return;
 
                // Minus the scattering term as it's on the lhs
                y_d(i * n_angles + j) -= scalar_flux_d(i, 0);

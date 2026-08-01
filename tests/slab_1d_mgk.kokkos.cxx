@@ -92,7 +92,7 @@ int main(int argc, char **args) {
       RemovalTerm removal;
       PetscCall(removal.create(ps, disc, xs.sigma_t(0)));
       ScatteringTerm scattering;
-      PetscCall(scattering.create(ps, quad, xs.sigma_s(0, 0)));
+      PetscCall(scattering.create(ps, disc, quad, xs.sigma_s(0, 0)));
 
       TransportOperator op;
       PetscCall(op.create(PETSC_COMM_WORLD, ps, disc));

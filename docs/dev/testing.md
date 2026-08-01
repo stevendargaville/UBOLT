@@ -32,17 +32,19 @@ numerically inert must diff clean against all 24. All of them are 1D — the 2D 
 sharper and need no baseline, see below.
 
 ### Single-group baselines
-Re-captured 2026-07-31 after the negative-angle upwind sign fix (see below). Before that
-they came from the pre-refactor code (the single-file `UBOLTk.kokkos.cxx`), and Phase 1a
-and Phase 1b each reproduced all 16 of them bitwise — which is what the phases were
-verified against. The `-ubolt_coo_two_call` assembly fallback also reproduces them bitwise.
+Re-captured 2026-08-01 after the Dirichlet-row fix to the matrix-free scatter (see below).
+Before that, 2026-07-31 after the negative-angle upwind sign fix, and before *that* they
+came from the pre-refactor code (the single-file `UBOLTk.kokkos.cxx`); Phase 1a and Phase
+1b each reproduced all 16 bitwise, which is what those phases were verified against. The
+`-ubolt_coo_two_call` assembly fallback reproduces them bitwise.
 
 - Full matrix: {default pc, `-precon_stream -ksp_pc_side right`} x {`-max_exponent` 0, 2}
   x {np 1, 2} x {`-diag_scale` off, on}. File naming:
   `slab1d_<default|stream>_me<0|2>_np<1|2>[_ds].log`.
-- Capture is capped at `-ksp_max_it 200`: the me=2 diag_scale configs are pathological
+- Capture is capped at `-ksp_max_it 200`: all four me=2 diag_scale configs are pathological
   (see table) and a 200-iteration residual history is a strong enough fingerprint.
-  Non-converged baselines are still valid fingerprints for a refactor diff.
+  Non-converged baselines are still valid fingerprints for a refactor diff. None of those
+  four converges, so all four capture lines carry `|| true`.
 - Re-capture with `make baselines` — only do this deliberately (i.e. when the reference
   behavior itself is being intentionally changed), never to make a failing test pass.
 - Environment matters for exact reproduction: these were captured with a debug PETSc main
@@ -52,21 +54,34 @@ verified against. The `-ubolt_coo_two_call` assembly fallback also reproduces th
   log against the baseline for the *same* np, never across np.
 
 ## Single-group baseline iteration counts
-Captured 2026-07-31, capped at `-ksp_max_it 200`. The pre-fix column is what the
-pre-refactor code did, kept because Phases 1a and 1b were verified against it:
+Captured 2026-08-01, capped at `-ksp_max_it 200`. The two older columns are kept because
+earlier phases were verified against them — "sign fix" is the 2026-07-31 capture, before
+the scatter's Dirichlet rows were fixed, and "pre-refactor" is what the original single
+file did:
 
-| config | np=1 | np=2 | pre-fix (np=1, np=2) |
-|---|---|---|---|
-| default pc, me=0 | 1 | 1 | 1, 1 |
-| default pc, me=2 | 5 | 5 | 10, 10 |
-| default pc, me=0, diag_scale | 1 | 1 | 1, 1 |
-| default pc, me=2, diag_scale | 175 | 173 | DIVERGED_ITS (6305 uncapped) |
-| precon_stream, me=0 | 1 | 1 | 1, 1 |
-| precon_stream, me=2 | 10 | 10 | 16, 16 |
-| precon_stream, me=0, diag_scale | 3 | 3 | 3, 3 |
-| precon_stream, me=2, diag_scale | DIVERGED_BREAKDOWN (90) | DIVERGED_BREAKDOWN (90) | DIVERGED_ITS |
+| config | np=1 | np=2 | sign fix (np=1, np=2) | pre-refactor |
+|---|---|---|---|---|
+| default pc, me=0 | 1 | 1 | 1, 1 | 1, 1 |
+| default pc, me=2 | 6 | 6 | 5, 5 | 10, 10 |
+| default pc, me=0, diag_scale | 1 | 1 | 1, 1 | 1, 1 |
+| default pc, me=2, diag_scale | DIVERGED_ITS (200) | DIVERGED_ITS (200) | 175, 173 | DIVERGED_ITS |
+| precon_stream, me=0 | 1 | 1 | 1, 1 | 1, 1 |
+| precon_stream, me=2 | 9 | 9 | 10, 10 | 16, 16 |
+| precon_stream, me=0, diag_scale | 3 | 3 | 3, 3 | 3, 3 |
+| precon_stream, me=2, diag_scale | DIVERGED_BREAKDOWN (150) | DIVERGED_BREAKDOWN (150) | DIVERGED_BREAKDOWN (90) | DIVERGED_ITS |
+
+The me=0 rows are identical across all three captures, and must be: `sigma_s = 0` there,
+so neither the scatter nor its Dirichlet rows exist.
 
 History of these baselines:
+- **The matrix-free scatter wrote to the Dirichlet rows** (FIXED after Phase 4, this
+  re-capture): `ScatteringTerm::apply_add` subtracted the scattering source from every row
+  including the boundary ones, so the shell's Dirichlet rows were not the identity the
+  assembly had written and the prescribed inflow value was polluted. Present since Phase 1;
+  the contract in `operator_term.hpp` only ever covered `assemble_add`. Found by
+  `tests/verify_2dk`'s reference matrix. In 1D the effect is a wash — the well-behaved
+  configs move by one iteration either way and the pathological diag_scale pair gets worse
+  — but in 2D it was the whole of an apparent preconditioner problem (see `TODO.md`).
 - **Negative-angle upwind sign** (FIXED after Phase 1b, this re-capture): the streaming
   term wrote the upwind neighbour coefficient as `-mu/dx`, correct for `mu > 0` but the
   wrong sign for `mu < 0`, so those rows were `|mu|/dx (psi_i + psi_i+1)` instead of
@@ -92,15 +107,16 @@ and the downscatter source arithmetic, neither of which a single `-ksp_max_it` c
 The `t0` logs are exactly four byte-for-byte copies of the matching single-group
 `slab1d_default_me2_np<n>.log`. That is the Phase 2 uncoupled-groups verification, and it
 is worth re-checking as a structural property rather than only diffing the file — a change
-that broke both files the same way would still diff clean.
+that broke both files the same way would still diff clean. It was re-checked that way on
+the 2026-08-01 re-capture, when both files moved.
 
 | multigroup config | per-group iterations (np=1 and np=2) |
 |---|---|
 | default pc, me=0, transfer 0.5 | 1, 1, 1, 1 |
-| default pc, me=2, transfer 0.0 | 5, 5, 5, 5 (= single group, four times) |
-| default pc, me=2, transfer 0.5 | 5, 6, 6, 6 |
-| default pc, me=2, transfer 2.0 | 5, 7, 6, 6 (recipe only, not captured) |
-| precon_stream, me=2, transfer 0.5 | 12, 13, 13, 11 |
+| default pc, me=2, transfer 0.0 | 6, 6, 6, 6 (= single group, four times) |
+| default pc, me=2, transfer 0.5 | 6, 6, 6, 5 |
+| default pc, me=2, transfer 2.0 | 6, 5, 5, 5 (recipe only, not captured) |
+| precon_stream, me=2, transfer 0.5 | 11, 11, 10, 9 |
 
 Group 0 matches the single-group count because its rhs is just the external source; the
 later groups carry a downscatter source as well. The last group has no outgoing transfer,
@@ -131,9 +147,9 @@ catch. `make baselines` is still 1D + multigroup only.
    written in the natural ordering, which is what a 2D DMDA uses on one rank.
    The reference deliberately reimplements the inflow test rather than reading the
    discretisation's Dirichlet mask — a check that asked the code under test which rows it
-   thought were boundary rows would agree with it by construction.
-   It also models the scatter on the Dirichlet rows, because that is what the code does;
-   see the Phase 4 postscript in `TODO.md`.
+   thought were boundary rows would agree with it by construction. It says a Dirichlet row
+   is the identity and nothing else, which is how it caught the matrix-free scatter writing
+   to those rows; see the Phase 4 postscript in `TODO.md`.
 
 **Parallel.** A 2D DMDA at `-n 2` splits in one direction only, so `-n 4` is the first
 decomposition with a genuinely 2D processor grid and the one where the patch-lexicographic
@@ -141,25 +157,28 @@ global numbering is least like the natural one. Both are in `run_tests_short_par
 
 ## 2D iteration counts (`box_2dk`)
 `-max_exponent` sets `sigma_t`; `-sigma_scatter` sets `sigma_s`, defaulting to the same
-value (scattering ratio 1). Ratio 1 is the hardest case for a preconditioner that does
-nothing about the scattering, and in 2D it is mesh independent only on a square grid —
-see the research note in `TODO.md`. Recipes cover ratio 0.5 on every shape and ratio 1 on
-square grids only.
+value, which is a scattering ratio of exactly 1 (no absorption). Counts below are with the
+Dirichlet-row fix; before it, ratio 1 took 18 to 87 iterations on square grids and did not
+converge at all on any other shape, which is what led to the fix — see the research note
+in `TODO.md`.
 
 | config | np=1 | np=2 |
 |---|---|---|
-| 50x50, me=2, ratio 0.5 | 8 | 8 |
-| 60x30 (dx != dy), me=2, ratio 0.5 | 8 | 8 |
-| 80x20 in a 1x0.25 box (dx == dy), me=2, ratio 0.5 | 9 | 10 |
-| 120x60, me=2, ratio 0.5 | 8 | 8 |
-| 60x60 S4, me=2, ratio 0.5 | 8 | 8 |
-| 120x60, streaming-only pmat, me=2, ratio 0.5 | 20 | — |
+| 50x50, me=2 (ratio 1) | 6 | 6 |
+| 50x50, me=2, ratio 0.5 | 5 | 5 |
+| 60x30 (dx != dy), me=2 | 6 | 6 |
+| 120x60 (same shape, 4x finer), me=2 | 7 | 7 |
+| 80x20 in a 1x0.25 box (dx == dy), me=2 | 5 | 5 |
 | 50x50, me=0 (pure streaming) | 3 | 3 |
 | 100x100, me=0 | 3 | 3 |
-| 50x50, me=2, ratio 1 | 18 | 20 |
-| 100x100, me=2, ratio 1 | 21 | 24 |
-| 50x50, streaming-only pmat, me=2, ratio 1 | 46 | 54 |
-| 30x30 S4, me=2, ratio 1 | 28 | 28 |
+| 100x100, me=2 | 7 | 7 |
+| 50x50, streaming-only pmat, me=2 | 8 | 9 |
+| 120x60, streaming-only pmat, me=2 | 9 | — |
+| 30x30 S4, me=2 | 6 | 6 |
+| 100x100 S4, me=2 | 6 | 6 |
+
+Mesh independent on every shape: 60x30 to 120x60 moves 6 to 7, and 200x50 in the 1x0.25
+box (not a recipe) is 5, the same as 80x20.
 
 ## Adding a test driver
 1. Add the executable name to `TEST_TARGETS` (and `CHECK_TARGETS` if it belongs in

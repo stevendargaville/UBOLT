@@ -10,8 +10,16 @@
 // values through the discretisation's slot maps) or a matrix-free apply, or
 // both. New physics = a new subclass; nothing else has to change
 //
-// Contract: assemble_add must contribute NOTHING to rows flagged in the
-// BoundaryInfo Dirichlet mask - the assembly step puts the identity there
+// Contract: a term must contribute NOTHING to rows flagged in the BoundaryInfo
+// Dirichlet mask - not from assemble_add, and not from apply_add either. The
+// assembly step puts the identity on those rows, and a matrix-free term adding
+// to them afterwards would take it straight back off, leaving the operator's
+// boundary rows something other than the boundary condition
+//
+// This used to be stated for assemble_add alone, and ScatteringTerm::apply_add
+// did in fact write to the Dirichlet rows (fixed Aug 2026, its own commit and
+// baseline re-capture - see TODO.md). A term whose apply needs the mask takes a
+// Discretisation in its create, as the assembled terms do
 class PETSC_VISIBILITY_PUBLIC OperatorTerm {
 public:
    virtual ~OperatorTerm() = default;
