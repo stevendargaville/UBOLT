@@ -159,6 +159,7 @@ int main(int argc, char **args) {
       PetscCall(transfer.destroy());
       PetscCall(op.destroy());
       PetscCall(xs.destroy());
+      PetscCall(disc.destroy());
       PetscCall(MatDestroy(&streaming_mat));
       PetscCall(VecDestroy(&b));
       for (PetscInt g = 0; g < n_groups; g++) PetscCall(VecDestroy(&psi[g]));
