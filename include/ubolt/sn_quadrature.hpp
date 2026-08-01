@@ -2,6 +2,7 @@
 #define UBOLT_SN_QUADRATURE_HPP
 
 #include "ubolt/types.hpp"
+#include <petscvec.h>
 #include <vector>
 
 // SN quadrature (Gauss-Legendre for n_angles = 2 or 4)
@@ -29,5 +30,16 @@ private:
    PetscScalarKokkosView mu_d_;
    PetscScalar2DKokkosView w_d_;
 };
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+// The angular integral: scalar_flux(cell, 0) = sum_a w_a psi(cell, a), over the
+// LOCAL part of psi only. Runs on the device
+//
+// scalar_flux_d is caller-owned persistent scratch sized (local_cells, 1) -
+// never allocate device memory inside an apply. Shared by every term that needs
+// a scalar flux, so they all do bit-identical arithmetic
+PETSC_EXTERN PetscErrorCode UboltAngularIntegral(Vec psi, PetscInt n_angles, \
+   const PetscScalar2DKokkosView &w_d, const PetscScalar2DKokkosView &scalar_flux_d);
 
 #endif

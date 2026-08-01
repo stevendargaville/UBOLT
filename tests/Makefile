@@ -80,6 +80,8 @@ run_check:
 	./slab_1dk -max_exponent 2 -ksp_max_it 5
 	@echo "Check 1D slab preconditioned with streaming only in parallel"
 	$(MPIEXEC) -n 2 ./slab_1dk -precon_stream -ksp_pc_side right -max_exponent 2 -ksp_max_it 10
+	@echo "Check 1D slab multigroup, 4 groups with downscatter"
+	./slab_1d_mgk -n_groups 4 -sigma_transfer 0.5 -max_exponent 2 -ksp_max_it 6
 
 # ~~~~~~~~~~~
 # ~~~~~~~~~~~
@@ -102,6 +104,25 @@ run_tests_short_serial:
 	./slab_1dk -n_cells 500 -n_angles 2 -length 2.0 -max_exponent 2 -ksp_max_it 10
 	@echo "Test 1D slab, one MatSetValuesCOO per term instead of a single summed one"
 	./slab_1dk -max_exponent 2 -ksp_max_it 5 -ubolt_coo_two_call
+#
+# Multigroup. -ksp_max_it is a single pin for the whole sweep, so it is the MAX
+# over the groups - see ../docs/dev/testing.md
+	@echo "Test 1D slab multigroup, one group reproduces the single-group problem"
+	./slab_1d_mgk -n_groups 1 -max_exponent 2 -ksp_max_it 5
+	@echo "Test 1D slab multigroup, uncoupled groups each reproduce the single-group problem"
+	./slab_1d_mgk -n_groups 4 -sigma_transfer 0.0 -max_exponent 2 -ksp_max_it 5
+	@echo "Test 1D slab multigroup, 4 groups with downscatter"
+	./slab_1d_mgk -n_groups 4 -sigma_transfer 0.5 -max_exponent 2 -ksp_max_it 6
+	@echo "Test 1D slab multigroup, strong downscatter"
+	./slab_1d_mgk -n_groups 4 -sigma_transfer 2.0 -max_exponent 2 -ksp_max_it 7
+	@echo "Test 1D slab multigroup, streaming-only pmat reused across the sweep"
+	./slab_1d_mgk -n_groups 4 -sigma_transfer 0.5 -precon_stream -ksp_pc_side right -max_exponent 2 -ksp_max_it 13
+	@echo "Test 1D slab multigroup, weak removal (advection dominated)"
+	./slab_1d_mgk -n_groups 4 -sigma_transfer 0.5 -max_exponent 0 -ksp_max_it 1
+	@echo "Test 1D slab multigroup, S2 on a coarser slab"
+	./slab_1d_mgk -n_groups 2 -sigma_transfer 1.0 -n_cells 500 -n_angles 2 -length 2.0 -max_exponent 2 -ksp_max_it 10
+	@echo "Test 1D slab multigroup, per-group refill with one MatSetValuesCOO per term"
+	./slab_1d_mgk -n_groups 4 -sigma_transfer 0.5 -max_exponent 2 -ksp_max_it 6 -ubolt_coo_two_call
 
 # ~~~~~~~~~~~
 # ~~~~~~~~~~~
@@ -118,6 +139,12 @@ run_tests_short_parallel:
 	$(MPIEXEC) -n 2 ./slab_1dk -n_cells 500 -n_angles 2 -length 2.0 -max_exponent 2 -ksp_max_it 10
 	@echo "Test 1D slab, one MatSetValuesCOO per term in parallel"
 	$(MPIEXEC) -n 2 ./slab_1dk -max_exponent 2 -ksp_max_it 5 -ubolt_coo_two_call
+	@echo "Test 1D slab multigroup, 4 groups with downscatter in parallel"
+	$(MPIEXEC) -n 2 ./slab_1d_mgk -n_groups 4 -sigma_transfer 0.5 -max_exponent 2 -ksp_max_it 6
+	@echo "Test 1D slab multigroup, streaming-only pmat in parallel"
+	$(MPIEXEC) -n 2 ./slab_1d_mgk -n_groups 4 -sigma_transfer 0.5 -precon_stream -ksp_pc_side right -max_exponent 2 -ksp_max_it 13
+	@echo "Test 1D slab multigroup, uncoupled groups in parallel"
+	$(MPIEXEC) -n 2 ./slab_1d_mgk -n_groups 4 -sigma_transfer 0.0 -max_exponent 2 -ksp_max_it 5
 
 # ~~~~~~~~~~~
 # ~~~~~~~~~~~
@@ -138,6 +165,10 @@ run_tests_parallel:
 	$(MPIEXEC) -n 2 ./slab_1dk -max_exponent 0 -ksp_max_it 1
 	@echo "Test 1D slab, diagonally scaled in parallel"
 	$(MPIEXEC) -n 2 ./slab_1dk -diag_scale -max_exponent 0 -ksp_max_it 1
+	@echo "Test 1D slab multigroup, weak removal in parallel"
+	$(MPIEXEC) -n 2 ./slab_1d_mgk -n_groups 4 -sigma_transfer 0.5 -max_exponent 0 -ksp_max_it 1
+	@echo "Test 1D slab multigroup, strong downscatter in parallel"
+	$(MPIEXEC) -n 2 ./slab_1d_mgk -n_groups 4 -sigma_transfer 2.0 -max_exponent 2 -ksp_max_it 7
 
 # ~~~~~~~~~~~
 # Re-capture reference baselines into baselines/
@@ -170,4 +201,18 @@ capture_baselines:
 	$(MPIEXEC) -n 2 ./slab_1dk -precon_stream -ksp_pc_side right -max_exponent 2 $(BASE) > baselines/slab1d_stream_me2_np2.log
 	$(MPIEXEC) -n 2 ./slab_1dk -precon_stream -ksp_pc_side right -max_exponent 0 -diag_scale $(BASE) > baselines/slab1d_stream_me0_np2_ds.log
 	$(MPIEXEC) -n 2 ./slab_1dk -precon_stream -ksp_pc_side right -max_exponent 2 -diag_scale $(BASE) > baselines/slab1d_stream_me2_np2_ds.log || true
+#
+# Multigroup: 4 groups, {default pc, precon_stream} x {transfer 0, 0.5} x {np 1, 2}.
+# Each log is the whole group sweep, one KSP history after another. The
+# transfer 0 logs are 4 copies of the single-group history, which is the
+# uncoupled-groups verification; the transfer 0.5 logs are the fingerprint of
+# the downscatter source itself
+	./slab_1d_mgk -n_groups 4 -sigma_transfer 0.0 -max_exponent 2 $(BASE) > baselines/slab1dmg_default_me2_g4_t0_np1.log
+	./slab_1d_mgk -n_groups 4 -sigma_transfer 0.5 -max_exponent 2 $(BASE) > baselines/slab1dmg_default_me2_g4_t05_np1.log
+	./slab_1d_mgk -n_groups 4 -sigma_transfer 0.5 -max_exponent 0 $(BASE) > baselines/slab1dmg_default_me0_g4_t05_np1.log
+	./slab_1d_mgk -n_groups 4 -sigma_transfer 0.5 -precon_stream -ksp_pc_side right -max_exponent 2 $(BASE) > baselines/slab1dmg_stream_me2_g4_t05_np1.log
+	$(MPIEXEC) -n 2 ./slab_1d_mgk -n_groups 4 -sigma_transfer 0.0 -max_exponent 2 $(BASE) > baselines/slab1dmg_default_me2_g4_t0_np2.log
+	$(MPIEXEC) -n 2 ./slab_1d_mgk -n_groups 4 -sigma_transfer 0.5 -max_exponent 2 $(BASE) > baselines/slab1dmg_default_me2_g4_t05_np2.log
+	$(MPIEXEC) -n 2 ./slab_1d_mgk -n_groups 4 -sigma_transfer 0.5 -max_exponent 0 $(BASE) > baselines/slab1dmg_default_me0_g4_t05_np2.log
+	$(MPIEXEC) -n 2 ./slab_1d_mgk -n_groups 4 -sigma_transfer 0.5 -precon_stream -ksp_pc_side right -max_exponent 2 $(BASE) > baselines/slab1dmg_stream_me2_g4_t05_np2.log
 	@echo "Baselines captured in baselines/"

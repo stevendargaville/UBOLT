@@ -56,12 +56,41 @@ previous one's verification has passed and been reviewed.
   math; keep a two-call debug fallback); runtime sizes replace #defines.
 
 ## Phase 2 — Multigroup with sparsity reuse
-- [ ] n_groups in PhaseSpace; per-group xsections as 2D LayoutRight views
-- [ ] One Vec per group, outer group loop (Gauss-Seidel, downscatter-only first);
+- [x] n_groups in PhaseSpace; per-group xsections as 2D LayoutRight views
+- [x] One Vec per group, outer group loop (Gauss-Seidel, downscatter-only first);
       per-group values-refill via assemble(), no re-preallocation
-- [ ] Driver tests/slab_1d_mgk.kokkos.cxx with -n_groups
+- [x] Driver tests/slab_1d_mgk.kokkos.cxx with -n_groups
 - Verify: -n_groups 1 reproduces Phase 1 exactly; identical groups + zero transfer
   reproduce single-group answer per group; pinned per-group iterations.
+  Done, all three: `-n_groups 1` is bitwise identical to `slab_1dk` for
+  {default pc, precon_stream} x {me 0, 2}; the 4-group zero-transfer log is four
+  byte-for-byte copies of the single-group log at np=1 and np=2; 8 multigroup baselines
+  captured and the recipes pinned. All 16 single-group baselines still reproduce bitwise.
+  Notes:
+  - `n_groups` is metadata on PhaseSpace, NOT part of the row count. Groups are solved
+    one at a time, so the sparsity, the CooPattern and the assembled matrix are the same
+    for every group and the sweep only refills values through `assemble()`.
+  - `sigma_t` is 2D (group, cell) as planned; `sigma_s` is 3D (from, to, cell) — the
+    plan's "2D" predates needing the transfer blocks. Both are explicitly LayoutRight
+    with the group indices slowest, so fixing the group(s) slices out a CONTIGUOUS
+    per-cell view. That is what lets RemovalTerm/ScatteringTerm keep taking a plain 1D
+    view: the sweep re-points them with `set_sigma_t`/`set_sigma_s` and they never learn
+    that groups exist.
+  - `GroupTransfer` builds the off-diagonal blocks' contribution into the rhs. It is not
+    an OperatorTerm (it does not act on the unknowns being solved for) and it skips
+    Dirichlet rows, the same contract the assembled terms have.
+  - With downscatter only, the group system is block lower triangular, so ONE forward
+    sweep is exact — there is no outer iteration yet. Upscatter is what forces it.
+  - `TransportSolver::refresh()` added: the removal shell PC caches the inverse diagonal
+    of the assembled matrix, and sigma_t changes under it every group. PCAIR needs no
+    help (it tracks pmat's state), and with `-precon_stream` the streaming-only pmat is
+    group-independent so PCAIR keeps one setup for the whole sweep.
+  - The angular integral was factored out of `ScatteringTerm` into `UboltAngularIntegral`
+    so the scatter and the group transfer do bit-identical arithmetic. Verified inert:
+    all 16 single-group baselines unchanged.
+- Deferred out of this phase: upscatter + the outer iteration it needs; spatially varying
+  xsections (the tables support it, only the constant setters are written); promoting the
+  group loop out of the driver into a MultigroupSolver (wait for a second sweep strategy).
 
 ## Phase 3 — DMDA adoption (behavior-preserving)
 - [ ] StructuredFD1D constructor from 1D DMDA (dof=n_angles, stencil 1); extraction to the

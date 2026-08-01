@@ -148,23 +148,11 @@ PetscErrorCode ScatteringTerm::apply_add(Vec x, Vec y) const
    PetscCall(VecGetLocalSize(x, &local_rows));
    const PetscInt local_cells = local_rows / n_angles;
 
-   // Get the device views
-   // Making sure to use a const view for the input
-   PetscScalarConstKokkosView x_d;
-   PetscCall(VecGetKokkosView(x, &x_d));
+   // Now let's integrate the angular flux to get the scalar flux
+   PetscCall(UboltAngularIntegral(x, n_angles, w_d_, scalar_flux_d));
+
    PetscScalarKokkosView y_d;
    PetscCall(VecGetKokkosView(y, &y_d));
-
-   // Let's reshape (without copying) the 1D input view into a 2D view
-   // The 2D view uses LayoutRight so we have the correct ordering of contiguous
-   // in angle
-   PetscScalar2DConstKokkosView x_d_2d(x_d.data(), local_cells, n_angles);
-
-   // Now let's integrate the angular flux to get the scalar flux
-   // This is just a dgemm (on the device)
-   const double alpha = double(1.0);
-   const double beta = double(0.0);
-   KokkosBlas::gemm("N","N",alpha,x_d_2d,w_d_,beta,scalar_flux_d);
 
    // Now let's multiply by the scattering xsection
    Kokkos::parallel_for(
@@ -192,8 +180,7 @@ PetscErrorCode ScatteringTerm::apply_add(Vec x, Vec y) const
          });
    });
 
-   // Restore the views
-   PetscCall(VecRestoreKokkosView(x, &x_d));
+   // Restore the view
    PetscCall(VecRestoreKokkosView(y, &y_d));
 
    PetscFunctionReturn(PETSC_SUCCESS);

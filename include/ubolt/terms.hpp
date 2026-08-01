@@ -33,6 +33,11 @@ public:
    // sigma_t_d is indexed by local cell and must outlive the term
    PetscErrorCode create(const PhaseSpace &ps, const StructuredFD1D &disc, const PetscScalarKokkosView &sigma_t_d);
 
+   // Point the term at a different xsection. The group sweep calls this and
+   // then TransportOperator::assemble() to refill the values, which is why
+   // nothing here caches anything derived from sigma_t
+   void set_sigma_t(const PetscScalarKokkosView &sigma_t_d) { sigma_t_d_ = sigma_t_d; }
+
    PetscBool assembled() const override { return PETSC_TRUE; }
    PetscErrorCode assemble_add(PetscScalarKokkosView &coo_v_d) const override;
 
@@ -51,8 +56,13 @@ private:
 // the lhs). Never assembled - that is the whole point of the MatShell
 class PETSC_VISIBILITY_PUBLIC ScatteringTerm : public OperatorTerm {
 public:
-   // sigma_s_d is indexed by local cell and must outlive the term
+   // sigma_s_d is indexed by local cell and must outlive the term. In a
+   // multigroup sweep this is the within-group block sigma_s(g -> g); the
+   // off-diagonal blocks go to the rhs through GroupTransfer
    PetscErrorCode create(const PhaseSpace &ps, const SNQuadrature &quad, const PetscScalarKokkosView &sigma_s_d);
+
+   // Point the term at a different xsection - see RemovalTerm::set_sigma_t
+   void set_sigma_s(const PetscScalarKokkosView &sigma_s_d) { sigma_s_d_ = sigma_s_d; }
 
    PetscBool matrix_free() const override { return PETSC_TRUE; }
    PetscErrorCode apply_add(Vec x, Vec y) const override;

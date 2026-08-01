@@ -5,6 +5,10 @@
   true so CI can later just run `make tests`). `make` stops on the first non-zero exit.
 - Every recipe in `tests/Makefile` pins `-ksp_max_it` to the baseline iteration count, so
   an iteration-count regression fails the run.
+- Multigroup caveat: `-ksp_max_it` is one option for the whole group sweep, so a
+  multigroup recipe pins the **max over the groups**. A single group getting slower
+  without exceeding that max will not fail the recipe — the multigroup baselines below
+  are what pin the per-group counts.
 - The drivers return 1 unless `KSPGetConvergedReason() > 0` (since Phase 1a), so a
   non-converged solve fails the recipe on its own — no `-ksp_error_if_not_converged`
   or `-on_error_abort` needed. Driver diagnostics go to stderr so they never appear in a
@@ -33,6 +37,30 @@ verified against. The `-ubolt_coo_two_call` assembly fallback also reproduces th
 - Environment matters for exact reproduction: these were captured with a debug PETSc main
   build (`arch-linux-c-debug`), gcc 13, OpenMPI, np as named. Different
   compilers/optimization may shift trailing digits; iteration counts should still match.
+- np=1 and np=2 logs differ in the trailing digits (parallel reduction order); compare a
+  log against the baseline for the *same* np, never across np.
+
+### Multigroup baselines (added in Phase 2)
+`slab1dmg_<default|stream>_me<0|2>_g4_t<0|05>_np<1|2>.log` — `slab_1d_mgk` with 4 groups,
+`t0`/`t05` being `-sigma_transfer` 0.0/0.5. Each log is the whole group sweep: one KSP
+history after another, in group order, so it pins the per-group iteration counts and the
+downscatter source arithmetic that no single `-ksp_max_it` can.
+
+The `t0` logs are exactly four byte-for-byte copies of the matching single-group
+`slab1d_default_me2_np<n>.log`. That is the Phase 2 uncoupled-groups verification, and
+it is worth re-checking directly rather than only diffing the file.
+
+| multigroup config | per-group iterations (np=1 and np=2) |
+|---|---|
+| default pc, me=0, transfer 0.5 | 1, 1, 1, 1 |
+| default pc, me=2, transfer 0.0 | 5, 5, 5, 5 (= single group, four times) |
+| default pc, me=2, transfer 0.5 | 5, 6, 6, 6 |
+| default pc, me=2, transfer 2.0 | 5, 7, 6, 6 (recipe only, not captured) |
+| precon_stream, me=2, transfer 0.5 | 12, 13, 13, 11 |
+
+Group 0 matches the single-group count because its rhs is just the external source; the
+later groups carry a downscatter source as well. The last group has no outgoing transfer,
+so its `sigma_t` is lower than the others' — that is why the counts are not uniform.
 
 ## Baseline iteration counts
 Captured 2026-07-31, capped at `-ksp_max_it 200`. The pre-fix column is what the
@@ -69,7 +97,8 @@ History of these baselines:
 ## Adding a test driver
 1. Add the executable name to `TEST_TARGETS` (and `CHECK_TARGETS` if it belongs in
    `make check`) in the top `Makefile`.
-2. Add the executable to `.gitignore`.
+2. Nothing to do for `.gitignore` — `tests/*k` covers every driver binary, since every
+   translation unit is a Kokkos one and the executables all end in `k`.
 3. Add invocation lines to the appropriate `run_*` recipe in `tests/Makefile`:
    an `@echo` label plus the literal `./exe -options` line, serial and `-n 2` variants,
    with `-ksp_max_it` pinned to the observed converged count.

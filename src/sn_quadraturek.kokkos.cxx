@@ -1,4 +1,5 @@
 #include "ubolt/sn_quadrature.hpp"
+#include <KokkosBlas.hpp>
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -38,6 +39,37 @@ PetscErrorCode SNQuadrature::create(PetscInt n_angles)
    PetscScalar2DKokkosViewHostUnmanaged w_host_view(w, n_angles, 1);
    Kokkos::deep_copy(mu_d_, mu_host_view);
    Kokkos::deep_copy(w_d_, w_host_view);
+
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+PetscErrorCode UboltAngularIntegral(Vec psi, PetscInt n_angles, \
+   const PetscScalar2DKokkosView &w_d, const PetscScalar2DKokkosView &scalar_flux_d)
+{
+   PetscFunctionBeginUser;
+
+   // Everything here works on the local part of psi only - this is how many
+   // local cells we have
+   PetscInt local_rows;
+   PetscCall(VecGetLocalSize(psi, &local_rows));
+   const PetscInt local_cells = local_rows / n_angles;
+
+   // Get the device view, const since we only read it
+   PetscScalarConstKokkosView psi_d;
+   PetscCall(VecGetKokkosView(psi, &psi_d));
+
+   // Reshape (without copying) the 1D view into a 2D one. The 2D view uses
+   // LayoutRight so we get the correct ordering of contiguous in angle
+   PetscScalar2DConstKokkosView psi_d_2d(psi_d.data(), local_cells, n_angles);
+
+   // The integral over angle is just a dgemm (on the device)
+   const double alpha = double(1.0);
+   const double beta  = double(0.0);
+   KokkosBlas::gemm("N", "N", alpha, psi_d_2d, w_d, beta, scalar_flux_d);
+
+   PetscCall(VecRestoreKokkosView(psi, &psi_d));
 
    PetscFunctionReturn(PETSC_SUCCESS);
 }

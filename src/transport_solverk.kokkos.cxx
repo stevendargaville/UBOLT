@@ -23,6 +23,20 @@ static PetscErrorCode RemovalPCDestroy(PC pc)
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
+// Read the inverse diagonal off the assembled matrix
+// Phase 5 composes this analytically from the terms instead
+static PetscErrorCode RemovalPCFillContext(removal_pc_ctx *shell, Mat assembled)
+{
+   PetscFunctionBeginUser;
+
+   PetscCall(MatGetDiagonal(assembled, shell->inverse_sigma_t_vec));
+   PetscCall(VecReciprocal(shell->inverse_sigma_t_vec));
+
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
 static PetscErrorCode RemovalPCCreateContext(removal_pc_ctx **shell, Mat assembled)
 {
    removal_pc_ctx *newctx;
@@ -32,10 +46,7 @@ static PetscErrorCode RemovalPCCreateContext(removal_pc_ctx **shell, Mat assembl
    PetscCall(PetscNew(&newctx));
    // Create vector for removal preconditioning
    PetscCall(MatCreateVecs(assembled, &newctx->inverse_sigma_t_vec, NULL));
-   // Phase 5 composes this analytically from the terms instead of reading it
-   // off the assembled matrix
-   PetscCall(MatGetDiagonal(assembled, newctx->inverse_sigma_t_vec));
-   PetscCall(VecReciprocal(newctx->inverse_sigma_t_vec));
+   PetscCall(RemovalPCFillContext(newctx, assembled));
 
    *shell = newctx;
 
@@ -65,6 +76,8 @@ PetscErrorCode TransportSolver::create(MPI_Comm comm, const TransportOperator &o
    removal_pc_ctx *shell;
 
    PetscFunctionBeginUser;
+
+   assembled_ = op.assembled_mat();
 
    PetscCall(KSPCreate(comm, &ksp_));
    PetscCall(KSPSetOperators(ksp_, op.mat(), pmat));
@@ -102,6 +115,25 @@ PetscErrorCode TransportSolver::create(MPI_Comm comm, const TransportOperator &o
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
+// Re-read the removal PC's inverse diagonal after a values-only refill
+PetscErrorCode TransportSolver::refresh()
+{
+   PC pc, pc_removal;
+   removal_pc_ctx *shell;
+
+   PetscFunctionBeginUser;
+
+   PetscCall(KSPGetPC(ksp_, &pc));
+   // Index 0 is the removal shell, added first in create()
+   PetscCall(PCCompositeGetPC(pc, 0, &pc_removal));
+   PetscCall(PCShellGetContext(pc_removal, &shell));
+   PetscCall(RemovalPCFillContext(shell, assembled_));
+
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
 PetscErrorCode TransportSolver::solve(Vec b, Vec x)
 {
    PetscFunctionBeginUser;
@@ -119,6 +151,7 @@ PetscErrorCode TransportSolver::destroy()
    PetscFunctionBeginUser;
 
    PetscCall(KSPDestroy(&ksp_));
+   assembled_ = NULL;
 
    PetscFunctionReturn(PETSC_SUCCESS);
 }

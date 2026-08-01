@@ -99,13 +99,14 @@ endif
 OBJS := $(SRCDIR)/sn_quadraturek.o \
 		  $(SRCDIR)/structured_fd_1dk.o \
 		  $(SRCDIR)/termsk.o \
+		  $(SRCDIR)/multigroupk.o \
 		  $(SRCDIR)/transport_operatork.o \
 		  $(SRCDIR)/transport_solverk.o
 
 # Define a variable containing all the tests
-export TEST_TARGETS = slab_1dk
+export TEST_TARGETS = slab_1dk slab_1d_mgk
 # Define a variable containing all the tests that the make check runs
-export CHECK_TARGETS = slab_1dk
+export CHECK_TARGETS = slab_1dk slab_1d_mgk
 
 # Output the library - either static or dynamic
 ifeq ($(PETSC_USE_SHARED_LIBRARIES),0)

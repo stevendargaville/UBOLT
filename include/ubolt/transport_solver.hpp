@@ -14,6 +14,14 @@ public:
    PetscErrorCode create(MPI_Comm comm, const TransportOperator &op, Mat pmat);
    PetscErrorCode destroy();
 
+   // Re-read whatever the preconditioner cached off the assembled matrix.
+   // Must be called after a values-only refill of that matrix: the removal
+   // shell PC holds the inverse diagonal, and the multigroup sweep changes
+   // sigma_t under it every group. PCAIR needs no help - it tracks pmat's
+   // state itself (and with a streaming-only pmat there is nothing to redo,
+   // since streaming does not depend on the group)
+   PetscErrorCode refresh();
+
    PetscErrorCode solve(Vec b, Vec x);
 
    KSPConvergedReason converged_reason() const { return reason_; }
@@ -21,6 +29,8 @@ public:
 
 private:
    KSP ksp_ = NULL;
+   // Not owned - the operator's assembled matrix, which the removal PC reads
+   Mat assembled_ = NULL;
    KSPConvergedReason reason_ = KSP_CONVERGED_ITERATING;
 };
 

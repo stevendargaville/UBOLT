@@ -12,6 +12,7 @@
 #include "ubolt/structured_fd_1d.hpp"
 #include "ubolt/operator_term.hpp"
 #include "ubolt/terms.hpp"
+#include "ubolt/multigroup.hpp"
 #include "ubolt/transport_operator.hpp"
 #include "ubolt/transport_solver.hpp"
 

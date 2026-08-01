@@ -36,6 +36,11 @@ Build
 1. In top repo directory: `make -j3 build_tests` (PETSc >= 3.25 configured with Kokkos
    required). This builds `lib/libubolt.{so,a}` first; `make` on its own builds just the library.
 2. Rule: fix all compile warnings (CI will build with `-Werror`).
+3. There is NO header dependency tracking (PETSc's basic rules generate no `.d` files), so
+   an edit to a header does not rebuild the `.o` files that include it. After touching
+   anything in `include/ubolt/`, `make clean` first. Getting this wrong is not a link
+   error: a struct whose layout changed (e.g. adding a field to `PhaseSpace`) silently
+   reads members at the wrong offset and shows up as a garbage-sized Kokkos allocation.
 
 Tests
 1. Run the test targets below once. Trust `make`'s exit code: 0 means all tests passed;

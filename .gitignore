@@ -3,8 +3,10 @@
 *.mod
 lib/
 
-# Compiled test executables
-tests/slab_1dk
+# Compiled test executables (every driver is a Kokkos TU, so the binary ends in k)
+tests/*k
+!tests/*.cxx
+!tests/*.hpp
 
 # Old root-level executable (pre-Phase-0 layout)
 UBOLTk
