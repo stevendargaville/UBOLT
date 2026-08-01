@@ -1,0 +1,42 @@
+ARG BASE_IMAGE=stevendargaville/petsc_kokkos
+
+FROM ${BASE_IMAGE}
+ARG PETSC_DIR=/build/petsc
+# Use the optimised petsc build by default
+ARG ARCH=arch-linux-c-opt
+# Set the number of OpenMP threads to 1 by default
+ARG OMP_NUM_THREADS=1
+# Which PFLARE branch to build against
+ARG PFLARE_BRANCH=main
+
+LABEL maintainer="Steven Dargaville"
+LABEL description="UBOLT_kokkos"
+
+ENV PETSC_DIR=$PETSC_DIR
+ENV PETSC_ARCH=$ARCH
+ENV OMP_NUM_THREADS=$OMP_NUM_THREADS
+ENV PFLARE_DIR=/build/PFLARE
+# -on_error_abort ensures any test failures are caught and the build fails
+ENV PETSC_OPTIONS="-on_error_abort"
+
+WORKDIR /build
+
+# Ensure pipelines fail if any stage fails
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+# Build PFLARE - the library only, its own CI tests it
+RUN git clone --depth=1 --branch=${PFLARE_BRANCH} \
+      https://github.com/PFLAREProject/PFLARE.git && \
+    cd PFLARE && \
+    make -j2
+
+COPY . /build/UBOLT
+
+# Build libubolt and the test drivers with "-Wall -Werror" (the project rule is
+# no compile warnings), then run the check and the full test suite
+RUN cd UBOLT && \
+    make -j2 CXXFLAGS="-Wall -Werror" build_tests && \
+    make CXXFLAGS="-Wall -Werror" check && \
+    make CXXFLAGS="-Wall -Werror" tests
+
+WORKDIR /build/UBOLT

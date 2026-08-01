@@ -87,6 +87,9 @@ Build
 1. In top repo directory: `make -j3 build_tests` (PETSc >= 3.25 configured with Kokkos
    required). This builds `lib/libubolt.{so,a}` first; `make` on its own builds just the library.
 2. Rule: fix all compile warnings (CI will build with `-Werror`).
+   CI (`.github/workflows/ci_build.yml`) builds `dockerfiles/Dockerfile_kokkos` on the
+   prebuilt `stevendargaville/petsc_kokkos` image (opt/debug/64-bit/OMP arches): it
+   builds PFLARE main, then UBOLT with `-Wall -Werror`, then runs `check` + `tests`.
 3. PETSc's rules generate no `.d` files, so header dependencies are declared by hand in the
    Makefiles: `$(OBJS)` depends on `$(UBOLT_HEADERS)`, and the drivers are handled by
    `$(HEADER_STAMP)`, which deletes the stale driver objects/binaries so PETSc's own rules
