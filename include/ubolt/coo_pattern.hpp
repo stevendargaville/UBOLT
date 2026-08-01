@@ -20,9 +20,10 @@ struct CooPattern {
 
 // Which rows carry a Dirichlet condition
 //
-// Contract: assembled terms must contribute NOTHING to a flagged row. The
-// assembly step puts the identity on them afterwards, so a term never has to
-// know what the boundary condition is
+// Contract: a term must contribute NOTHING to a flagged row - not from its
+// assembled contribution and not from its matrix-free apply. The assembly step
+// puts the identity on them afterwards, so a term never has to know what the
+// boundary condition is
 struct BoundaryInfo {
    // 1 on Dirichlet rows, 0 elsewhere. Sized local_rows
    PetscIntKokkosView is_dirichlet_row_d;

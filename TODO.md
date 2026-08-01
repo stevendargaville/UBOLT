@@ -328,6 +328,12 @@ previous one's verification has passed and been reviewed.
   removal + scatter matrix-free so only one assembled matrix is stored for all energy
   groups. Open question: an effective preconditioner for streaming-only pmat when removal
   is strong. Record iteration-count findings here as Phase 5 runs.
+  Re-baseline that question before starting: `-precon_stream` is already a streaming-only
+  pmat with strong removal, and the Aug 2026 Dirichlet fix moved those numbers. As of now
+  it costs roughly a factor of 1.5 over the full pmat rather than the several-fold gap the
+  note was written against — 1D me=2 goes 6 -> 9, the multigroup sweep max 6 -> 11, 2D
+  50x50 6 -> 8 and 120x60 7 -> 9. Phase 5's cost/benefit looks different at that ratio, and
+  the numbers in `docs/dev/testing.md` are the ones to argue from.
 - **MFEM as Phase 6 backend**: MFEM owns mesh/FE spaces/integrators (ConvectionIntegrator +
   DGTraceIntegrator = DG upwind streaming out of the box; AMR; high-order; GPU full and
   partial assembly). Frictions: MFEM's PETSc bridge produces MATAIJ not MATAIJKOKKOS (pflare

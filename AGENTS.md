@@ -68,9 +68,11 @@ Codebase map
 Read only when the task needs it
 - `TODO.md` — roadmap, current phase, per-phase verification criteria, research notes
 - `docs/dev/testing.md` — before adding or modifying tests, and before touching baselines
-- `docs/dev/kokkos.md` — before touching `*.kokkos.cxx`, COO assembly or MatShell code, and
-  before adding any multi-dimensional view (layouts differ between host and device
-  backends, and the obvious compile-time contiguity guard does not work)
+- `docs/dev/kokkos.md` — before touching `*.kokkos.cxx`, COO assembly or MatShell code,
+  before writing a new discretisation backend (it has the COO/slot-order/Dirichlet
+  discipline a backend and its terms have to agree on), and before adding any
+  multi-dimensional view (layouts differ between host and device backends, and the obvious
+  compile-time contiguity guard does not work)
 
 Build
 1. In top repo directory: `make -j3 build_tests` (PETSc >= 3.25 configured with Kokkos

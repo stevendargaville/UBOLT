@@ -3,8 +3,8 @@
 ## Pass/fail contract
 - Pass/fail is the process exit code — no output diffing, no log grepping (this must stay
   true so CI can later just run `make tests`). `make` stops on the first non-zero exit.
-- Every recipe in `tests/Makefile` pins `-ksp_max_it` to the baseline iteration count, so
-  an iteration-count regression fails the run.
+- Every solve recipe in `tests/Makefile` pins `-ksp_max_it` to the baseline iteration
+  count, so an iteration-count regression fails the run.
 - Multigroup caveat: `-ksp_max_it` is one option for the whole group sweep, so a
   multigroup recipe pins the **max over the groups**. A single group getting slower
   without exceeding that max will not fail the recipe — the multigroup baselines below
@@ -12,7 +12,7 @@
 - The drivers return 1 unless `KSPGetConvergedReason() > 0` (since Phase 1a), so a
   non-converged solve fails the recipe on its own — no `-ksp_error_if_not_converged`
   or `-on_error_abort` needed. Driver diagnostics go to stderr so they never appear in a
-  captured baseline. The two non-converging `capture_baselines` lines carry `|| true`.
+  captured baseline. The four non-converging `capture_baselines` lines carry `|| true`.
 - Targets: `make check` (fast sanity, 5 runs) < `make tests_short` < `make tests`.
   Parallel variants use `$(MPIEXEC) -n 2` — plus one `-n 4` run, see the 2D section — and
   are skipped under MPIUNI.

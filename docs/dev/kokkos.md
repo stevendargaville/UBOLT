@@ -58,24 +58,49 @@ The streaming/removal operator is assembled with the PETSc COO interface so that
 fill runs on device (MATAIJKOKKOS dispatches `MatSetValuesCOO` to the GPU):
 - `MatSetPreallocationCOO` happens ONCE on the host, in the discretisation backend: it
   builds the `oor`/`ooc` index arrays and keeps them, so every matrix built from the same
-  discretisation (`StructuredFD1D::create_matrix`) shares the sparsity. Repeated assembly
-  (per group, per parameter change) is values-only: terms fill a device view with a
-  `Kokkos::parallel_for` and `TransportOperator` calls `MatSetValuesCOO`.
+  discretisation (`Discretisation::create_matrix`, shared by all backends) has the same
+  sparsity. Repeated assembly (per group, per parameter change) is values-only: terms fill
+  a device view with a `Kokkos::parallel_for` and `TransportOperator` calls
+  `MatSetValuesCOO`.
 - The matrix is built by hand from that COO pattern and NOT by `DMCreateMatrix`, even
-  though the discretisation now owns a DM. A DMDA preallocates from its stencil (3 stencil
-  points x dof couplings per row) while the upwind operator has exactly 2 entries per row,
-  so `DMCreateMatrix` would hand PCAIR a different sparsity. Don't "simplify" it.
+  though the discretisation owns a DM. A DMDA preallocates from its stencil — every point
+  the stencil reaches, times dof — while the upwind operator reaches one neighbour per
+  axis: 3 stencil points against 2 entries per row in 1D, and a 5-point star against 3 in
+  2D. `DMCreateMatrix` would hand PCAIR a different sparsity. Don't "simplify" it, and
+  keep "what the stencil preallocates" and "what the operator touches" apart when
+  reasoning about a new backend.
+- The COO indices are GLOBAL, and where the global index of a node comes from is the
+  backend's problem, not arithmetic you can assume. A 1D DMDA numbers globally in the
+  natural order so 1D computes them; a 2D DMDA numbers each rank's patch contiguously and
+  lexicographically *within* the patch, so `StructuredFD2D` reads them out of the DM's
+  local-to-global map (which covers the ghost nodes, so a column can point into a
+  neighbour's patch). Each backend asserts the layout property it actually relies on in its
+  own `CheckDALayout` — see `docs/dev/testing.md`.
 - Dirichlet trick: a `-1` row/col index in the preallocation means "ignore this entry", so
-  boundary rows keep only their diagonal. The ordering of entries per row is fixed at
-  preallocation time (1D: off-diagonal first, diagonal second, every row regardless of
-  angle sign) and value fills must match it exactly.
+  boundary rows keep only their diagonal. The same `-1` covers a slot a row genuinely does
+  not have — in 2D, a direction whose `mu` or `eta` is zero has no upwind neighbour on that
+  axis. Either way the slot still EXISTS in the values array, so the value fills never
+  branch; the entry is just dropped at assembly.
+- The ordering of entries per row is fixed at preallocation time, off-diagonals first and
+  the diagonal LAST — 1D: upwind, diagonal; 2D: upwind-x, upwind-y, diagonal — every row
+  the same regardless of the sign of the direction cosines, and value fills must match it
+  exactly. `Discretisation::set_uniform_pattern(slots_per_row, mask)` builds the slot maps
+  from that convention, so a fixed-entries-per-row backend states it once.
 - Terms address entries through the `CooPattern` slot maps — `row_slot_offset_d`
   (CSR-shaped COO slot ranges per row) and `diag_slot_d` (which slot is the diagonal) —
-  never through raw COO positions.
-- Contract: assembled terms must contribute NOTHING to rows flagged in
-  `BoundaryInfo::is_dirichlet_row_d`. `TransportOperator::assemble_into` writes the
-  identity on those rows after the terms have run, so a term never has to know what the
-  boundary condition is.
+  never through raw COO positions. With more than one off-diagonal a term has to address
+  them positionally within the row (`StreamingTerm2D` uses `row_slot_offset_d(r)` and
+  `+ 1`), which is why the slot order is a convention the backend and its streaming term
+  share, and why the streaming term is per-dimension.
+- Contract: a term must contribute NOTHING to rows flagged in
+  `BoundaryInfo::is_dirichlet_row_d` — not from `assemble_add` and not from `apply_add`.
+  `TransportOperator::assemble_into` writes the identity on those rows after the assembled
+  terms have run, so a term never has to know what the boundary condition is; a
+  matrix-free term that then adds to them would take that identity straight back off.
+  `ScatteringTerm::apply_add` did exactly that until Aug 2026 — see the Phase 4 postscript
+  in `TODO.md`. Note the contract is about what a term WRITES: the scatter still reads
+  every angle when it integrates the scalar flux, Dirichlet rows included, because the
+  prescribed incoming flux is a real part of the flux in that cell.
 - All the assembled terms add into ONE shared values array and go in with a single
   `MatSetValuesCOO(INSERT_VALUES)`. `-ubolt_coo_two_call` is the debug fallback: one call
   per term, the first INSERTing and the rest ADDing. Same per-entry arithmetic in the same
@@ -103,9 +128,11 @@ fill runs on device (MATAIJKOKKOS dispatches `MatSetValuesCOO` to the GPU):
 ## pflare / GPU dispatch
 - pflare dispatches on the matrix type at RUNTIME: PCAIR only takes its Kokkos/GPU paths
   when handed MATAIJKOKKOS matrices and VECKOKKOS vectors. UBOLT sets these types in code,
-  and that is still true now the discretisation is DM-backed: the DMDA from Phase 3
-  supplies the layout only and creates **no** solver objects, so there is nothing for
-  `-dm_mat_type`/`-dm_vec_type` to reach and they are not needed. If a later phase starts
+  and that is still true now the discretisation is DM-backed: a backend's DMDA supplies
+  the layout, the decomposition and (in 2D) the global indices, but creates **no** solver
+  objects, so there is nothing for `-dm_mat_type`/`-dm_vec_type` to reach and they are not
+  needed. The one exception is transient — `CheckDALayout` calls `DMCreateGlobalVector` to
+  read the ownership range and destroys it immediately. If a later phase starts
   creating matrices or vectors through the DM, it has to set the types on the DM (or run
   with `-dm_mat_type aijkokkos -dm_vec_type kokkos`) or pflare will silently fall back to
   the CPU paths.

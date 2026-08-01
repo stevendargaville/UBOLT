@@ -76,8 +76,8 @@ public:
    // set_scalar_flux(g_from, ...) must have been called first
    //
    // Dirichlet rows are skipped: the rhs there is the incoming flux boundary
-   // value and a scattering source must not touch it, the same contract
-   // assembled terms have with the Dirichlet mask
+   // value and a scattering source must not touch it, the same contract the
+   // terms have with the Dirichlet mask
    PetscErrorCode add_source(PetscInt g_from, PetscInt g_to, Vec b) const;
 
 private:

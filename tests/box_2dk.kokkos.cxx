@@ -45,9 +45,11 @@ int main(int argc, char **args) {
    PetscInt max_exponent = 1;
    PetscCall(PetscOptionsGetInt(NULL, NULL, "-max_exponent", &max_exponent, NULL));
    // Scattering xsection, defaulting to the total one as in the 1D drivers -
-   // that is a scattering ratio of exactly 1, which is the hardest case for a
-   // preconditioner that does nothing about the scattering. Set it lower to get
-   // some absorption
+   // that is a scattering ratio of exactly 1, i.e. no absorption at all. Set it
+   // lower to get some. Nothing in the preconditioner does anything about the
+   // scattering, so the ratio is the knob to turn when asking whether that
+   // matters (see the research note in ../TODO.md, where it once looked like it
+   // did and the real answer was a bug in the operator)
    PetscReal sigma_scatter = (PetscReal)max_exponent;
    PetscCall(PetscOptionsGetReal(NULL, NULL, "-sigma_scatter", &sigma_scatter, NULL));
 
