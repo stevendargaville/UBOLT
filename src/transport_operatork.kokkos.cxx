@@ -48,6 +48,8 @@ PetscErrorCode TransportOperator::create(MPI_Comm comm, const PhaseSpace &ps, co
    // We allocate device memory below, and PETSc brings Kokkos up lazily
    PetscCall(PetscKokkosInitializeCheck());
 
+   PetscCall(ps.check_decomposed());
+
    comm_ = comm;
    ps_ = ps;
    disc_ = &disc;

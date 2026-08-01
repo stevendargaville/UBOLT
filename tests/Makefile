@@ -82,8 +82,6 @@ run_check:
 	$(MPIEXEC) -n 2 ./slab_1dk -precon_stream -ksp_pc_side right -max_exponent 2 -ksp_max_it 10
 	@echo "Check 1D slab multigroup, 4 groups with downscatter"
 	./slab_1d_mgk -n_groups 4 -sigma_transfer 0.5 -max_exponent 2 -ksp_max_it 6
-	@echo "Check 1D slab layout built from a DMDA instead of by hand"
-	./slab_1dk -max_exponent 2 -ksp_max_it 5 -ubolt_use_dm
 
 # ~~~~~~~~~~~
 # ~~~~~~~~~~~
@@ -106,18 +104,6 @@ run_tests_short_serial:
 	./slab_1dk -n_cells 500 -n_angles 2 -length 2.0 -max_exponent 2 -ksp_max_it 10
 	@echo "Test 1D slab, one MatSetValuesCOO per term instead of a single summed one"
 	./slab_1dk -max_exponent 2 -ksp_max_it 5 -ubolt_coo_two_call
-#
-# DMDA layout (Phase 3a). The iteration counts are pinned to the same numbers as
-# the hand-rolled recipes above because the two layouts must agree bit for bit -
-# a DM recipe needing a different pin from its twin IS the failure
-	@echo "Test 1D slab, DMDA layout, streaming/removal pmat, strong removal"
-	./slab_1dk -max_exponent 2 -ksp_max_it 5 -ubolt_use_dm
-	@echo "Test 1D slab, DMDA layout, streaming-only pmat"
-	./slab_1dk -precon_stream -ksp_pc_side right -max_exponent 2 -ksp_max_it 10 -ubolt_use_dm
-	@echo "Test 1D slab, DMDA layout, S2 on a coarser slab"
-	./slab_1dk -n_cells 500 -n_angles 2 -length 2.0 -max_exponent 2 -ksp_max_it 10 -ubolt_use_dm
-	@echo "Test 1D slab multigroup, DMDA layout, 4 groups with downscatter"
-	./slab_1d_mgk -n_groups 4 -sigma_transfer 0.5 -max_exponent 2 -ksp_max_it 6 -ubolt_use_dm
 #
 # Multigroup. -ksp_max_it is a single pin for the whole sweep, so it is the MAX
 # over the groups - see ../docs/dev/testing.md
@@ -159,15 +145,6 @@ run_tests_short_parallel:
 	$(MPIEXEC) -n 2 ./slab_1d_mgk -n_groups 4 -sigma_transfer 0.5 -precon_stream -ksp_pc_side right -max_exponent 2 -ksp_max_it 13
 	@echo "Test 1D slab multigroup, uncoupled groups in parallel"
 	$(MPIEXEC) -n 2 ./slab_1d_mgk -n_groups 4 -sigma_transfer 0.0 -max_exponent 2 -ksp_max_it 5
-#
-# DMDA layout in parallel - this is the one that exercises the DM choosing the
-# decomposition, since at np=1 there is nothing to decide
-	@echo "Test 1D slab, DMDA layout, strong removal in parallel"
-	$(MPIEXEC) -n 2 ./slab_1dk -max_exponent 2 -ksp_max_it 5 -ubolt_use_dm
-	@echo "Test 1D slab, DMDA layout, streaming-only pmat in parallel"
-	$(MPIEXEC) -n 2 ./slab_1dk -precon_stream -ksp_pc_side right -max_exponent 2 -ksp_max_it 10 -ubolt_use_dm
-	@echo "Test 1D slab multigroup, DMDA layout, 4 groups with downscatter in parallel"
-	$(MPIEXEC) -n 2 ./slab_1d_mgk -n_groups 4 -sigma_transfer 0.5 -max_exponent 2 -ksp_max_it 6 -ubolt_use_dm
 
 # ~~~~~~~~~~~
 # ~~~~~~~~~~~

@@ -10,11 +10,10 @@
 // object has already been sized from. The sizes come from the PhaseSpace, which
 // the drivers already expose as -n_cells/-n_angles
 //
-// We also deliberately let the DM choose its own distribution rather than
-// handing it PhaseSpace's: PETSc's default 1D DMDA split is
-// M/size + ((M % size) > rank), which is the same formula PetscSplitOwnership
-// uses, so the two agree by construction. CheckDALayout is what holds us to
-// that instead of assuming it
+// The DM chooses the distribution and the PhaseSpace is told what it decided.
+// PETSc's default 1D DMDA split is M/size + ((M % size) > rank), which is the
+// same formula PetscSplitOwnership uses, so this is the same decomposition
+// UBOLT had before the DM owned it (Phase 3a verified that bitwise)
 static PetscErrorCode CreateDA(MPI_Comm comm, const PhaseSpace &ps, DM *da)
 {
    PetscFunctionBeginUser;
@@ -34,8 +33,9 @@ static PetscErrorCode CreateDA(MPI_Comm comm, const PhaseSpace &ps, DM *da)
 // 1D DMDA ordering coincides with the natural ordering, so this passes - but it
 // is load-bearing for every index we write, and a silent disagreement would
 // show up as a wrong answer rather than an error, so check it once at setup
-static PetscErrorCode CheckDALayout(DM da, const PhaseSpace &ps, PetscInt cell_start, PetscInt local_cells)
+static PetscErrorCode CheckDALayout(DM da, const PhaseSpace &ps, PetscInt cell_start)
 {
+   const PetscInt local_cells = ps.local_cells;
    PetscInt dm_cells = 0, dm_dof = 0, rstart = 0, rend = 0;
    Vec gv;
 
@@ -46,12 +46,6 @@ static PetscErrorCode CheckDALayout(DM da, const PhaseSpace &ps, PetscInt cell_s
    PetscCheck(dm_cells == ps.n_cells && dm_dof == ps.n_angles, PetscObjectComm((PetscObject)da), \
       PETSC_ERR_PLIB, "DMDA is %" PetscInt_FMT " cells x %" PetscInt_FMT " dof, phase space is %" \
       PetscInt_FMT " x %" PetscInt_FMT, dm_cells, dm_dof, ps.n_cells, ps.n_angles);
-
-   // The DM picked its own distribution - this is where we find out it is the
-   // same one PhaseSpace computed with PetscSplitOwnership
-   PetscCheck(local_cells == ps.local_cells, PetscObjectComm((PetscObject)da), PETSC_ERR_PLIB, \
-      "DMDA owns %" PetscInt_FMT " cells but the phase space was split into %" PetscInt_FMT, \
-      local_cells, ps.local_cells);
 
    // Angle-fastest and contiguous: the rows the DM's global vector owns must be
    // exactly [cell_start * n_angles, (cell_start + local_cells) * n_angles)
@@ -71,10 +65,8 @@ static PetscErrorCode CheckDALayout(DM da, const PhaseSpace &ps, PetscInt cell_s
 
 // Build the COO sparsity and the slot maps
 // This happens on the host but we only need to do it once
-PetscErrorCode StructuredFD1D::create(MPI_Comm comm, const PhaseSpace &ps, PetscReal length, const SNQuadrature &quad)
+PetscErrorCode StructuredFD1D::create(MPI_Comm comm, PhaseSpace &ps, PetscReal length, const SNQuadrature &quad)
 {
-   PetscBool use_dm = PETSC_FALSE;
-
    PetscFunctionBeginUser;
 
    // We allocate device memory below, and PETSc brings Kokkos up lazily
@@ -85,31 +77,25 @@ PetscErrorCode StructuredFD1D::create(MPI_Comm comm, const PhaseSpace &ps, Petsc
       quad.n_angles(), ps.n_angles);
 
    comm_ = comm;
-   ps_ = ps;
    // Uniform grid so every cell has the same width
    dx_ = length / ps.n_cells;
 
-   const PetscInt n_angles   = ps.n_angles;
-   const PetscInt local_cells = ps.local_cells;
-   const PetscInt local_rows  = ps.local_rows();
+   const PetscInt n_angles = ps.n_angles;
    const PetscScalar *mu = quad.mu_host();
 
-   // Where our cells start globally - the decomposition is in cells
-   //
-   // This is the ONLY thing the hand-rolled and DMDA layouts disagree about:
-   // everything below is shared, so -ubolt_use_dm is a tight test of the DM
-   // extraction rather than of a second copy of the sparsity logic
-   PetscInt cell_start = 0;
-   PetscCall(PetscOptionsGetBool(NULL, NULL, "-ubolt_use_dm", &use_dm, NULL));
-   if (use_dm) {
-      PetscInt dm_local_cells = 0;
-      PetscCall(CreateDA(comm, ps_, &da_));
-      // DMDAGetCorners divides the dof back out, so these are in cells
-      PetscCall(DMDAGetCorners(da_, &cell_start, NULL, NULL, &dm_local_cells, NULL, NULL));
-      PetscCall(CheckDALayout(da_, ps_, cell_start, dm_local_cells));
-   } else {
-      PetscCallMPI(MPI_Exscan(&ps_.local_cells, &cell_start, 1, MPIU_INT, MPI_SUM, comm));
-   }
+   // The DM decides the parallel decomposition, so building it has to come
+   // before anything that reads local_cells - starting with the PhaseSpace,
+   // which we fill in rather than read
+   PetscInt cell_start = 0, local_cells = 0;
+   PetscCall(CreateDA(comm, ps, &da_));
+   // DMDAGetCorners divides the dof back out, so these come out in cells
+   PetscCall(DMDAGetCorners(da_, &cell_start, NULL, NULL, &local_cells, NULL, NULL));
+   ps.local_cells = local_cells;
+   PetscCall(CheckDALayout(da_, ps, cell_start));
+
+   ps_ = ps;
+   const PetscInt local_rows = ps.local_rows();
+
    global_row_start_ = cell_start * n_angles;
    const PetscBool on_left_boundary  = (PetscBool)(cell_start == 0);
    const PetscBool on_right_boundary = (PetscBool)(cell_start + local_cells == ps.n_cells);
@@ -206,8 +192,8 @@ PetscErrorCode StructuredFD1D::create(MPI_Comm comm, const PhaseSpace &ps, Petsc
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-// The DM is the only PETSc handle we own, and only on the -ubolt_use_dm path.
-// DMDestroy on a NULL handle is a no-op, so this is safe either way
+// The DM is the only PETSc handle we own. DMDestroy on a NULL handle is a
+// no-op, so this is safe on a never-created discretisation too
 PetscErrorCode StructuredFD1D::destroy()
 {
    PetscFunctionBeginUser;

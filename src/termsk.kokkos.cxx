@@ -15,6 +15,8 @@ PetscErrorCode StreamingTerm::create(const PhaseSpace &ps, const StructuredFD1D 
 {
    PetscFunctionBeginUser;
 
+   PetscCall(ps.check_decomposed());
+
    n_angles_ = ps.n_angles;
    local_rows_ = ps.local_rows();
    dx_ = disc.dx();
@@ -71,6 +73,8 @@ PetscErrorCode RemovalTerm::create(const PhaseSpace &ps, const StructuredFD1D &d
 {
    PetscFunctionBeginUser;
 
+   PetscCall(ps.check_decomposed());
+
    n_angles_ = ps.n_angles;
    local_rows_ = ps.local_rows();
    sigma_t_d_ = sigma_t_d;
@@ -116,6 +120,8 @@ PetscErrorCode ScatteringTerm::create(const PhaseSpace &ps, const SNQuadrature &
 
    // We allocate device memory below, and PETSc brings Kokkos up lazily
    PetscCall(PetscKokkosInitializeCheck());
+
+   PetscCall(ps.check_decomposed());
 
    n_angles_ = ps.n_angles;
    sum_weights_ = quad.sum_weights();

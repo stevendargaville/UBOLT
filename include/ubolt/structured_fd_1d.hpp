@@ -18,9 +18,11 @@
 class PETSC_VISIBILITY_PUBLIC StructuredFD1D {
 public:
    // The quadrature decides which neighbour is upwind for each angle.
-   // -ubolt_use_dm builds the layout from a 1D DMDA instead of by hand; the two
-   // paths are required to agree bit for bit (Phase 3a, see TODO.md)
-   PetscErrorCode create(MPI_Comm comm, const PhaseSpace &ps, PetscReal length, const SNQuadrature &quad);
+   //
+   // The layout comes from a 1D DMDA, which also decides the parallel
+   // decomposition: `ps` is filled in (ps.local_cells) rather than read, so
+   // this must be created before anything sized off the phase space
+   PetscErrorCode create(MPI_Comm comm, PhaseSpace &ps, PetscReal length, const SNQuadrature &quad);
 
    PetscErrorCode destroy();
 
@@ -34,8 +36,8 @@ public:
    // Uniform grid so every cell has the same width
    PetscScalar dx() const { return dx_; }
 
-   // NULL unless -ubolt_use_dm. Nothing needs it yet - the DM supplies the
-   // decomposition and then stands aside - but Phase 4 does
+   // Nothing needs it yet - the DM supplies the decomposition and then stands
+   // aside - but Phase 4 does
    DM dm() const { return da_; }
 
 private:

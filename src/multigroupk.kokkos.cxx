@@ -36,6 +36,8 @@ PetscErrorCode GroupXSections::create(const PhaseSpace &ps)
    // We allocate device memory below, and PETSc brings Kokkos up lazily
    PetscCall(PetscKokkosInitializeCheck());
 
+   PetscCall(ps.check_decomposed());
+
    n_groups_ = ps.n_groups;
    local_cells_ = ps.local_cells;
 
@@ -115,6 +117,8 @@ PetscErrorCode GroupTransfer::create(const PhaseSpace &ps, const SNQuadrature &q
 
    // We allocate device memory below, and PETSc brings Kokkos up lazily
    PetscCall(PetscKokkosInitializeCheck());
+
+   PetscCall(ps.check_decomposed());
 
    n_angles_ = ps.n_angles;
    local_cells_ = ps.local_cells;
