@@ -9,18 +9,16 @@ coordinates, set by the backend for output), the layout and the parallel decompo
 but deliberately creates no solver matrices or vectors itself.
 
 Codebase map
-- `tests/`: test drivers (they are also the examples) + a Makefile of literal run commands.
-  `tests/slab_1dk.kokkos.cxx`: 1D slab single-group SN driver — the frozen baseline
-  driver: no materials machinery, source and inflow are one `VecSet` by design.
-  `tests/slab_1d_mgk.kokkos.cxx`: the multigroup one (`-n_groups`, `-sigma_transfer`,
-  `-inflow`, `-source`, painted regions via `-region_<r>_interval` + `_density`/`_source`);
-  it is also where the group sweep itself lives, until a second sweep strategy justifies
-  promoting it into the library.
-  `tests/box_2dk.kokkos.cxx`: the 2D single-group driver (`-n_cells_x/-n_cells_y`,
-  `-length_x/-length_y`, `-sigma_scatter`, `-inflow`, painted regions via
-  `-region_<r>_box` + `_sigma_t`/`_sigma_s`/`_source`).
-  All three take `-sigma_t` for the background total xsection (named `-max_exponent`
-  until Aug 2026 — see docs/dev/testing.md for the notation mapping).
+- `tests/`: the drivers (they are also the examples) + a Makefile of literal run commands.
+  `tests/transportk.kokkos.cxx`: THE solve driver, any dimension and group count — all
+  physics comes from `-problem <file.json>` (schema: `docs/problem_files.md`), the CLI
+  keeps only PETSc options and the strategy/verification knobs (`-precon_stream`,
+  `-diag_scale`, `-check_inf_medium`, `-flux_vtk` override). It is also where the group
+  Gauss-Seidel sweep lives, until a second sweep strategy justifies promoting it into
+  the library. It replaced the per-problem drivers (`slab_1dk`, `slab_1d_mgk`,
+  `box_2dk`) in Aug 2026, verified byte-for-byte against all 24 baselines first.
+  `tests/problems/`: the problem files the recipes name (+ `problems/materials/` for
+  shared materials files); one file per distinct physics setup.
   `tests/verify_2dk.kokkos.cxx`: the 2D discretisation check — a pure-streaming closed
   form and the shell operator against a reference matrix. `tests/baselines/`: captured
   reference `-ksp_monitor` logs, 1D only — never regenerate casually
@@ -31,16 +29,21 @@ Codebase map
   weight matrix) with `SNQuadrature` / `SNQuadrature2D` under it, plus
   `UboltAngularIntegral`, the shared angular integral; `BCSpec` (boundary label id →
   BC family {vacuum, reflect}, keyed the way DMPlex "Face Sets" ids are — the structured
-  backends' `FACE_*` constants match PETSc's box-mesh convention, and each solve driver
-  exposes per-face `-bc_left`/`-bc_right`/... options); `MaterialSpec` (BCSpec's sibling
+  backends' `FACE_*` constants match PETSc's box-mesh convention, and a problem file's
+  `boundary_conditions` names faces onto them); `MaterialSpec` (BCSpec's sibling
   for cell data: per-material, per-group xsections + external source — an isotropic
   strength, shared over the ordinates as `source / sum_weights` by `UboltFillSource` —
   DENSE indices 0..n-1
   because the tables reach device kernels — a DMPlex backend remaps "Cell Sets" labels to
   indices at paint time; which cells are which material is geometry, painted per-backend
   into a per-cell index view, then expanded through `GroupXSections::set_from_materials`
-  and `UboltFillSource`, so terms never learn materials exist; the solve drivers expose
-  `-n_regions` + `-region_<r>_*` options); `Discretisation` (the backend
+  and `UboltFillSource`, so terms never learn materials exist; a problem file's
+  `regions` section is what gets painted); `ProblemSpec` (the JSON problem-definition
+  reader filling MaterialSpec/BCSpec/paint lists/mesh sizes from one file — materials
+  use the upstream code's multigroup schema, path or inline, plus UBOLT's `Source[g]`
+  extension; parsing lives in the one TU that includes the vendored
+  `src/external/nlohmann/json.hpp`, which must NEVER be included from
+  `include/ubolt/`); `Discretisation` (the backend
   base: `create_matrix`, `coo_pattern`, `boundary_info`, `destroy`, `dm`, and
   `set_uniform_pattern` for a fixed-entries-per-row backend) with `StructuredFD1D` and
   `StructuredFD2D` under it (each owns a DMDA and through it the mesh, the cell-based
@@ -52,8 +55,8 @@ Codebase map
   MatShell), `TransportSolver` (KSP + the composite PC, plus `refresh()` for what the PC
   caches off the assembled matrix), `UboltWriteScalarFluxVTK` (the scalar flux of a
   solution written through PETSc's VTK viewer onto a dof-1 twin of the backend's DMDA —
-  `.vts`/`.vtr` structured formats only; every solve driver exposes it as
-  `-flux_vtk <file>`). `types.hpp` owns every Kokkos view typedef, `ubolt.hpp`
+  `.vts`/`.vtr` structured formats only; a problem file's `output.flux_vtk`, or
+  `-flux_vtk` as the override). `types.hpp` owns every Kokkos view typedef, `ubolt.hpp`
   is the umbrella header. Every translation unit is a Kokkos one, named `Xk.kokkos.cxx`
   (the suffix triggers PETSc's Kokkos build rules). See `TODO.md` for the roadmap and
   current phase.

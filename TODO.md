@@ -444,6 +444,31 @@ previous one's verification has passed and been reviewed.
       to the 50x50 ratio-1 serial solve and its two-call/painting-identity twins
       (64-bit), the np2 streaming pmat and the serial 100x100 S4 (OMP) — see
       docs/dev/testing.md.
+
+## Phase 4 postscript 3 — problem-definition files, one driver (Aug 2026)
+- [x] All physics now comes from a JSON problem file (`docs/problem_files.md`):
+      dimension, mesh, angles, materials, painted regions, BCs, inflow, flux output.
+      `ProblemSpec` reads it (rank 0 reads + broadcasts, nlohmann vendored at
+      `src/external/nlohmann/json.hpp`, never included from public headers); materials
+      use the upstream code's multigroup schema — path or inline, fission
+      fields accepted-ignored — plus UBOLT's `Source[g]` extension. The problem file is
+      strict about unknown keys, the materials schema tolerant (it is foreign).
+- [x] `transportk` replaced `slab_1dk`, `slab_1d_mgk` and `box_2dk`: one driver, both
+      dimensions, any group count; CLI keeps PETSc options + `-precon_stream`,
+      `-diag_scale`, `-check_inf_medium`, `-flux_vtk`. The group sweep moved over
+      verbatim and stays driver-side until a second sweep strategy justifies a
+      MultigroupSolver (the Phase 2 note above stands). Recipes name problem files in
+      `tests/problems/`; two old recipes died as strictly subsumed (runtime-sizes,
+      1-group multigroup — see docs/dev/testing.md).
+      Verified BEFORE deleting the old drivers: all 24 baselines byte-for-byte from
+      `transportk` (the slab files carry `Source 2.0` + `inflow 1.0`, exactly
+      `slab_1dk`'s VecSet rhs; the frozen-baseline-driver caveat is thereby retired);
+      the t0 structural identity; painting identity bitwise at np=1 and np=4;
+      1D/2D infinite-medium checks through the new per-group forward-substitution
+      constant (~1e-13). `-check_inf_medium`'s guards moved with it: every face
+      reflective, no paint, absorption in every group. The recipe pins carry the
+      re-swept CI slack unchanged (same histories by construction, same maxes).
+
 - **"Scattering ratio 1 in 2D degrades on non-square grids" — RESOLVED, it was the
   Dirichlet bug** (observed in Phase 4b, explained by the postscript fix above; recorded
   because the wrong conclusion is an easy one to reach again). The observation was real:
