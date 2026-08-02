@@ -123,9 +123,9 @@ $(OBJS): $(UBOLT_HEADERS)
 $(SRCDIR)/problem_speck.o: $(SRCDIR)/external/nlohmann/json.hpp
 
 # Define a variable containing all the tests
-export TEST_TARGETS = slab_1dk slab_1d_mgk box_2dk verify_2dk
+export TEST_TARGETS = transportk slab_1dk slab_1d_mgk box_2dk verify_2dk
 # Define a variable containing all the tests that the make check runs
-export CHECK_TARGETS = slab_1dk slab_1d_mgk box_2dk verify_2dk
+export CHECK_TARGETS = transportk slab_1dk slab_1d_mgk box_2dk verify_2dk
 
 # Output the library - either static or dynamic
 ifeq ($(PETSC_USE_SHARED_LIBRARIES),0)
