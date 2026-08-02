@@ -7,6 +7,8 @@ PetscErrorCode Discretisation::create_matrix(Mat *mat) const
 {
    PetscFunctionBeginUser;
 
+   PetscCall(ps_.check_decomposed());
+
    const PetscInt local_rows = ps_.local_rows();
    const PetscInt global_rows = ps_.global_rows();
 
