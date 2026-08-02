@@ -338,6 +338,7 @@ carrying slack (see the 2D section for the precedent).
 | 20^3 all-reflect infinite medium (rtol 1e-12) | 10 | 10 |
 | 20^3 identity: 2 regions = background, st=2 | 6 | 6 (np=4) |
 | 20^3 absorbing sourceless block over ratio 0.5 | 4 | 4 |
+| 20^3 cold cube: `inflow 0.0`, zero source outside a central 0.1^3 region | 4 | 5 |
 | 10^3 multigroup 4 groups t05 | 5, 5, 5, 5 | 5, 5, 5, 5 |
 
 Mesh independent: 20^3 to 30^3 holds at 6. The painting identity was checked bitwise

@@ -223,6 +223,8 @@ run_tests_short_serial:
 	./transportk -problem problems/cube_20_absorber.json -ksp_max_it 4
 	@echo "Test 3D cube multigroup, 4 groups with downscatter"
 	./transportk -problem problems/cube_10_mg4_t05.json -ksp_max_it 5
+	@echo "Test 3D cube, cold cube: zero inflow, a central 0.1 x 0.1 x 0.1 source region and nothing else"
+	./transportk -problem problems/cube_20_cold.json -ksp_max_it 4
 
 # ~~~~~~~~~~~
 # ~~~~~~~~~~~
@@ -320,6 +322,8 @@ run_tests_short_parallel:
 	$(MPIEXEC) -n 2 ./transportk -problem problems/cube_20_absorber.json -ksp_max_it 4
 	@echo "Test 3D cube multigroup, 4 groups with downscatter in parallel"
 	$(MPIEXEC) -n 2 ./transportk -problem problems/cube_10_mg4_t05.json -ksp_max_it 5
+	@echo "Test 3D cube, cold cube with a central source region in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/cube_20_cold.json -ksp_max_it 5
 
 # ~~~~~~~~~~~
 # ~~~~~~~~~~~

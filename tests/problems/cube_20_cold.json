@@ -1,0 +1,54 @@
+{
+ "_comment": "Cold cube: zero inflow, a sourceless copy of the background painted over the whole cube, and a central 0.1 x 0.1 x 0.1 source region painted after it (later paint wins), so the source region drives everything.",
+ "dimension": 3,
+ "mesh": {
+  "n_cells": [20, 20, 20],
+  "lengths": [1.0, 1.0, 1.0]
+ },
+ "n_angles": 8,
+ "materials": {
+  "n_groups": 1,
+  "materials": [
+   {
+    "id": 0,
+    "name": "st2_ss1",
+    "Sigma_t": [2.0],
+    "Sigma_s": [
+     [1.0]
+    ],
+    "Source": [1.0]
+   },
+   {
+    "id": 1,
+    "name": "st2_ss1_cold",
+    "Sigma_t": [2.0],
+    "Sigma_s": [
+     [1.0]
+    ],
+    "Source": [0.0]
+   },
+   {
+    "id": 2,
+    "name": "st2_ss1_source",
+    "Sigma_t": [2.0],
+    "Sigma_s": [
+     [1.0]
+    ],
+    "Source": [1.0]
+   }
+  ]
+ },
+ "regions": {
+  "paint": [
+   {
+    "material": 1,
+    "box": [0.0, 1.0, 0.0, 1.0, 0.0, 1.0]
+   },
+   {
+    "material": 2,
+    "box": [0.45, 0.55, 0.45, 0.55, 0.45, 0.55]
+   }
+  ]
+ },
+ "inflow": 0.0
+}

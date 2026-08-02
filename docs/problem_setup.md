@@ -174,7 +174,7 @@ your machine.
 | 2D with reflective faces | `box_50_reflect_lb.json` |
 | Infinite-medium check setup | `slab_inf_medium.json`, `box_50_inf_medium.json` |
 | Heterogeneous 2D (absorber block, by-name reference) | `box_50_absorber.json` |
-| Cold problem driven by a source region | `box_100_cold.json` |
+| Cold problem driven by a source region | `box_100_cold.json` (2D), `cube_20_cold.json` (3D) |
 | S4 angular resolution | `box_30_s4_st2.json` (2D), `cube_10_s4_st2.json` (3D) |
 | 3D uniform cube | `cube_20_st2.json` |
 | 3D with reflective faces (three-face corner) | `cube_20_reflect_3faces.json` |
