@@ -1,7 +1,5 @@
 #include "ubolt/terms.hpp"
-#include <KokkosBlas.hpp>
 #include "petsc_kokkos.hpp"
-#include <math.h>
 
 // The kernels below capture plain values and shallow view copies, never `this`
 // - a member access inside a KOKKOS_LAMBDA would dereference a host pointer on
@@ -51,14 +49,14 @@ PetscErrorCode StreamingTerm::assemble_add(PetscScalarKokkosView &coo_v_d) const
          const PetscInt a = r % n_angles;
          const PetscInt diag = diag_slot_d(r);
 
-         coo_v_d(diag) += fabs(mu_d(a)) / dx;
+         coo_v_d(diag) += PetscAbsScalar(mu_d(a)) / dx;
 
          // Everything else in the row is an upwind neighbour. The neighbour
          // always sits on the opposite side of the diagonal, whichever way the
          // angle points: mu dpsi/dx is |mu|/dx (psi_i - psi_upwind)
          for (PetscInt s = row_slot_offset_d(r); s < row_slot_offset_d(r + 1); s++) {
             if (s == diag) continue;
-            coo_v_d(s) += -fabs(mu_d(a)) / dx;
+            coo_v_d(s) += -PetscAbsScalar(mu_d(a)) / dx;
          }
       });
 
@@ -116,8 +114,8 @@ PetscErrorCode StreamingTerm2D::assemble_add(PetscScalarKokkosView &coo_v_d) con
          // addressed positionally rather than as "everything but the diagonal"
          const PetscInt first = row_slot_offset_d(r);
 
-         const PetscScalar cx = fabs(mu_d(a)) / dx;
-         const PetscScalar cy = fabs(eta_d(a)) / dy;
+         const PetscScalar cx = PetscAbsScalar(mu_d(a)) / dx;
+         const PetscScalar cy = PetscAbsScalar(eta_d(a)) / dy;
 
          // Each axis contributes |cosine| / h (psi_here - psi_upwind), whichever
          // way it points - the direction is already baked into which neighbour
@@ -230,7 +228,7 @@ PetscErrorCode ScatteringTerm::apply_add(Vec x, Vec y) const
 
    // Now let's multiply by the scattering xsection
    Kokkos::parallel_for(
-      Kokkos::RangePolicy<>(0, local_cells), KOKKOS_LAMBDA(int i) {
+      Kokkos::RangePolicy<>(0, local_cells), KOKKOS_LAMBDA(PetscInt i) {
 
          // We have to divide by the sum of weights to get the amount going
          // into each angle

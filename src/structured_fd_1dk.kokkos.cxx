@@ -1,4 +1,5 @@
 #include "ubolt/structured_fd_1d.hpp"
+#include <petscdmda.h>
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 

@@ -22,14 +22,12 @@ using PetscScalar2DConstKokkosView = Kokkos::View<const PetscScalar **, Kokkos::
 using PetscScalar2DRightKokkosView = Kokkos::View<PetscScalar **, Kokkos::LayoutRight, DefaultMemorySpace>;
 using PetscScalar3DRightKokkosView = Kokkos::View<PetscScalar ***, Kokkos::LayoutRight, DefaultMemorySpace>;
 using HostMirrorMemorySpace      = Kokkos::DualView<PetscScalar *>::host_mirror_space::memory_space;
-using PetscScalarKokkosViewHost  = Kokkos::View<PetscScalar *, HostMirrorMemorySpace>;
 using PetscScalarKokkosViewHostUnmanaged = Kokkos::View<PetscScalar *, HostMirrorMemorySpace, Kokkos::MemoryTraits<Kokkos::Unmanaged>>;
 using PetscScalar2DKokkosViewHostUnmanaged = Kokkos::View<PetscScalar **, Kokkos::LayoutRight, HostMirrorMemorySpace, Kokkos::MemoryTraits<Kokkos::Unmanaged>>;
 using KokkosTeamMemberType = Kokkos::TeamPolicy<Kokkos::DefaultExecutionSpace>::member_type;
 
 // Index views - the COO slot maps and the BC row mask
 using PetscIntKokkosView      = Kokkos::View<PetscInt *, DefaultMemorySpace>;
-using PetscIntConstKokkosView = Kokkos::View<const PetscInt *, DefaultMemorySpace>;
 using PetscIntKokkosViewHostUnmanaged = Kokkos::View<PetscInt *, HostMirrorMemorySpace, Kokkos::MemoryTraits<Kokkos::Unmanaged>>;
 
 #endif
