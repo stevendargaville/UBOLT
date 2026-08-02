@@ -13,7 +13,7 @@ The smallest valid problem — a uniform 1D slab, one group, unit inflow:
 {
  "dimension": 1,
  "mesh": {"n_cells": [1000], "lengths": [1.0]},
- "n_angles": 4,
+ "sn_order": 4,
  "materials": {
   "n_groups": 1,
   "materials": [
@@ -41,11 +41,14 @@ sections are per (a materials file may state `length_unit`; UBOLT does not
 convert, it just trusts you to be consistent).
 
 ### 2. Angles
-`n_angles` is the SN ordinate count: {2, 4} in 1D, {4 (S2), 12 (S4)} in 2D,
-{8 (S2), 24 (S4)} in 3D today. A 3D set has twice the ordinates of the
-same-order 2D set - 2D folds the xi > 0 half over, 3D has nothing to fold -
-so the counts are not comparable across dimensions. An invalid count fails in
-the quadrature's `create` with the valid set in the message.
+`sn_order` is the SN order N — S2 and S4 today, in every dimension. How many
+ordinates that is, is the quadrature's business and differs by dimension: N in
+1D, N(N+2)/2 in 2D, N(N+2) in 3D, so S4 is 4, 12 and 24 ordinates. A 3D set
+has twice the ordinates of the same-order 2D set — 2D folds the xi > 0 half
+over, 3D has nothing to fold — which is why the order, not the count, is what
+a problem file names: S4 means the same angular resolution in all three. An
+unimplemented order fails in the quadrature's `create` with the valid set in
+the message.
 
 ### 3. Materials
 Three ways to fill `"materials"`:

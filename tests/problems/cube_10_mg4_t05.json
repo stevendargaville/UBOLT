@@ -5,6 +5,6 @@
   "n_cells": [10, 10, 10],
   "lengths": [1.0, 1.0, 1.0]
  },
- "n_angles": 8,
+ "sn_order": 2,
  "materials": "materials/slab_mg4_t05.json"
 }

@@ -11,7 +11,7 @@
 #include <vector>
 
 // A complete problem definition read from a JSON file: everything physical -
-// dimension, mesh, angles, materials, painted regions, boundary conditions,
+// dimension, mesh, SN order, materials, painted regions, boundary conditions,
 // inflow and the flux output - so a solve driver needs no problem options of
 // its own. What stays OFF the file is everything about how the problem is
 // solved: PETSc options (-ksp_*, -pc_*) and driver strategy knobs remain
@@ -42,7 +42,10 @@ public:
    // Only the first `dimension` axes mean anything
    PetscInt n_cells_x = 0, n_cells_y = 0, n_cells_z = 0;
    PetscReal length_x = 0.0, length_y = 0.0, length_z = 0.0;
-   PetscInt n_angles = 0;
+   // The SN order, NOT the ordinate count: how many ordinates an order is, is
+   // the quadrature's business and differs by dimension (S4 is 4 ordinates in
+   // 1D, 12 in 2D, 24 in 3D)
+   PetscInt sn_order = 0;
    // From the materials schema - the phase space takes it from here
    PetscInt n_groups = 0;
 
