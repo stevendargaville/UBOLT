@@ -101,8 +101,19 @@ static PetscErrorCode CheckDALayout(DM da, const PhaseSpace &ps, const PetscInt 
 
 enum class RowKind { INTERIOR, DIRICHLET, REFLECT };
 
-// Classify one (node, angle) row, and for a reflective row say which angle it
-// couples to
+// The upwind neighbour is behind the direction on each axis: to the left/below
+// for a positive cosine, to the right/above for a negative one. A zero cosine
+// has no upwind neighbour on that axis at all
+struct Upwind {
+   PetscInt upwind_i = 0;
+   PetscInt upwind_j = 0;
+   PetscBool has_x = PETSC_FALSE;
+   PetscBool has_y = PETSC_FALSE;
+};
+
+// Classify one (node, angle) row - filling in its upwind neighbours as the
+// side product, so the sign convention above is stated once - and for a
+// reflective row say which angle it couples to
 //
 // The label decides only which BC family each face belongs to; whether a row
 // is a boundary row at all is the physics - the existing upwind test, which is
@@ -114,14 +125,16 @@ enum class RowKind { INTERIOR, DIRICHLET, REFLECT };
 static RowKind ClassifyRow(PetscInt i, PetscInt j, PetscInt a, \
    const PetscScalar *mu, const PetscScalar *eta, PetscInt n_cells_x, PetscInt n_cells_y, \
    BCType left, BCType right, BCType bottom, BCType top, \
-   const PetscInt *reflect_mu, const PetscInt *reflect_eta, PetscInt *partner)
+   const PetscInt *reflect_mu, const PetscInt *reflect_eta, Upwind *upwind, PetscInt *partner)
 {
-   const PetscInt upwind_i = (mu[a] > 0) ? i - 1 : ((mu[a] < 0) ? i + 1 : i);
-   const PetscInt upwind_j = (eta[a] > 0) ? j - 1 : ((eta[a] < 0) ? j + 1 : j);
-   const PetscBool has_x = (PetscBool)(mu[a] != 0.0);
-   const PetscBool has_y = (PetscBool)(eta[a] != 0.0);
-   const PetscBool x_outside = (PetscBool)(has_x && (upwind_i < 0 || upwind_i >= n_cells_x));
-   const PetscBool y_outside = (PetscBool)(has_y && (upwind_j < 0 || upwind_j >= n_cells_y));
+   upwind->upwind_i = (mu[a] > 0) ? i - 1 : ((mu[a] < 0) ? i + 1 : i);
+   upwind->upwind_j = (eta[a] > 0) ? j - 1 : ((eta[a] < 0) ? j + 1 : j);
+   upwind->has_x = (PetscBool)(mu[a] != 0.0);
+   upwind->has_y = (PetscBool)(eta[a] != 0.0);
+   const PetscBool x_outside = (PetscBool)(upwind->has_x && \
+      (upwind->upwind_i < 0 || upwind->upwind_i >= n_cells_x));
+   const PetscBool y_outside = (PetscBool)(upwind->has_y && \
+      (upwind->upwind_j < 0 || upwind->upwind_j >= n_cells_y));
 
    *partner = -1;
    if (!x_outside && !y_outside) return RowKind::INTERIOR;
@@ -240,22 +253,15 @@ PetscErrorCode StructuredFD2D::create(MPI_Comm comm, PhaseSpace &ps, PetscInt n_
             const PetscInt r = local_cell * n_angles + a;
             const PetscInt row = GlobalDof(ltog, i, j, a, gxs, gys, gxm, n_angles);
 
-            // The upwind neighbour is behind the direction on each axis: to the
-            // left/below for a positive cosine, to the right/above for a
-            // negative one. A zero cosine has no upwind neighbour at all
-            const PetscInt upwind_i = (mu[a] > 0) ? i - 1 : ((mu[a] < 0) ? i + 1 : i);
-            const PetscInt upwind_j = (eta[a] > 0) ? j - 1 : ((eta[a] < 0) ? j + 1 : j);
-            const PetscBool has_x = (PetscBool)(mu[a] != 0.0);
-            const PetscBool has_y = (PetscBool)(eta[a] != 0.0);
-
             // An inflow row - this direction enters the box through a face
             // this node is on - has its equation replaced by the boundary
             // condition: the identity on a Dirichlet (vacuum) row, the
             // reflection condition psi(a) - psi(partner) = 0 on a reflective
             // one. Corner nodes classify through either axis
+            Upwind upwind;
             PetscInt partner = -1;
             const RowKind kind = ClassifyRow(i, j, a, mu, eta, n_cells_x, n_cells_y, \
-               left, right, bottom, top, reflect_mu, reflect_eta, &partner);
+               left, right, bottom, top, reflect_mu, reflect_eta, &upwind, &partner);
             if (kind != RowKind::INTERIOR) is_bc_row[r] = 1;
 
             if (kind == RowKind::REFLECT)
@@ -264,9 +270,10 @@ PetscErrorCode StructuredFD2D::create(MPI_Comm comm, PhaseSpace &ps, PetscInt n_
                // came in through, so its row is a real unknown - unless a
                // direction of the grid is a single cell wide and the opposite
                // face catches it, which there is no sensible matrix for
+               Upwind upwind2;
                PetscInt partner2 = -1;
                PetscCheck(ClassifyRow(i, j, partner, mu, eta, n_cells_x, n_cells_y, \
-                  left, right, bottom, top, reflect_mu, reflect_eta, &partner2) == RowKind::INTERIOR, \
+                  left, right, bottom, top, reflect_mu, reflect_eta, &upwind2, &partner2) == RowKind::INTERIOR, \
                   comm, PETSC_ERR_SUP, "the reflection partner of node (%" PetscInt_FMT ", %" \
                   PetscInt_FMT ") angle %" PetscInt_FMT " is itself a boundary row - a reflective " \
                   "face on a single-cell-wide direction is not supported", i, j, a);
@@ -282,16 +289,16 @@ PetscErrorCode StructuredFD2D::create(MPI_Comm comm, PhaseSpace &ps, PetscInt n_
             }
             else
             {
-               const PetscBool null_x = (PetscBool)(kind == RowKind::DIRICHLET || !has_x);
-               const PetscBool null_y = (PetscBool)(kind == RowKind::DIRICHLET || !has_y);
+               const PetscBool null_x = (PetscBool)(kind == RowKind::DIRICHLET || !upwind.has_x);
+               const PetscBool null_y = (PetscBool)(kind == RowKind::DIRICHLET || !upwind.has_y);
 
                oor_[3 * r]     = null_x ? -1 : row;
                ooc_[3 * r]     = null_x ? -1 : \
-                  GlobalDof(ltog, upwind_i, j, a, gxs, gys, gxm, n_angles);
+                  GlobalDof(ltog, upwind.upwind_i, j, a, gxs, gys, gxm, n_angles);
 
                oor_[3 * r + 1] = null_y ? -1 : row;
                ooc_[3 * r + 1] = null_y ? -1 : \
-                  GlobalDof(ltog, i, upwind_j, a, gxs, gys, gxm, n_angles);
+                  GlobalDof(ltog, i, upwind.upwind_j, a, gxs, gys, gxm, n_angles);
             }
 
             oor_[3 * r + 2] = row;
