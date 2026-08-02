@@ -50,19 +50,6 @@ PetscErrorCode GroupXSections::create(const PhaseSpace &ps)
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-PetscErrorCode GroupXSections::destroy()
-{
-   PetscFunctionBeginUser;
-
-   // The device views have to go before PetscFinalize takes Kokkos down
-   sigma_t_d_ = PetscScalar2DRightKokkosView();
-   sigma_s_d_ = PetscScalar3DRightKokkosView();
-
-   PetscFunctionReturn(PETSC_SUCCESS);
-}
-
-// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
 PetscScalarKokkosView GroupXSections::sigma_t(PetscInt g) const
 {
    // Contiguous in cell, so this is a plain 1D view of the group's row
@@ -133,22 +120,6 @@ PetscErrorCode GroupTransfer::create(const PhaseSpace &ps, const AngularQuadratu
    for (PetscInt g = 0; g < ps.n_groups; g++) {
       phi_[g] = PetscScalar2DKokkosView("phi_d", local_cells_, 1);
    }
-
-   PetscFunctionReturn(PETSC_SUCCESS);
-}
-
-// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-PetscErrorCode GroupTransfer::destroy()
-{
-   PetscFunctionBeginUser;
-
-   // The device views have to go before PetscFinalize takes Kokkos down
-   w_d_ = PetscScalar2DKokkosView();
-   is_bc_row_d_ = PetscIntKokkosView();
-   scalar_flux_d_ = PetscScalar2DKokkosView();
-   phi_.clear();
-   phi_set_.clear();
 
    PetscFunctionReturn(PETSC_SUCCESS);
 }

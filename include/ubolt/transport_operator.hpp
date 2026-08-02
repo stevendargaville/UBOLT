@@ -33,7 +33,6 @@ public:
    Mat assembled_mat() const { return assembled_; }
 
    const std::vector<const OperatorTerm *> &matrix_free_terms() const { return matrix_free_; }
-   PetscInt n_angles() const { return ps_.n_angles; }
 
 private:
    PetscErrorCode assemble_into(Mat mat, PetscInt n_terms, const OperatorTerm *const terms[]) const;
