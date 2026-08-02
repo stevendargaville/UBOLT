@@ -88,10 +88,11 @@ falls exactly on a cell face owns the cells whose centres it covers, and a
 region thinner than a cell can own nothing. Reference materials by `id` or by
 `name`; names read better in files with more than two materials.
 
-The whole-box paint trick is legitimate: painting `[0, 1, 0, 1]` with a
-sourceless copy of the background and then a small source region over it
-(see `box_100_cold.json`) is how "zero source except HERE" is said without a
-negative-space shape.
+"Zero source except HERE" is said without a negative-space shape: make the
+sourceless material the background and paint the small source region over it
+(see `box_100_cold.json`). Don't spend a material on a background you then
+paint over everywhere — the background is whatever `regions.background` names,
+material 0 by default.
 
 ### 5. Boundary conditions and inflow
 Unset faces are vacuum: the rhs carries `inflow` on their incoming
