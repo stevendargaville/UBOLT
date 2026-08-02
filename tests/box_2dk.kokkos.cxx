@@ -101,6 +101,12 @@ int main(int argc, char **args) {
    PetscCall(PetscOptionsGetEList(NULL, NULL, "-bc_right", bc_names, 2, &bc_right, NULL));
    PetscCall(PetscOptionsGetEList(NULL, NULL, "-bc_bottom", bc_names, 2, &bc_bottom, NULL));
    PetscCall(PetscOptionsGetEList(NULL, NULL, "-bc_top", bc_names, 2, &bc_top, NULL));
+   // The incoming flux prescribed on the vacuum faces (it lands on the
+   // Dirichlet rows of b and only means something there - reflective rows owe
+   // the rhs a zero). -inflow 0 with a painted source region is a cold box
+   // driven by that region alone
+   PetscReal inflow = 1.0;
+   PetscCall(PetscOptionsGetReal(NULL, NULL, "-inflow", &inflow, NULL));
    // Check the solve against the infinite-medium solution: with every face
    // reflective, a uniform unit source and uniform xsections the exact
    // discrete solution is psi = 1 / (sigma_t - sigma_s) everywhere
@@ -171,7 +177,7 @@ int main(int argc, char **args) {
       PetscCall(MatCreateVecs(op.assembled_mat(), &x, &b));
       // The inflow value everywhere first - the Dirichlet rows keep it - then
       // the per-material source over the non-BC rows
-      PetscCall(VecSet(b, 1.0));
+      PetscCall(VecSet(b, (PetscScalar)inflow));
       PetscCall(UboltFillSource(ps, disc.boundary_info(), mats, mat_id_d, 0, b));
       // A reflective row's rhs is zero - psi_r = psi_partner - so the inflow
       // has to come off those rows again
