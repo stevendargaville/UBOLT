@@ -186,10 +186,16 @@ run_tests_short_serial:
 #
 # Painted regions. The identity file's regions carry the background values, so
 # it must land exactly where the uniform 50x50 recipe does - painting and
-# expansion change nothing but which table entry a cell reads. The absorber is
+# expansion change nothing but which table entry a cell reads. The overlap file
+# pins the later-paint-wins rule the same way: an extreme material is painted
+# first and a copy of the background over a box containing it, so the result is
+# uniform and it must land where the uniform ratio-0.5 recipe does - if an
+# earlier box won anywhere the masked material would survive. The absorber is
 # a genuinely heterogeneous pin: a sourceless absorber in a scattering box
 	@echo "Test 2D box, two regions equal to the background (painting identity)"
 	./transportk -problem problems/box_50_identity.json -ksp_max_it 7
+	@echo "Test 2D box, overlapping paint boxes (later paint wins)"
+	./transportk -problem problems/box_30_overlap.json -ksp_max_it 5
 	@echo "Test 2D box, an absorbing sourceless block painted mid-box"
 	./transportk -problem problems/box_50_absorber.json -ksp_max_it 5
 	@echo "Test 2D box, cold box: zero inflow, a central 0.1 x 0.1 source region and nothing else"
@@ -219,6 +225,8 @@ run_tests_short_serial:
 	./transportk -problem problems/cube_20_inf_medium.json -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 10
 	@echo "Test 3D cube, two regions equal to the background (painting identity)"
 	./transportk -problem problems/cube_20_identity.json -ksp_max_it 6
+	@echo "Test 3D cube, overlapping paint boxes (later paint wins)"
+	./transportk -problem problems/cube_10_overlap.json -ksp_max_it 4
 	@echo "Test 3D cube, an absorbing sourceless block painted mid-cube"
 	./transportk -problem problems/cube_20_absorber.json -ksp_max_it 4
 	@echo "Test 3D cube multigroup, 4 groups with downscatter"

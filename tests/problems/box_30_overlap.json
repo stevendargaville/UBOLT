@@ -1,0 +1,53 @@
+{
+ "_comment": "Overlapping paint boxes: an extreme sourceless material painted first, then a copy of the background painted over a box that contains it. Later paint wins, so the result is uniformly the background and the run must land where the uniform ratio-0.5 recipe does; if an earlier box won anywhere the masked material would survive and the solve would be a different problem.",
+ "dimension": 2,
+ "mesh": {
+  "n_cells": [30, 30],
+  "lengths": [1.0, 1.0]
+ },
+ "n_angles": 4,
+ "materials": {
+  "n_groups": 1,
+  "materials": [
+   {
+    "id": 0,
+    "name": "st2_ss1",
+    "Sigma_t": [2.0],
+    "Sigma_s": [
+     [1.0]
+    ],
+    "Source": [1.0]
+   },
+   {
+    "id": 1,
+    "name": "masked",
+    "Sigma_t": [100.0],
+    "Sigma_s": [
+     [0.0]
+    ],
+    "Source": [0.0]
+   },
+   {
+    "id": 2,
+    "name": "st2_ss1_copy",
+    "Sigma_t": [2.0],
+    "Sigma_s": [
+     [1.0]
+    ],
+    "Source": [1.0]
+   }
+  ]
+ },
+ "regions": {
+  "paint": [
+   {
+    "material": "masked",
+    "box": [0.3, 0.7, 0.3, 0.7]
+   },
+   {
+    "material": "st2_ss1_copy",
+    "box": [0.2, 0.8, 0.2, 0.8]
+   }
+  ]
+ }
+}

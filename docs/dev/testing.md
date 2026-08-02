@@ -282,9 +282,20 @@ least like the natural one. The heterogeneous recipes are ordinary pins (and the
 absorbing block was eyeballed via `-flux_vtk`: a clear flux depression over the block,
 ~1.9 against ~7-10 in the surrounding medium).
 
+The **overlap** recipes sharpen the same oracle onto paint ORDER. An extreme sourceless
+material (sigma_t 100, sigma_s 0, q 0) is painted first and a copy of the background
+over a box that contains it, so later-paint-wins makes the result uniform and the run
+has to land on the uniform ratio-0.5 history. Both were checked bitwise against a
+uniform twin of the same mesh when the pins were captured. Reversing the paint list
+(letting the earlier box win) moves 2D 30x30 from 5 to 4 iterations, so the pin alone
+catches it; in 3D 10^3 the count does not move at the default rtol - the history does,
+and that is what the bitwise check covers. The covering box stays strictly inside the
+domain on purpose: a whole-domain cover would leave the background material unused.
+
 | painted config | np=1 | np=2 | np=4 |
 |---|---|---|---|
 | 2D 50x50 identity: 2 regions = background, st=2 | 6 | — | 7 |
+| 2D 30x30 overlap: masked box covered by a background copy, st=2 ratio 0.5 | 5 | — | — |
 | 2D 50x50 absorbing sourceless block (sigma_t 10, sigma_s 1, q 0) over st=2 ratio 0.5 | 5 | 5 | — |
 | 2D 100x100 cold box: `inflow 0.0`, zero source outside a central 0.1x0.1 region | 5 | 5 | — |
 | 1D multigroup 4 groups t05, double-density region 0.4-0.6 | 6, 6, 6, 6 | 6, 6, 6, 6 | — |
@@ -337,6 +348,7 @@ carrying slack (see the 2D section for the precedent).
 | 20^3, left+front+bottom reflect, ratio 0.5 | 5 | 5 |
 | 20^3 all-reflect infinite medium (rtol 1e-12) | 10 | 10 |
 | 20^3 identity: 2 regions = background, st=2 | 6 | 6 (np=4) |
+| 10^3 overlap: masked box covered by a background copy, st=2 ratio 0.5 | 4 | — |
 | 20^3 absorbing sourceless block over ratio 0.5 | 4 | 4 |
 | 20^3 cold cube: `inflow 0.0`, zero source outside a central 0.1^3 region | 4 | 5 |
 | 10^3 multigroup 4 groups t05 | 5, 5, 5, 5 | 5, 5, 5, 5 |
