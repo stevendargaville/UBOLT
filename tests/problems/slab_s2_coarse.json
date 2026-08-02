@@ -5,7 +5,7 @@
   "n_cells": [500],
   "lengths": [2.0]
  },
- "n_angles": 2,
+ "sn_order": 2,
  "materials": {
   "n_groups": 1,
   "materials": [

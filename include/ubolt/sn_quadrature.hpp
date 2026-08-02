@@ -45,13 +45,17 @@ protected:
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-// 1D SN quadrature (Gauss-Legendre for n_angles = 2 or 4)
+// 1D SN quadrature (Gauss-Legendre, SN order 2 or 4)
+//
+// The order is what a problem asks for; how many ordinates that is, is the
+// quadrature's own business - in 1D the SN order IS the ordinate count, an N
+// point Gauss-Legendre rule on [-1, 1]
 //
 // Keeps the ordinates on the host (the COO preallocation is a host loop) and on
 // the device (the assembly and scatter kernels)
 class PETSC_VISIBILITY_PUBLIC SNQuadrature : public AngularQuadrature {
 public:
-   PetscErrorCode create(PetscInt n_angles);
+   PetscErrorCode create(PetscInt sn_order);
 
    const PetscScalar *mu_host() const { return mu_h_.data(); }
    const PetscScalarKokkosView &mu_d() const { return mu_d_; }
@@ -69,7 +73,8 @@ private:
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 // 2D (XY geometry) SN quadrature: the level-symmetric sets, S2 (4 ordinates)
-// and S4 (12), which is 4 quadrants x {1, 3} directions each
+// and S4 (12), which is 4 quadrants x {1, 3} directions each - N (N + 2) / 2
+// ordinates for order N
 //
 // XY geometry is symmetric about the z = 0 plane, so only the directions with
 // xi > 0 are tracked and their weights are doubled to stand in for the mirrored
@@ -77,7 +82,7 @@ private:
 // needed - the operator only ever sees mu and eta
 class PETSC_VISIBILITY_PUBLIC SNQuadrature2D : public AngularQuadrature {
 public:
-   PetscErrorCode create(PetscInt n_angles);
+   PetscErrorCode create(PetscInt sn_order);
 
    const PetscScalar *mu_host() const { return mu_h_.data(); }
    const PetscScalar *eta_host() const { return eta_h_.data(); }
@@ -101,7 +106,7 @@ private:
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 // 3D SN quadrature: the level-symmetric sets, S2 (8 ordinates) and S4 (24),
-// which is 8 octants x {1, 3} directions each
+// which is 8 octants x {1, 3} directions each - N (N + 2) ordinates for order N
 //
 // Unlike 2D there is no symmetry plane to fold over, so all eight octants are
 // tracked and xi is a real cosine the streaming term reads. That doubles the
@@ -109,7 +114,7 @@ private:
 // 24 against 12. The weights still sum to the full 4 pi
 class PETSC_VISIBILITY_PUBLIC SNQuadrature3D : public AngularQuadrature {
 public:
-   PetscErrorCode create(PetscInt n_angles);
+   PetscErrorCode create(PetscInt sn_order);
 
    const PetscScalar *mu_host() const { return mu_h_.data(); }
    const PetscScalar *eta_host() const { return eta_h_.data(); }

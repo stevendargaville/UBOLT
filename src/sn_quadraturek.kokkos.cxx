@@ -58,30 +58,27 @@ static PetscErrorCode FindOrdinate(const PetscScalar *mu, const PetscScalar *eta
 // SNQuadrature (1D)
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-PetscErrorCode SNQuadrature::create(PetscInt n_angles)
+PetscErrorCode SNQuadrature::create(PetscInt sn_order)
 {
    std::vector<PetscScalar> w_h;
 
    PetscFunctionBeginUser;
 
-   mu_h_.resize(n_angles);
-   w_h.resize(n_angles);
-
-   PetscScalar *mu = mu_h_.data();
-   PetscScalar *w  = w_h.data();
-
-   if (n_angles == 2) {
-      mu[0] = -0.5773502692; mu[1] = 0.5773502692;
-      w[0] = 1.0;            w[1] = 1.0;
-   } else if (n_angles == 4) {
-      mu[0] = -0.8611363116; mu[1] = -0.3399810436;
-      mu[2] =  0.3399810436; mu[3] =  0.8611363116;
-      w[0] = 0.3478548451;   w[1] = 0.6521451549;
-      w[2] = 0.6521451549;   w[3] = 0.3478548451;
+   if (sn_order == 2) {
+      mu_h_ = {-0.5773502692, 0.5773502692};
+      w_h   = {1.0, 1.0};
+   } else if (sn_order == 4) {
+      mu_h_ = {-0.8611363116, -0.3399810436, 0.3399810436, 0.8611363116};
+      w_h   = {0.3478548451, 0.6521451549, 0.6521451549, 0.3478548451};
    } else {
       SETERRQ(PETSC_COMM_SELF, PETSC_ERR_SUP, \
-         "SN quadrature only implemented for 2 or 4 angles, was given %" PetscInt_FMT, n_angles);
+         "1D SN quadrature only implemented for order 2 or 4, was given S%" \
+         PetscInt_FMT, sn_order);
    }
+   // In 1D the SN order IS the ordinate count: SN is the N point
+   // Gauss-Legendre rule on [-1, 1]
+   const PetscInt n_angles = sn_order;
+   PetscScalar *mu = mu_h_.data();
    // In 1D we integrate over [-1, 1] so the sum of weights is 2
    PetscCall(set_weights(w_h, 2.0));
 
@@ -114,10 +111,10 @@ PetscErrorCode SNQuadrature::create(PetscInt n_angles)
 //
 // S2 has one direction per octant, (c, c, c) with c = 1/sqrt(3); S4 has three,
 // the permutations of (mu1, mu1, mu2). In XY we drop xi and take each (mu, eta)
-// once per quadrant, so those become 4 and 12 ordinates. Equal weights within a
-// set: 4 pi / n_angles, which is the doubling for the mirrored xi < 0 half
-// already folded in
-PetscErrorCode SNQuadrature2D::create(PetscInt n_angles)
+// once per quadrant, so those become 4 and 12 ordinates - N (N + 2) / 2 for
+// order N. Equal weights within a set: 4 pi / n_angles, which is the doubling
+// for the mirrored xi < 0 half already folded in
+PetscErrorCode SNQuadrature2D::create(PetscInt sn_order)
 {
    // The |mu|, |eta| of one quadrant - the sign combinations come after
    std::vector<std::pair<PetscScalar, PetscScalar>> quadrant;
@@ -125,20 +122,22 @@ PetscErrorCode SNQuadrature2D::create(PetscInt n_angles)
 
    PetscFunctionBeginUser;
 
-   if (n_angles == 4) {
+   if (sn_order == 2) {
       // S2: c = 1/sqrt(3), the same cosine 1D's S2 uses
       const PetscScalar c = 0.5773502692;
       quadrant = {{c, c}};
-   } else if (n_angles == 12) {
+   } else if (sn_order == 4) {
       // S4: 2 mu1^2 + mu2^2 = 1
       const PetscScalar mu1 = 0.3500212;
       const PetscScalar mu2 = 0.8688903;
       quadrant = {{mu1, mu1}, {mu1, mu2}, {mu2, mu1}};
    } else {
       SETERRQ(PETSC_COMM_SELF, PETSC_ERR_SUP, \
-         "2D SN quadrature only implemented for 4 (S2) or 12 (S4) angles, was given %" \
-         PetscInt_FMT, n_angles);
+         "2D SN quadrature only implemented for order 2 or 4, was given S%" \
+         PetscInt_FMT, sn_order);
    }
+   // One (mu, eta) per quadrant of each base pair: N (N + 2) / 2 ordinates
+   const PetscInt n_angles = sn_order * (sn_order + 2) / 2;
 
    mu_h_.clear();
    eta_h_.clear();
@@ -195,8 +194,8 @@ PetscErrorCode SNQuadrature2D::create(PetscInt n_angles)
 // symmetry plane, so every octant is a real octant and xi is a real cosine.
 // S2 keeps its one direction per octant, S4 its three - all three permutations
 // of (mu1, mu1, mu2) now, where XY could drop the xi component - so the counts
-// are 8 and 24 against 2D's 4 and 12
-PetscErrorCode SNQuadrature3D::create(PetscInt n_angles)
+// are 8 and 24 against 2D's 4 and 12, N (N + 2) for order N
+PetscErrorCode SNQuadrature3D::create(PetscInt sn_order)
 {
    // The |mu|, |eta|, |xi| of one octant - the sign combinations come after
    std::vector<std::array<PetscScalar, 3>> octant;
@@ -204,21 +203,23 @@ PetscErrorCode SNQuadrature3D::create(PetscInt n_angles)
 
    PetscFunctionBeginUser;
 
-   if (n_angles == 8) {
+   if (sn_order == 2) {
       // S2: c = 1/sqrt(3), the same cosine the 1D and 2D S2 sets use
       const PetscScalar c = 0.5773502692;
       octant = {{c, c, c}};
-   } else if (n_angles == 24) {
+   } else if (sn_order == 4) {
       // S4: 2 mu1^2 + mu2^2 = 1, the same pair the 2D S4 set uses
       const PetscScalar mu1 = 0.3500212;
       const PetscScalar mu2 = 0.8688903;
       octant = {{mu1, mu1, mu2}, {mu1, mu2, mu1}, {mu2, mu1, mu1}};
    } else {
       SETERRQ(PETSC_COMM_SELF, PETSC_ERR_SUP, \
-         "3D SN quadrature only implemented for 8 (S2) or 24 (S4) angles, was given %" \
-         PetscInt_FMT " - note a 3D set has twice the ordinates of the same-order 2D set", \
-         n_angles);
+         "3D SN quadrature only implemented for order 2 or 4, was given S%" \
+         PetscInt_FMT, sn_order);
    }
+   // Every sign combination of each base triple, nothing folded away:
+   // N (N + 2) ordinates, twice the same-order 2D set
+   const PetscInt n_angles = sn_order * (sn_order + 2);
 
    mu_h_.clear();
    eta_h_.clear();

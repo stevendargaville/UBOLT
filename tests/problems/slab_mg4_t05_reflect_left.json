@@ -5,7 +5,7 @@
   "n_cells": [1000],
   "lengths": [1.0]
  },
- "n_angles": 4,
+ "sn_order": 4,
  "materials": "materials/slab_mg4_t05.json",
  "boundary_conditions": {
   "left": "reflect"

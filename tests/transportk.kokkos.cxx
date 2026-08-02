@@ -112,9 +112,12 @@ int main(int argc, char **args) {
       OperatorTerm *streaming = NULL;
       PetscIntKokkosView mat_id_d;
 
+      // The quadrature comes first in each branch: the file names an SN order
+      // and how many ordinates that is, is the quadrature's answer - which is
+      // what the phase space is sized on
       if (spec.dimension == 1) {
-         PetscCall(ps.create(PETSC_COMM_WORLD, spec.n_cells_x, spec.n_angles, n_groups));
-         PetscCall(quad_1d.create(spec.n_angles));
+         PetscCall(quad_1d.create(spec.sn_order));
+         PetscCall(ps.create(PETSC_COMM_WORLD, spec.n_cells_x, quad_1d.n_angles(), n_groups));
          PetscCall(disc_1d.create(PETSC_COMM_WORLD, ps, spec.length_x, quad_1d, spec.bcs));
          PetscCall(disc_1d.paint_intervals(bg, spec.intervals, mat_id_d));
          PetscCall(streaming_1d.create(ps, disc_1d, quad_1d));
@@ -123,9 +126,9 @@ int main(int argc, char **args) {
          streaming = &streaming_1d;
       }
       else if (spec.dimension == 2) {
-         PetscCall(ps.create(PETSC_COMM_WORLD, spec.n_cells_x * spec.n_cells_y, spec.n_angles, \
-            n_groups));
-         PetscCall(quad_2d.create(spec.n_angles));
+         PetscCall(quad_2d.create(spec.sn_order));
+         PetscCall(ps.create(PETSC_COMM_WORLD, spec.n_cells_x * spec.n_cells_y, \
+            quad_2d.n_angles(), n_groups));
          PetscCall(disc_2d.create(PETSC_COMM_WORLD, ps, spec.n_cells_x, spec.n_cells_y, \
             spec.length_x, spec.length_y, quad_2d, spec.bcs));
          PetscCall(disc_2d.paint_boxes(bg, spec.boxes, mat_id_d));
@@ -135,9 +138,9 @@ int main(int argc, char **args) {
          streaming = &streaming_2d;
       }
       else if (spec.dimension == 3) {
+         PetscCall(quad_3d.create(spec.sn_order));
          PetscCall(ps.create(PETSC_COMM_WORLD, \
-            spec.n_cells_x * spec.n_cells_y * spec.n_cells_z, spec.n_angles, n_groups));
-         PetscCall(quad_3d.create(spec.n_angles));
+            spec.n_cells_x * spec.n_cells_y * spec.n_cells_z, quad_3d.n_angles(), n_groups));
          PetscCall(disc_3d.create(PETSC_COMM_WORLD, ps, spec.n_cells_x, spec.n_cells_y, \
             spec.n_cells_z, spec.length_x, spec.length_y, spec.length_z, quad_3d, spec.bcs));
          PetscCall(disc_3d.paint_boxes(bg, spec.boxes_3d, mat_id_d));

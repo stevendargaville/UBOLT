@@ -99,7 +99,7 @@ static PetscBool IsInflowNode(const SNQuadrature3D &quad, PetscInt a, PetscInt i
 // way - and the solve then says the system those coefficients make really does
 // have that solution and is nonsingular
 static PetscErrorCode CheckStreamingClosedForm(PetscInt n_cells_x, PetscInt n_cells_y, \
-   PetscInt n_cells_z, PetscInt n_angles, PetscReal length_x, PetscReal length_y, \
+   PetscInt n_cells_z, PetscInt sn_order, PetscReal length_x, PetscReal length_y, \
    PetscReal length_z, PetscBool *ok)
 {
    PhaseSpace ps;
@@ -115,8 +115,11 @@ static PetscErrorCode CheckStreamingClosedForm(PetscInt n_cells_x, PetscInt n_ce
 
    PetscFunctionBeginUser;
 
+   // The order is what is asked for; the ordinate count is the quadrature's
+   // answer, so it comes first and the phase space is sized on what it says
+   PetscCall(quad.create(sn_order));
+   const PetscInt n_angles = quad.n_angles();
    PetscCall(ps.create(PETSC_COMM_WORLD, n_cells_x * n_cells_y * n_cells_z, n_angles));
-   PetscCall(quad.create(n_angles));
    PetscCall(disc.create(PETSC_COMM_WORLD, ps, n_cells_x, n_cells_y, n_cells_z, \
       length_x, length_y, length_z, quad));
 
@@ -230,7 +233,7 @@ static PetscErrorCode CheckStreamingClosedForm(PetscInt n_cells_x, PetscInt n_ce
 // check pins the reflect slots, the partner angles - composed across up to
 // three faces at a reflective corner - and the vacuum-wins rule per entry
 static PetscErrorCode CheckOperatorAgainstReference(PetscInt n_cells_x, PetscInt n_cells_y, \
-   PetscInt n_cells_z, PetscInt n_angles, PetscReal length_x, PetscReal length_y, \
+   PetscInt n_cells_z, PetscInt sn_order, PetscReal length_x, PetscReal length_y, \
    PetscReal length_z, PetscScalar sigma_t, PetscScalar sigma_s, \
    BCType left, BCType right, BCType front, BCType back, BCType bottom, BCType top, \
    const char *bc_desc, PetscBool *ok)
@@ -261,8 +264,9 @@ static PetscErrorCode CheckOperatorAgainstReference(PetscInt n_cells_x, PetscInt
    bcs.set(StructuredFD3D::FACE_BOTTOM, bottom);
    bcs.set(StructuredFD3D::FACE_TOP, top);
 
+   PetscCall(quad.create(sn_order));
+   const PetscInt n_angles = quad.n_angles();
    PetscCall(ps.create(PETSC_COMM_WORLD, n_cells_x * n_cells_y * n_cells_z, n_angles));
-   PetscCall(quad.create(n_angles));
    PetscCall(disc.create(PETSC_COMM_WORLD, ps, n_cells_x, n_cells_y, n_cells_z, \
       length_x, length_y, length_z, quad, bcs));
 
@@ -406,8 +410,8 @@ int main(int argc, char **args) {
 
    // S2 and S4, and a grid with all three extents distinct so an axis mix-up
    // cannot hide
-   PetscCall(CheckStreamingClosedForm(8, 6, 4, 8, 1.0, 2.0, 3.0, &ok));
-   PetscCall(CheckStreamingClosedForm(8, 6, 4, 24, 1.0, 2.0, 3.0, &ok));
+   PetscCall(CheckStreamingClosedForm(8, 6, 4, 2, 1.0, 2.0, 3.0, &ok));
+   PetscCall(CheckStreamingClosedForm(8, 6, 4, 4, 1.0, 2.0, 3.0, &ok));
 
    if (!skip_reference) {
       const BCType V = BCType::VACUUM, R = BCType::REFLECT;
@@ -415,17 +419,17 @@ int main(int argc, char **args) {
       // left + front + bottom: one corner where three reflective faces meet
       // (the triple flip), three edges of double flips, and vacuum-wins edges
       // and corners against the other three faces, all in the checked matrix
-      PetscCall(CheckOperatorAgainstReference(4, 3, 2, 8, 1.0, 2.0, 3.0, 1.5, 0.7, \
+      PetscCall(CheckOperatorAgainstReference(4, 3, 2, 2, 1.0, 2.0, 3.0, 1.5, 0.7, \
          V, V, V, V, V, V, "vacuum", &ok));
-      PetscCall(CheckOperatorAgainstReference(4, 3, 2, 24, 1.0, 2.0, 3.0, 1.5, 0.7, \
+      PetscCall(CheckOperatorAgainstReference(4, 3, 2, 4, 1.0, 2.0, 3.0, 1.5, 0.7, \
          V, V, V, V, V, V, "vacuum", &ok));
-      PetscCall(CheckOperatorAgainstReference(4, 3, 2, 8, 1.0, 2.0, 3.0, 1.5, 0.7, \
+      PetscCall(CheckOperatorAgainstReference(4, 3, 2, 2, 1.0, 2.0, 3.0, 1.5, 0.7, \
          R, R, R, R, R, R, "reflect", &ok));
-      PetscCall(CheckOperatorAgainstReference(4, 3, 2, 24, 1.0, 2.0, 3.0, 1.5, 0.7, \
+      PetscCall(CheckOperatorAgainstReference(4, 3, 2, 4, 1.0, 2.0, 3.0, 1.5, 0.7, \
          R, R, R, R, R, R, "reflect", &ok));
-      PetscCall(CheckOperatorAgainstReference(4, 3, 2, 8, 1.0, 2.0, 3.0, 1.5, 0.7, \
+      PetscCall(CheckOperatorAgainstReference(4, 3, 2, 2, 1.0, 2.0, 3.0, 1.5, 0.7, \
          R, V, R, V, R, V, "mixed", &ok));
-      PetscCall(CheckOperatorAgainstReference(4, 3, 2, 24, 1.0, 2.0, 3.0, 1.5, 0.7, \
+      PetscCall(CheckOperatorAgainstReference(4, 3, 2, 4, 1.0, 2.0, 3.0, 1.5, 0.7, \
          R, V, R, V, R, V, "mixed", &ok));
    }
 

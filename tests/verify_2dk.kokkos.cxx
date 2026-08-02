@@ -82,7 +82,7 @@ static PetscBool IsInflowNode(const SNQuadrature2D &quad, PetscInt a, PetscInt i
 // exact arithmetic on the assembled coefficients, no solver tolerance in the
 // way - and the solve then says the system those coefficients make really does
 // have that solution and is nonsingular
-static PetscErrorCode CheckStreamingClosedForm(PetscInt n_cells_x, PetscInt n_cells_y, PetscInt n_angles, \
+static PetscErrorCode CheckStreamingClosedForm(PetscInt n_cells_x, PetscInt n_cells_y, PetscInt sn_order, \
    PetscReal length_x, PetscReal length_y, PetscBool *ok)
 {
    PhaseSpace ps;
@@ -98,8 +98,11 @@ static PetscErrorCode CheckStreamingClosedForm(PetscInt n_cells_x, PetscInt n_ce
 
    PetscFunctionBeginUser;
 
+   // The order is what is asked for; the ordinate count is the quadrature's
+   // answer, so it comes first and the phase space is sized on what it says
+   PetscCall(quad.create(sn_order));
+   const PetscInt n_angles = quad.n_angles();
    PetscCall(ps.create(PETSC_COMM_WORLD, n_cells_x * n_cells_y, n_angles));
-   PetscCall(quad.create(n_angles));
    PetscCall(disc.create(PETSC_COMM_WORLD, ps, n_cells_x, n_cells_y, length_x, length_y, quad));
 
    // Streaming alone: no removal, no scatter
@@ -206,7 +209,7 @@ static PetscErrorCode CheckStreamingClosedForm(PetscInt n_cells_x, PetscInt n_ce
 // row is the identity plus the -1 on its mirrored angle and nothing else, so
 // the same check pins the reflect slots, the partner angles and the vacuum-wins
 // corner rule per entry
-static PetscErrorCode CheckOperatorAgainstReference(PetscInt n_cells_x, PetscInt n_cells_y, PetscInt n_angles, \
+static PetscErrorCode CheckOperatorAgainstReference(PetscInt n_cells_x, PetscInt n_cells_y, PetscInt sn_order, \
    PetscReal length_x, PetscReal length_y, PetscScalar sigma_t, PetscScalar sigma_s, \
    BCType left, BCType right, BCType bottom, BCType top, const char *bc_desc, PetscBool *ok)
 {
@@ -234,8 +237,9 @@ static PetscErrorCode CheckOperatorAgainstReference(PetscInt n_cells_x, PetscInt
    bcs.set(StructuredFD2D::FACE_BOTTOM, bottom);
    bcs.set(StructuredFD2D::FACE_TOP, top);
 
+   PetscCall(quad.create(sn_order));
+   const PetscInt n_angles = quad.n_angles();
    PetscCall(ps.create(PETSC_COMM_WORLD, n_cells_x * n_cells_y, n_angles));
-   PetscCall(quad.create(n_angles));
    PetscCall(disc.create(PETSC_COMM_WORLD, ps, n_cells_x, n_cells_y, length_x, length_y, quad, bcs));
 
    PetscScalarKokkosView sigma_t_d("sigma_t_d", ps.local_cells);
@@ -363,20 +367,20 @@ int main(int argc, char **args) {
    PetscCall(PetscPrintf(PETSC_COMM_WORLD, "2D verification\n"));
 
    // S2 and S4, and a non-square grid so an x/y mix-up cannot hide
+   PetscCall(CheckStreamingClosedForm(16, 12, 2, 1.0, 2.0, &ok));
    PetscCall(CheckStreamingClosedForm(16, 12, 4, 1.0, 2.0, &ok));
-   PetscCall(CheckStreamingClosedForm(16, 12, 12, 1.0, 2.0, &ok));
 
    if (!skip_reference) {
       const BCType V = BCType::VACUUM, R = BCType::REFLECT;
       // All vacuum (the original check), all reflect, and a mixed config
       // with reflect on left + bottom so both flip maps and the vacuum-wins
       // corners are all in the checked matrix
+      PetscCall(CheckOperatorAgainstReference(4, 3, 2, 1.0, 2.0, 1.5, 0.7, V, V, V, V, "vacuum", &ok));
       PetscCall(CheckOperatorAgainstReference(4, 3, 4, 1.0, 2.0, 1.5, 0.7, V, V, V, V, "vacuum", &ok));
-      PetscCall(CheckOperatorAgainstReference(4, 3, 12, 1.0, 2.0, 1.5, 0.7, V, V, V, V, "vacuum", &ok));
+      PetscCall(CheckOperatorAgainstReference(4, 3, 2, 1.0, 2.0, 1.5, 0.7, R, R, R, R, "reflect", &ok));
       PetscCall(CheckOperatorAgainstReference(4, 3, 4, 1.0, 2.0, 1.5, 0.7, R, R, R, R, "reflect", &ok));
-      PetscCall(CheckOperatorAgainstReference(4, 3, 12, 1.0, 2.0, 1.5, 0.7, R, R, R, R, "reflect", &ok));
+      PetscCall(CheckOperatorAgainstReference(4, 3, 2, 1.0, 2.0, 1.5, 0.7, R, V, R, V, "mixed", &ok));
       PetscCall(CheckOperatorAgainstReference(4, 3, 4, 1.0, 2.0, 1.5, 0.7, R, V, R, V, "mixed", &ok));
-      PetscCall(CheckOperatorAgainstReference(4, 3, 12, 1.0, 2.0, 1.5, 0.7, R, V, R, V, "mixed", &ok));
    }
 
    if (!ok) PetscCall(PetscFPrintf(PETSC_COMM_WORLD, stderr, "2D verification FAILED\n"));

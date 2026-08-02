@@ -37,7 +37,7 @@ ignored everywhere (JSON has no comments), holding provenance prose.
 | `dimension` | int, 1, 2 or 3 | yes | picks the backend: `StructuredFD1D`, `StructuredFD2D` or `StructuredFD3D` |
 | `mesh.n_cells` | int[dimension] | yes | `[nx]`, `[nx, ny]` or `[nx, ny, nz]`, all positive |
 | `mesh.lengths` | number[dimension] | yes | `[lx]`, `[lx, ly]` or `[lx, ly, lz]`, all positive |
-| `n_angles` | int | yes | SN ordinates; what is valid is the quadrature's business ({2, 4} in 1D, {4, 12} in 2D, {8, 24} in 3D today - a 3D set has twice the ordinates of the same-order 2D set, because there is no xi > 0 half to fold over) |
+| `sn_order` | int, positive and even | yes | the SN order N, NOT the ordinate count - how many ordinates that is, is the quadrature's business and differs by dimension (N in 1D, N(N+2)/2 in 2D, N(N+2) in 3D, so S4 is 4, 12 and 24 ordinates; a 3D set has twice the ordinates of the same-order 2D set, because there is no xi > 0 half to fold over). Orders 2 and 4 are implemented today |
 | `materials` | string or object | yes | a path to a materials file, resolved relative to the problem file's own directory, or the same schema inline |
 | `regions` | object | no | which cells are which material - see below; absent = uniform background |
 | `boundary_conditions` | object | no | per-face `"vacuum"` or `"reflect"`; unset faces are vacuum |
@@ -131,7 +131,7 @@ mid-box in a scattering background, materials inline:
 {
  "dimension": 2,
  "mesh": {"n_cells": [50, 50], "lengths": [1.0, 1.0]},
- "n_angles": 4,
+ "sn_order": 2,
  "materials": {
   "n_groups": 1,
   "materials": [

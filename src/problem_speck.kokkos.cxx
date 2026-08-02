@@ -298,7 +298,7 @@ PetscErrorCode ProblemSpec::create(MPI_Comm comm, const char *problem_path)
 
    // The problem file is strict - an unknown key is a typo, not an extension
    PetscCall(JsonCheckKeys(root, "the problem file", problem_path, \
-      {"dimension", "mesh", "n_angles", "materials", "regions", "boundary_conditions", \
+      {"dimension", "mesh", "sn_order", "materials", "regions", "boundary_conditions", \
        "inflow", "output"}));
 
    PetscCall(JsonGetInt(root, "dimension", problem_path, &dimension));
@@ -343,9 +343,12 @@ PetscErrorCode ProblemSpec::create(MPI_Comm comm, const char *problem_path)
       (dimension < 3 || length_z > 0.0), PETSC_COMM_SELF, \
       PETSC_ERR_ARG_OUTOFRANGE, "%s: mesh lengths must be positive", problem_path);
 
-   PetscCall(JsonGetInt(root, "n_angles", problem_path, &n_angles));
-   PetscCheck(n_angles > 0, PETSC_COMM_SELF, PETSC_ERR_ARG_OUTOFRANGE, \
-      "%s: n_angles must be positive, was given %" PetscInt_FMT, problem_path, n_angles);
+   // The SN order, not the ordinate count - which orders exist is the
+   // quadrature's business, so only the obvious nonsense is caught here
+   PetscCall(JsonGetInt(root, "sn_order", problem_path, &sn_order));
+   PetscCheck(sn_order > 0 && sn_order % 2 == 0, PETSC_COMM_SELF, PETSC_ERR_ARG_OUTOFRANGE, \
+      "%s: sn_order must be a positive even integer, was given %" PetscInt_FMT, problem_path, \
+      sn_order);
 
    // ~~~~~~~~~~~~~
    // Materials (already spliced in if it was a path)
