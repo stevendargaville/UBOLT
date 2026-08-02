@@ -75,7 +75,7 @@ int main(int argc, char **args) {
    PetscBool write_flux = PETSC_FALSE;
    PetscCall(PetscOptionsGetString(NULL, NULL, "-flux_vtk", flux_vtk, sizeof(flux_vtk), &write_flux));
 
-   KSPConvergedReason reason;
+   KSPConvergedReason reason = KSP_CONVERGED_ITERATING;
    PetscReal inf_medium_err = 0.0;
 
    // Device memory has to be gone before PetscFinalize takes Kokkos down

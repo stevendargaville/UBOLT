@@ -358,26 +358,25 @@ int main(int argc, char **args) {
    PetscBool skip_reference = PETSC_FALSE;
    PetscCall(PetscOptionsGetBool(NULL, NULL, "-skip_reference", &skip_reference, NULL));
 
-   // Device memory has to be gone before PetscFinalize takes Kokkos down
-   {
-      PetscCall(PetscPrintf(PETSC_COMM_WORLD, "2D verification\n"));
+   // No block scope here, unlike the solve drivers: every device view lives
+   // and dies inside the Check* functions, well before PetscFinalize
+   PetscCall(PetscPrintf(PETSC_COMM_WORLD, "2D verification\n"));
 
-      // S2 and S4, and a non-square grid so an x/y mix-up cannot hide
-      PetscCall(CheckStreamingClosedForm(16, 12, 4, 1.0, 2.0, &ok));
-      PetscCall(CheckStreamingClosedForm(16, 12, 12, 1.0, 2.0, &ok));
+   // S2 and S4, and a non-square grid so an x/y mix-up cannot hide
+   PetscCall(CheckStreamingClosedForm(16, 12, 4, 1.0, 2.0, &ok));
+   PetscCall(CheckStreamingClosedForm(16, 12, 12, 1.0, 2.0, &ok));
 
-      if (!skip_reference) {
-         const BCType V = BCType::VACUUM, R = BCType::REFLECT;
-         // All vacuum (the original check), all reflect, and a mixed config
-         // with reflect on left + bottom so both flip maps and the vacuum-wins
-         // corners are all in the checked matrix
-         PetscCall(CheckOperatorAgainstReference(4, 3, 4, 1.0, 2.0, 1.5, 0.7, V, V, V, V, "vacuum", &ok));
-         PetscCall(CheckOperatorAgainstReference(4, 3, 12, 1.0, 2.0, 1.5, 0.7, V, V, V, V, "vacuum", &ok));
-         PetscCall(CheckOperatorAgainstReference(4, 3, 4, 1.0, 2.0, 1.5, 0.7, R, R, R, R, "reflect", &ok));
-         PetscCall(CheckOperatorAgainstReference(4, 3, 12, 1.0, 2.0, 1.5, 0.7, R, R, R, R, "reflect", &ok));
-         PetscCall(CheckOperatorAgainstReference(4, 3, 4, 1.0, 2.0, 1.5, 0.7, R, V, R, V, "mixed", &ok));
-         PetscCall(CheckOperatorAgainstReference(4, 3, 12, 1.0, 2.0, 1.5, 0.7, R, V, R, V, "mixed", &ok));
-      }
+   if (!skip_reference) {
+      const BCType V = BCType::VACUUM, R = BCType::REFLECT;
+      // All vacuum (the original check), all reflect, and a mixed config
+      // with reflect on left + bottom so both flip maps and the vacuum-wins
+      // corners are all in the checked matrix
+      PetscCall(CheckOperatorAgainstReference(4, 3, 4, 1.0, 2.0, 1.5, 0.7, V, V, V, V, "vacuum", &ok));
+      PetscCall(CheckOperatorAgainstReference(4, 3, 12, 1.0, 2.0, 1.5, 0.7, V, V, V, V, "vacuum", &ok));
+      PetscCall(CheckOperatorAgainstReference(4, 3, 4, 1.0, 2.0, 1.5, 0.7, R, R, R, R, "reflect", &ok));
+      PetscCall(CheckOperatorAgainstReference(4, 3, 12, 1.0, 2.0, 1.5, 0.7, R, R, R, R, "reflect", &ok));
+      PetscCall(CheckOperatorAgainstReference(4, 3, 4, 1.0, 2.0, 1.5, 0.7, R, V, R, V, "mixed", &ok));
+      PetscCall(CheckOperatorAgainstReference(4, 3, 12, 1.0, 2.0, 1.5, 0.7, R, V, R, V, "mixed", &ok));
    }
 
    if (!ok) PetscCall(PetscFPrintf(PETSC_COMM_WORLD, stderr, "2D verification FAILED\n"));
