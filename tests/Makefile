@@ -45,6 +45,10 @@ override MPICXX_INCLUDES += $(MPICXX_INCLUDES_INPUT) $(INCLUDE)
 override HIPC_FLAGS += $(HIPC_FLAGS_INPUT) $(INCLUDE)
 override SYCLC_FLAGS += $(SYCLC_FLAGS_INPUT) $(INCLUDE)
 
+# Detect if PETSc was configured without MPI - exported by the top Makefile,
+# derived here the same way so make can also be called directly in tests/
+PETSC_HAVE_MPIUNI ?= $(if $(shell awk '/^[[:space:]]*\#define[[:space:]]+PETSC_HAVE_MPIUNI[[:space:]]+1/{print 1; exit}' $(PETSCCONF_H)),1,0)
+
 # Link to ubolt and pflare - order is important
 # ubolt and then pflare must come first for static linking
 LDFLAGS += -Wl,-rpath,$(LIBDIR) -Wl,-rpath,$(PFLARE_DIR)/lib
@@ -78,8 +82,10 @@ run_check:
 	@echo ""
 	@echo "Check 1D slab streaming/removal + matrix-free scatter with AIRG"
 	./slab_1dk -max_exponent 2 -ksp_max_it 6
+ifeq ($(PETSC_HAVE_MPIUNI),0)
 	@echo "Check 1D slab preconditioned with streaming only in parallel"
 	$(MPIEXEC) -n 2 ./slab_1dk -precon_stream -ksp_pc_side right -max_exponent 2 -ksp_max_it 9
+endif
 	@echo "Check 1D slab multigroup, 4 groups with downscatter"
 	./slab_1d_mgk -n_groups 4 -sigma_transfer 0.5 -max_exponent 2 -ksp_max_it 6
 	@echo "Check 2D box against the closed form and a reference matrix"
