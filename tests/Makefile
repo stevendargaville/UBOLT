@@ -91,7 +91,7 @@ endif
 	@echo "Check 2D box against the closed form and a reference matrix"
 	./verify_2dk
 	@echo "Check 2D box streaming/removal + matrix-free scatter with AIRG"
-	./box_2dk -n_cells_x 50 -n_cells_y 50 -sigma_t 2 -ksp_max_it 6
+	./box_2dk -n_cells_x 50 -n_cells_y 50 -sigma_t 2 -ksp_max_it 7
 	@echo "Check 2D box, reflective left + bottom faces"
 	./box_2dk -n_cells_x 50 -n_cells_y 50 -bc_left reflect -bc_bottom reflect -sigma_t 2 -sigma_scatter 1.0 -ksp_max_it 6
 
@@ -158,7 +158,7 @@ run_tests_short_serial:
 	@echo "Test 2D box, closed form and reference matrix"
 	./verify_2dk
 	@echo "Test 2D box, streaming/removal pmat, pure scattering (ratio 1)"
-	./box_2dk -n_cells_x 50 -n_cells_y 50 -sigma_t 2 -ksp_max_it 6
+	./box_2dk -n_cells_x 50 -n_cells_y 50 -sigma_t 2 -ksp_max_it 7
 	@echo "Test 2D box, scattering ratio 0.5"
 	./box_2dk -n_cells_x 50 -n_cells_y 50 -sigma_t 2 -sigma_scatter 1.0 -ksp_max_it 5
 	@echo "Test 2D box, non-square grid (dx is not dy)"
@@ -168,11 +168,11 @@ run_tests_short_serial:
 	@echo "Test 2D box, weak removal (advection dominated)"
 	./box_2dk -n_cells_x 50 -n_cells_y 50 -sigma_t 0 -ksp_max_it 3
 	@echo "Test 2D box, streaming-only pmat"
-	./box_2dk -n_cells_x 50 -n_cells_y 50 -precon_stream -ksp_pc_side right -sigma_t 2 -ksp_max_it 10
+	./box_2dk -n_cells_x 50 -n_cells_y 50 -precon_stream -ksp_pc_side right -sigma_t 2 -ksp_max_it 9
 	@echo "Test 2D box, S4 (12 angles)"
 	./box_2dk -n_cells_x 30 -n_cells_y 30 -n_angles 12 -sigma_t 2 -ksp_max_it 6
 	@echo "Test 2D box, one MatSetValuesCOO per term instead of a single summed one"
-	./box_2dk -n_cells_x 50 -n_cells_y 50 -sigma_t 2 -ksp_max_it 6 -ubolt_coo_two_call
+	./box_2dk -n_cells_x 50 -n_cells_y 50 -sigma_t 2 -ksp_max_it 7 -ubolt_coo_two_call
 	@echo "Test 2D box, reflective left + bottom faces"
 	./box_2dk -n_cells_x 50 -n_cells_y 50 -bc_left reflect -bc_bottom reflect -sigma_t 2 -sigma_scatter 1.0 -ksp_max_it 6
 	@echo "Test 2D box, S4 with reflective left + bottom faces"
@@ -185,7 +185,7 @@ run_tests_short_serial:
 # expansion change nothing but which table entry a cell reads. The second is a
 # genuinely heterogeneous pin: a sourceless absorber in a scattering box
 	@echo "Test 2D box, two regions equal to the background (painting identity)"
-	./box_2dk -n_cells_x 50 -n_cells_y 50 -sigma_t 2 -n_regions 2 -region_1_box 0.2,0.4,0.2,0.4 -region_2_box 0.5,0.9,0.1,0.3 -ksp_max_it 6
+	./box_2dk -n_cells_x 50 -n_cells_y 50 -sigma_t 2 -n_regions 2 -region_1_box 0.2,0.4,0.2,0.4 -region_2_box 0.5,0.9,0.1,0.3 -ksp_max_it 7
 	@echo "Test 2D box, an absorbing sourceless block painted mid-box"
 	./box_2dk -n_cells_x 50 -n_cells_y 50 -sigma_t 2 -sigma_scatter 1.0 -n_regions 1 -region_1_box 0.4,0.6,0.4,0.6 -region_1_sigma_t 10.0 -region_1_sigma_s 1.0 -region_1_source 0.0 -ksp_max_it 5
 	@echo "Test 2D box, cold box: zero inflow, a central 0.1 x 0.1 source region and nothing else"
@@ -233,7 +233,7 @@ run_tests_short_parallel:
 	@echo "Test 2D box, weak removal in parallel"
 	$(MPIEXEC) -n 2 ./box_2dk -n_cells_x 50 -n_cells_y 50 -sigma_t 0 -ksp_max_it 3
 	@echo "Test 2D box, streaming-only pmat in parallel"
-	$(MPIEXEC) -n 2 ./box_2dk -n_cells_x 50 -n_cells_y 50 -precon_stream -ksp_pc_side right -sigma_t 2 -ksp_max_it 9
+	$(MPIEXEC) -n 2 ./box_2dk -n_cells_x 50 -n_cells_y 50 -precon_stream -ksp_pc_side right -sigma_t 2 -ksp_max_it 10
 	@echo "Test 2D box, S4 in parallel"
 	$(MPIEXEC) -n 2 ./box_2dk -n_cells_x 30 -n_cells_y 30 -n_angles 12 -sigma_t 2 -ksp_max_it 6
 	@echo "Test 2D box, one MatSetValuesCOO per term in parallel"
@@ -267,9 +267,9 @@ run_tests_serial:
 	@echo "Test 2D box, non-square grid, four times as fine (mesh independence)"
 	./box_2dk -n_cells_x 120 -n_cells_y 60 -sigma_t 2 -ksp_max_it 7
 	@echo "Test 2D box, S4 on a larger grid"
-	./box_2dk -n_cells_x 100 -n_cells_y 100 -n_angles 12 -sigma_t 2 -ksp_max_it 6
+	./box_2dk -n_cells_x 100 -n_cells_y 100 -n_angles 12 -sigma_t 2 -ksp_max_it 7
 	@echo "Test 2D box, streaming-only pmat on a larger grid"
-	./box_2dk -n_cells_x 120 -n_cells_y 60 -precon_stream -ksp_pc_side right -sigma_t 2 -ksp_max_it 11
+	./box_2dk -n_cells_x 120 -n_cells_y 60 -precon_stream -ksp_pc_side right -sigma_t 2 -ksp_max_it 10
 	@echo "Test 2D box, pure scattering on a larger grid"
 	./box_2dk -n_cells_x 100 -n_cells_y 100 -sigma_t 2 -ksp_max_it 7
 

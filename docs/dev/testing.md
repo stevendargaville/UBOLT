@@ -205,14 +205,17 @@ the painted-regions section): only the two streaming-only pmat serial references
 Mesh independent on every shape: 60x30 to 120x60 moves 6 to 7, and 200x50 in the 1x0.25
 box (not a recipe) is 5, the same as 80x20.
 
-The two streaming-only pmat serial recipes pin one above their np=1 counts (10 and 11):
-under 64-bit indices and under the OpenMP Kokkos backend — both CI arches — those two
-configs take one more iteration (measured 2026-08-02 by sweeping every pinned recipe in
-both CI images, under the pre-isotropic-source counts; the same +1 slack is carried onto
-the new references rather than re-swept, since PCAIR's setup on the streaming matrix is
-the sensitive part and that matrix did not change). The assembled-pmat configs do not
-move. The cost is one iteration of slack on the reference build for these two recipes —
-the 1D streaming-pmat baselines still pin their counts exactly.
+A pin is the max over the reference build and the two sensitive CI arches (64-bit
+indices and the OpenMP Kokkos backend), re-swept 2026-08-02 in both CI images after the
+isotropic-source change. Which configs sit one above the reference count changed with
+it: the two streaming-only pmat serial recipes now measure the same everywhere (so
+their pins equal the table), and instead the 50x50 ratio-1 SERIAL solve takes 7 under
+64-bit — pinned 7 on all three recipes that run it (plain, `-ubolt_coo_two_call`, and
+the painting identity, which is the same history by construction) — while under OpenMP
+the np2 streaming-only pmat takes 10 (pinned 10) and the serial 100x100 S4 takes 7
+(pinned 7). Every other recipe measures its reference count in both images. The cost is
+one iteration of slack on the reference build for those five recipes — the 1D
+streaming-pmat baselines still pin their counts exactly.
 
 ## Reflective boundary conditions
 Every solve driver exposes per-face `-bc_left`/`-bc_right` (1D) and

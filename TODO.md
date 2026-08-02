@@ -438,7 +438,12 @@ previous one's verification has passed and been reviewed.
       stream 11,11,10,9 -> 11,11,11,9); painting identity still bitwise vs uniform at
       np=1 and np=4 (both now 7 its at np=4); cold box count unchanged (uniform rhs
       scaling is invisible to a relative residual); the two streaming-only pmat 2D
-      serial references moved 8 -> 9 and 9 -> 10, pins keep their +1 CI slack (10, 11).
+      serial references moved 8 -> 9 and 9 -> 10. The set of configs needing CI slack
+      moved with the rhs: a full re-sweep of both CI images (64-bit, OMP) put the
+      streaming-pmat serial pins back on their references (9, 10) and instead gave +1
+      to the 50x50 ratio-1 serial solve and its two-call/painting-identity twins
+      (64-bit), the np2 streaming pmat and the serial 100x100 S4 (OMP) — see
+      docs/dev/testing.md.
 - **"Scattering ratio 1 in 2D degrades on non-square grids" — RESOLVED, it was the
   Dirichlet bug** (observed in Phase 4b, explained by the postscript fix above; recorded
   because the wrong conclusion is an easy one to reach again). The observation was real:
