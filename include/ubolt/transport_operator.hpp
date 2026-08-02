@@ -21,7 +21,7 @@ public:
 
    // Fill the assembled matrix from every assembled term and build the shell.
    // Values-only: the sparsity is preallocated once by the discretisation, so
-   // this is what a per-group refill will call in Phase 2
+   // this is what the multigroup sweep's per-group refill calls
    PetscErrorCode assemble();
 
    // Assemble a subset of the terms into a matrix of their own - used to build a
@@ -33,7 +33,6 @@ public:
    Mat assembled_mat() const { return assembled_; }
 
    const std::vector<const OperatorTerm *> &matrix_free_terms() const { return matrix_free_; }
-   PetscInt n_angles() const { return ps_.n_angles; }
 
 private:
    PetscErrorCode assemble_into(Mat mat, PetscInt n_terms, const OperatorTerm *const terms[]) const;

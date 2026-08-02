@@ -21,7 +21,6 @@
 class PETSC_VISIBILITY_PUBLIC GroupXSections {
 public:
    PetscErrorCode create(const PhaseSpace &ps);
-   PetscErrorCode destroy();
 
    // Constant across the slab, which is all the current test problems need.
    // Spatially varying data fills the views through the accessors below
@@ -33,8 +32,6 @@ public:
    // Scattering from g_from into g_to, indexed by local cell. g_from == g_to is
    // the within-group scattering that stays on the lhs
    PetscScalarKokkosView sigma_s(PetscInt g_from, PetscInt g_to) const;
-
-   PetscInt n_groups() const { return n_groups_; }
 
 private:
    PetscInt n_groups_ = 0;
@@ -61,7 +58,6 @@ public:
    // Any quadrature: like the scatter it only needs the weights
    PetscErrorCode create(const PhaseSpace &ps, const AngularQuadrature &quad, \
       const GroupXSections &xs, const BoundaryInfo &boundary);
-   PetscErrorCode destroy();
 
    // Integrate group g's angular flux and keep it. Call once, as soon as that
    // group is solved

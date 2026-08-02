@@ -88,8 +88,10 @@ fill runs on device (MATAIJKOKKOS dispatches `MatSetValuesCOO` to the GPU):
 - The ordering of entries per row is fixed at preallocation time, off-diagonals first and
   the diagonal LAST — 1D: upwind, diagonal; 2D: upwind-x, upwind-y, diagonal — every row
   the same regardless of the sign of the direction cosines, and value fills must match it
-  exactly. `Discretisation::set_uniform_pattern(slots_per_row, mask)` builds the slot maps
-  from that convention, so a fixed-entries-per-row backend states it once.
+  exactly. `Discretisation::set_uniform_pattern(slots_per_row, is_bc_row, reflect_slot)`
+  builds the slot maps from that convention, so a fixed-entries-per-row backend states it
+  once — the backend hands it the BC row mask and the repurposed reflection slots along
+  with the slot count.
 - Terms address entries through the `CooPattern` slot maps — `row_slot_offset_d`
   (CSR-shaped COO slot ranges per row) and `diag_slot_d` (which slot is the diagonal) —
   never through raw COO positions. With more than one off-diagonal a term has to address
@@ -123,8 +125,9 @@ fill runs on device (MATAIJKOKKOS dispatches `MatSetValuesCOO` to the GPU):
 - Input views must be `const` views (`VecGetKokkosView` with a const view type) so PETSc
   doesn't mark the vector dirty.
 - Mind device-view scope: views captured by a MatShell context must outlive the KSP solve,
-  and all of them must be gone before `PetscFinalize` takes Kokkos down (the driver keeps
-  the whole problem in a block scope).
+  and all of them must be gone before `PetscFinalize` takes Kokkos down (the solve drivers
+  keep the whole problem in a block scope; `verify_2dk` needs none because its views live
+  inside its `Check*` functions).
 - Kernels in member functions must capture value copies of what they need, never `this` —
   a member access inside a `KOKKOS_LAMBDA` dereferences a host pointer on the device.
   Take local copies of the views at the top of the method (view copies are shallow).

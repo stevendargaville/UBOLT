@@ -6,7 +6,6 @@
 #include "ubolt/phase_space.hpp"
 #include "ubolt/sn_quadrature.hpp"
 #include "ubolt/bc_spec.hpp"
-#include <petscdmda.h>
 
 // Uniform-grid upwinded finite difference discretisation of a 1D slab
 //

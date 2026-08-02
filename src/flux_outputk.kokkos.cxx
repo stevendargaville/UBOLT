@@ -13,7 +13,7 @@ PetscErrorCode UboltWriteScalarFluxVTK(const PhaseSpace &ps, \
    PetscViewer viewer = NULL;
    PetscBool is_vts = PETSC_FALSE, is_vtr = PETSC_FALSE;
    PetscInt local_rows = 0;
-   PetscScalar *phi_a = NULL;
+   PetscScalar *phi_a = nullptr;
 
    PetscFunctionBeginUser;
 

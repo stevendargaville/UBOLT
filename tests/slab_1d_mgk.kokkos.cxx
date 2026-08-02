@@ -190,9 +190,7 @@ int main(int argc, char **args) {
       }
 
       PetscCall(solver.destroy());
-      PetscCall(transfer.destroy());
       PetscCall(op.destroy());
-      PetscCall(xs.destroy());
       PetscCall(disc.destroy());
       PetscCall(MatDestroy(&streaming_mat));
       PetscCall(VecDestroy(&b));

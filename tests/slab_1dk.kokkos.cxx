@@ -65,7 +65,7 @@ int main(int argc, char **args) {
    PetscBool write_flux = PETSC_FALSE;
    PetscCall(PetscOptionsGetString(NULL, NULL, "-flux_vtk", flux_vtk, sizeof(flux_vtk), &write_flux));
 
-   KSPConvergedReason reason;
+   KSPConvergedReason reason = KSP_CONVERGED_ITERATING;
    PetscReal inf_medium_err = 0.0;
 
    // Device memory has to be gone before PetscFinalize takes Kokkos down
@@ -109,9 +109,8 @@ int main(int argc, char **args) {
       // ~~~~~~~~~~~~~
       // RHS: external source, and the incoming flux on the Dirichlet rows
       // ~~~~~~~~~~~~~
-      Vec x, b, diag_vec;
+      Vec x, b, diag_vec = NULL;
       PetscCall(MatCreateVecs(op.assembled_mat(), &x, &b));
-      PetscCall(VecDuplicate(x, &diag_vec));
       PetscCall(VecSet(b, 1.0));
       // A reflective row's rhs is zero - psi_r = psi_partner - so the source
       // has to come off those rows again, before any diagonal scaling
@@ -120,6 +119,7 @@ int main(int argc, char **args) {
       // Diagonally scale the streaming/removal operator
       if (diag_scale) {
 
+         PetscCall(VecDuplicate(x, &diag_vec));
          PetscCall(MatGetDiagonal(op.assembled_mat(), diag_vec));
          PetscCall(VecReciprocal(diag_vec));
          PetscCall(MatDiagonalScale(op.assembled_mat(), diag_vec, PETSC_NULLPTR));

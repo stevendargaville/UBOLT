@@ -204,8 +204,8 @@ PetscErrorCode UboltAngularIntegral(Vec psi, PetscInt n_angles, \
    PetscScalar2DConstKokkosView psi_d_2d(psi_d.data(), local_cells, n_angles);
 
    // The integral over angle is just a dgemm (on the device)
-   const double alpha = double(1.0);
-   const double beta  = double(0.0);
+   const PetscScalar alpha = 1.0;
+   const PetscScalar beta  = 0.0;
    KokkosBlas::gemm("N", "N", alpha, psi_d_2d, w_d, beta, scalar_flux_d);
 
    PetscCall(VecRestoreKokkosView(psi, &psi_d));
