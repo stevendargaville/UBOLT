@@ -101,6 +101,7 @@ OBJS := $(SRCDIR)/sn_quadraturek.o \
 		  $(SRCDIR)/structured_fd_1dk.o \
 		  $(SRCDIR)/structured_fd_2dk.o \
 		  $(SRCDIR)/material_speck.o \
+		  $(SRCDIR)/problem_speck.o \
 		  $(SRCDIR)/termsk.o \
 		  $(SRCDIR)/multigroupk.o \
 		  $(SRCDIR)/transport_operatork.o \
@@ -116,11 +117,15 @@ OBJS := $(SRCDIR)/sn_quadraturek.o \
 # with PETSc's flags
 UBOLT_HEADERS := $(wildcard $(INCLUDEDIR)/ubolt/*.hpp)
 $(OBJS): $(UBOLT_HEADERS)
+# The vendored JSON parser is not in UBOLT_HEADERS (it lives under src/ so it
+# can never enter the public include tree) - the one TU that includes it
+# declares the dependency by hand
+$(SRCDIR)/problem_speck.o: $(SRCDIR)/external/nlohmann/json.hpp
 
 # Define a variable containing all the tests
-export TEST_TARGETS = slab_1dk slab_1d_mgk box_2dk verify_2dk
+export TEST_TARGETS = transportk verify_2dk
 # Define a variable containing all the tests that the make check runs
-export CHECK_TARGETS = slab_1dk slab_1d_mgk box_2dk verify_2dk
+export CHECK_TARGETS = transportk verify_2dk
 
 # Output the library - either static or dynamic
 ifeq ($(PETSC_USE_SHARED_LIBRARIES),0)

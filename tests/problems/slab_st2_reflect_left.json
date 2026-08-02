@@ -1,0 +1,13 @@
+{
+ "_comment": "1D slab, reflective left face (right stays vacuum).",
+ "dimension": 1,
+ "mesh": {
+  "n_cells": [1000],
+  "lengths": [1.0]
+ },
+ "n_angles": 4,
+ "materials": "materials/slab_st2.json",
+ "boundary_conditions": {
+  "left": "reflect"
+ }
+}

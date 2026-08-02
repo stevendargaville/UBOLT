@@ -14,6 +14,7 @@
 #include "ubolt/discretisation.hpp"
 #include "ubolt/structured_fd_1d.hpp"
 #include "ubolt/structured_fd_2d.hpp"
+#include "ubolt/problem_spec.hpp"
 #include "ubolt/operator_term.hpp"
 #include "ubolt/terms.hpp"
 #include "ubolt/multigroup.hpp"

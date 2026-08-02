@@ -1,0 +1,10 @@
+{
+ "_comment": "4 groups with downscatter 0.5; materials by path.",
+ "dimension": 1,
+ "mesh": {
+  "n_cells": [1000],
+  "lengths": [1.0]
+ },
+ "n_angles": 4,
+ "materials": "materials/slab_mg4_t05.json"
+}

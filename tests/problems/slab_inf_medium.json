@@ -1,0 +1,27 @@
+{
+ "_comment": "1D slab, all faces reflective with absorption: the exact discrete solution is the constant Source/(sum_weights*(sigma_t - sigma_s)) = 1, checked by -check_inf_medium.",
+ "dimension": 1,
+ "mesh": {
+  "n_cells": [1000],
+  "lengths": [1.0]
+ },
+ "n_angles": 4,
+ "materials": {
+  "n_groups": 1,
+  "materials": [
+   {
+    "id": 0,
+    "name": "st2_ss1",
+    "Sigma_t": [2.0],
+    "Sigma_s": [
+     [1.0]
+    ],
+    "Source": [2.0]
+   }
+  ]
+ },
+ "boundary_conditions": {
+  "left": "reflect",
+  "right": "reflect"
+ }
+}

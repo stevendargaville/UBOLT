@@ -1,0 +1,24 @@
+{
+ "_comment": "2 groups with downscatter 1.0, S2 on a coarser, longer slab.",
+ "dimension": 1,
+ "mesh": {
+  "n_cells": [500],
+  "lengths": [2.0]
+ },
+ "n_angles": 2,
+ "materials": {
+  "n_groups": 2,
+  "materials": [
+   {
+    "id": 0,
+    "name": "mg2_t1",
+    "Sigma_t": [3.0, 2.0],
+    "Sigma_s": [
+     [2.0, 1.0],
+     [0.0, 2.0]
+    ],
+    "Source": [1.0, 1.0]
+   }
+  ]
+ }
+}

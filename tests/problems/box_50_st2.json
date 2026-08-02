@@ -1,0 +1,23 @@
+{
+ "_comment": "2D box, sigma_t 2, scattering ratio 1 (no absorption).",
+ "dimension": 2,
+ "mesh": {
+  "n_cells": [50, 50],
+  "lengths": [1.0, 1.0]
+ },
+ "n_angles": 4,
+ "materials": {
+  "n_groups": 1,
+  "materials": [
+   {
+    "id": 0,
+    "name": "st2",
+    "Sigma_t": [2.0],
+    "Sigma_s": [
+     [2.0]
+    ],
+    "Source": [1.0]
+   }
+  ]
+ }
+}

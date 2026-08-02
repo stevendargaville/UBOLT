@@ -1,0 +1,26 @@
+{
+ "_comment": "4 groups with strong downscatter 2.0.",
+ "dimension": 1,
+ "mesh": {
+  "n_cells": [1000],
+  "lengths": [1.0]
+ },
+ "n_angles": 4,
+ "materials": {
+  "n_groups": 4,
+  "materials": [
+   {
+    "id": 0,
+    "name": "mg4_t2",
+    "Sigma_t": [4.0, 4.0, 4.0, 2.0],
+    "Sigma_s": [
+     [2.0, 2.0, 0.0, 0.0],
+     [0.0, 2.0, 2.0, 0.0],
+     [0.0, 0.0, 2.0, 2.0],
+     [0.0, 0.0, 0.0, 2.0]
+    ],
+    "Source": [1.0, 1.0, 1.0, 1.0]
+   }
+  ]
+ }
+}

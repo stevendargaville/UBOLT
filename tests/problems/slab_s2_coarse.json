@@ -1,0 +1,23 @@
+{
+ "_comment": "1D slab, S2 on a coarser, longer slab.",
+ "dimension": 1,
+ "mesh": {
+  "n_cells": [500],
+  "lengths": [2.0]
+ },
+ "n_angles": 2,
+ "materials": {
+  "n_groups": 1,
+  "materials": [
+   {
+    "id": 0,
+    "name": "st2",
+    "Sigma_t": [2.0],
+    "Sigma_s": [
+     [2.0]
+    ],
+    "Source": [2.0]
+   }
+  ]
+ }
+}

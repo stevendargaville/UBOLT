@@ -1,0 +1,13 @@
+{
+ "_comment": "4 groups with downscatter, reflective left face (right stays vacuum - the last group's scattering ratio is exactly 1).",
+ "dimension": 1,
+ "mesh": {
+  "n_cells": [1000],
+  "lengths": [1.0]
+ },
+ "n_angles": 4,
+ "materials": "materials/slab_mg4_t05.json",
+ "boundary_conditions": {
+  "left": "reflect"
+ }
+}

@@ -1,0 +1,10 @@
+{
+ "_comment": "1D slab, sigma_t 2, scattering ratio 1; materials by path.",
+ "dimension": 1,
+ "mesh": {
+  "n_cells": [1000],
+  "lengths": [1.0]
+ },
+ "n_angles": 4,
+ "materials": "materials/slab_st2.json"
+}

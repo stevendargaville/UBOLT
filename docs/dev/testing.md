@@ -37,6 +37,13 @@ refactor: identical numerics means the residual history diffs clean against thes
 numerically inert must diff clean against all 24. All of them are 1D — the 2D checks are
 sharper and need no baseline, see below.
 
+Since the driver unification (Aug 2026) every capture line runs `transportk` on a
+problem file (`tests/problems/`); the log names keep their `slab1d`/`slab1dmg` history.
+The unification itself was verified the strong way before the old drivers
+(`slab_1dk`, `slab_1d_mgk`, `box_2dk`) were deleted: all 24 logs byte-for-byte from the
+new driver, plus the t0 structural identity, the painting identity at np=1 and np=4, and
+the 1D/2D infinite-medium checks.
+
 ### Single-group baselines
 Re-captured 2026-08-01 after the Dirichlet-row fix to the matrix-free scatter (see below).
 Before that, 2026-07-31 after the negative-angle upwind sign fix, and before *that* they
@@ -44,8 +51,8 @@ came from the pre-refactor code (the single-file `UBOLTk.kokkos.cxx`); Phase 1a 
 1b each reproduced all 16 bitwise, which is what those phases were verified against. The
 `-ubolt_coo_two_call` assembly fallback reproduces them bitwise.
 
-- Full matrix: {default pc, `-precon_stream -ksp_pc_side right`} x {`-sigma_t` 0, 2}
-  x {np 1, 2} x {`-diag_scale` off, on}. File naming:
+- Full matrix: {default pc, `-precon_stream -ksp_pc_side right`} x {`slab_st0.json`,
+  `slab_st2.json`} x {np 1, 2} x {`-diag_scale` off, on}. File naming:
   `slab1d_<default|stream>_st<0|2>_np<1|2>[_ds].log`.
 - Capture is capped at `-ksp_max_it 200`: all four st=2 diag_scale configs are pathological
   (see table) and a 200-iteration residual history is a strong enough fingerprint.
@@ -105,36 +112,37 @@ History of these baselines:
   from pass/fail recipes; revisit when the diag_scale semantics are looked at again.
 
 ## Multigroup baselines (Phase 2)
-`slab1dmg_<default|stream>_st<0|2>_g4_t<0|05>_np<1|2>.log` — `slab_1d_mgk` with 4 groups,
-`t0`/`t05` being `-sigma_transfer` 0.0/0.5. Each log is the whole group sweep: one KSP
-history after another, in group order. That is what pins the per-group iteration counts
-and the downscatter source arithmetic, neither of which a single `-ksp_max_it` can reach.
-The six t05/stream logs were re-captured 2026-08-02 for the isotropic-source change
-(below); the two t0 logs deliberately did not move.
+`slab1dmg_<default|stream>_st<0|2>_g4_t<0|05>_np<1|2>.log` — 4 groups, `t0`/`t05` being
+downscatter 0.0/0.5 into the next group down (the `slab_mg4_t0.json` /
+`slab_mg4_t05.json` / `slab_mg4_t05_st0.json` problem files; before the driver
+unification these were `slab_1d_mgk -sigma_transfer` recipes, whose derived per-group
+values are exactly what the files now tabulate). Each log is the whole group sweep: one
+KSP history after another, in group order. That is what pins the per-group iteration
+counts and the downscatter source arithmetic, neither of which a single `-ksp_max_it`
+can reach. The six t05/stream logs were re-captured 2026-08-02 for the isotropic-source
+change (below); the two t0 logs deliberately did not move.
 
 The `t0` logs are exactly four byte-for-byte copies of the matching single-group
 `slab1d_default_st2_np<n>.log`. That is the Phase 2 uncoupled-groups verification, and it
 is worth re-checking as a structural property rather than only diffing the file — a change
 that broke both files the same way would still diff clean. It was re-checked that way on
-the 2026-08-01 re-capture, when both files moved. Since the isotropic-source change the
-t0 capture lines carry `-source 2`: the isotropic strength that puts 1.0 on each 1D
-ordinate, which is exactly the rhs `slab_1dk`'s `VecSet` writes — that is what keeps the
-identity byte-for-byte (verified on the 2026-08-02 re-capture: the t0 files came out
-unchanged).
+the 2026-08-01 re-capture, when both files moved, and again on the driver unification.
+`slab_mg4_t0.json` carries `Source: [2, 2, 2, 2]`: the isotropic strength that puts 1.0
+on each 1D ordinate, which is exactly the rhs the single-group problems carry — that is
+what keeps the identity byte-for-byte.
 
 | multigroup config | per-group iterations (np=1 and np=2) |
 |---|---|
 | default pc, st=0, transfer 0.5 | 1, 1, 1, 1 |
-| default pc, st=2, transfer 0.0 | 6, 6, 6, 6 (= single group, four times; `-source 2`) |
+| default pc, st=2, transfer 0.0 | 6, 6, 6, 6 (= single group, four times; Source 2.0) |
 | default pc, st=2, transfer 0.5 | 6, 6, 6, 6 |
 | default pc, st=2, transfer 2.0 | 6, 6, 5, 5 (recipe only, not captured) |
 | precon_stream, st=2, transfer 0.5 | 11, 11, 11, 9 |
 
 Group 0 matches the single-group count because its rhs is just the external source (a
-count match only at the default `-source 1.0` — the history match needs `-source 2`, see
-above); the later groups carry a downscatter source as well. The last group has no
-outgoing transfer, so its `sigma_t` is lower than the others' — that is why the counts
-are not uniform.
+count match at Source 1.0, a history match at Source 2.0, see above); the later groups
+carry a downscatter source as well. The last group has no outgoing transfer, so its
+`sigma_t` is lower than the others' — that is why the counts are not uniform.
 
 With `-precon_stream` the streaming-only pmat does not depend on the group, so PCAIR is
 set up once for the whole sweep; with the default pc the assembled matrix is refilled per
@@ -174,13 +182,13 @@ catch. `make baselines` is still 1D + multigroup only.
 decomposition with a genuinely 2D processor grid and the one where the patch-lexicographic
 global numbering is least like the natural one. Both are in `run_tests_short_parallel`.
 
-## 2D iteration counts (`box_2dk`)
-`-sigma_t` sets `sigma_t` — until Aug 2026 this option was `-max_exponent`, a fossil of
-the original driver's random per-cell xsection (`mantissa * 10^exponent` with the
-exponent drawn up to it); the rename is why the baseline logs and the tables here say
-`st`, and why anything older (commit messages, the history notes above at their capture
-dates) says `me`. `-sigma_scatter` sets `sigma_s`, defaulting to the same
-value, which is a scattering ratio of exactly 1 (no absorption). Counts below are with the
+## 2D iteration counts
+The `st` in the table and the problem-file names is `Sigma_t` — the retired drivers took
+it as `-sigma_t`, and until Aug 2026 that option was `-max_exponent`, a fossil of the
+original driver's random per-cell xsection (`mantissa * 10^exponent` with the exponent
+drawn up to it); that history is why anything older (commit messages, the history notes
+above at their capture dates) says `me`. A file whose within-group `Sigma_s` equals its
+`Sigma_t` is a scattering ratio of exactly 1 (no absorption). Counts below are with the
 Dirichlet-row fix; before it, ratio 1 took 18 to 87 iterations on square grids and did not
 converge at all on any other shape, which is what led to the fix — see the research note
 in `TODO.md`. They were re-measured 2026-08-02 under the isotropic external source (see
@@ -218,30 +226,32 @@ one iteration of slack on the reference build for those five recipes — the 1D
 streaming-pmat baselines still pin their counts exactly.
 
 ## Reflective boundary conditions
-Every solve driver exposes per-face `-bc_left`/`-bc_right` (1D) and
-`-bc_left`/`-bc_right`/`-bc_bottom`/`-bc_top` (2D) options taking `vacuum` (the default)
-or `reflect`. The default is bitwise the pre-reflective behaviour — verified by
-re-capturing all 24 baselines when the plumbing landed — so every recipe and baseline
-above is untouched, and the reflective recipes below are NEW pins, not adjustments.
-Reflective rows couple the angle blocks at the boundary (the streaming-only pmat carries
-the coupling too), so these counts have no reason to match their vacuum counterparts.
+A problem file's `boundary_conditions` object takes `vacuum` (the default for an unset
+face) or `reflect` per face. The default is bitwise the pre-reflective behaviour —
+verified by re-capturing all 24 baselines when the plumbing landed — so every recipe and
+baseline above is untouched, and the reflective recipes below are NEW pins, not
+adjustments. Reflective rows couple the angle blocks at the boundary (the streaming-only
+pmat carries the coupling too), so these counts have no reason to match their vacuum
+counterparts.
 
 The sharp oracles are the verify_2dk reference configs above and the **infinite-medium
-check**: with every face reflective, a uniform unit source and uniform xsections, the
-exact discrete solution is constant in every cell and angle — no discretisation error,
-so `-check_inf_medium` compares against 1e-9 under `-ksp_rtol 1e-12` (lands at ~1e-13).
-The constant is the per-angle source over the absorption: `1 / (sigma_t - sigma_s)` in
-`slab_1dk` (its VecSet source is per-angle by design) and
-`1 / (sum_weights (sigma_t - sigma_s))` in `box_2dk` (isotropic source shared over 4 pi
-— equivalently, unit isotropic source and unit absorption give scalar flux exactly 1,
-which is the sharpest direct check of the isotropic normalisation). It is decomposition
-independent, which is what makes it the parallel oracle for the reflect partner columns.
+check**: with every face reflective, a uniform source and uniform xsections, the exact
+discrete solution is constant in every cell and angle — no discretisation error, so
+`-check_inf_medium` compares against 1e-9 under `-ksp_rtol 1e-12` (lands at ~1e-13).
+The constant is per group, by forward substitution down the sweep:
+`psi_g = (Source_g / sum_weights + sum_{g'<g} Sigma_s[g'][g] psi_g') /
+(Sigma_t[g] - Sigma_s[g][g])` — which is the retired `slab_1dk`'s
+`1 / (sigma_t - sigma_s)` for the Source 2.0 slab files (its VecSet source was per-angle
+by design; 2.0 shared over sum_weights 2 restores it) and the retired `box_2dk`'s
+`1 / (sum_weights (sigma_t - sigma_s))` for the Source 1.0 box files. It is
+decomposition independent, which is what makes it the parallel oracle for the reflect
+partner columns.
 
 Singularity constraint: all-reflect with a scattering ratio of exactly 1 has the
-constants in the operator's kernel. Hence the all-reflect recipes carry absorption
-(`-sigma_scatter 1.0` under `-sigma_t 2`), `slab_1dk` grew `-sigma_scatter` for
-exactly this, and the multigroup reflective recipe keeps the right face vacuum — the last
-group always has ratio 1 (no downscatter out of it).
+constants in the operator's kernel. Hence the all-reflect problem files carry absorption
+(within-group `Sigma_s` 1.0 under `Sigma_t` 2.0 — `slab_inf_medium.json`,
+`box_50_inf_medium.json`), and the multigroup reflective file keeps the right face
+vacuum — the last group always has ratio 1 (no downscatter out of it).
 
 | reflective config | np=1 | np=2 |
 |---|---|---|
@@ -254,11 +264,11 @@ group always has ratio 1 (no downscatter out of it).
 | 2D all-reflect infinite medium (rtol 1e-12) | 10 | 10 |
 
 ## Painted regions (MaterialSpec)
-Every solve driver takes `-n_regions` plus per-region painted shapes — boxes in 2D,
-intervals in 1D — over the background material (see `MaterialSpec`). `-n_regions 0` is
-the uniform problem bit-for-bit, which was verified the strong way when the plumbing
-landed: the multigroup driver builds its xsections and rhs through the MaterialSpec path
-now, and all 24 baselines reproduce bitwise.
+A problem file's `regions.paint` list paints shapes — boxes in 2D, intervals in 1D —
+over the background material (see `MaterialSpec` and `docs/problem_files.md`). No paint
+is the uniform problem bit-for-bit, which was verified the strong way when the plumbing
+landed: everything builds its xsections and rhs through the MaterialSpec path, and all
+24 baselines reproduce bitwise.
 
 The sharp oracle is the **painting identity**: regions whose values equal the
 background's must land exactly on the uniform recipe's residual history, because
@@ -276,45 +286,56 @@ absorbing block was eyeballed via `-flux_vtk`: a clear flux depression over the 
 |---|---|---|---|
 | 2D 50x50 identity: 2 regions = background, st=2 | 6 | — | 7 |
 | 2D 50x50 absorbing sourceless block (sigma_t 10, sigma_s 1, q 0) over st=2 ratio 0.5 | 5 | 5 | — |
-| 2D 100x100 cold box: `-inflow 0`, zero source outside a central 0.1x0.1 region | 5 | 5 | — |
+| 2D 100x100 cold box: `inflow 0.0`, zero source outside a central 0.1x0.1 region | 5 | 5 | — |
 | 1D multigroup 4 groups t05, double-density region 0.4-0.6 | 6, 6, 6, 6 | 6, 6, 6, 6 | — |
 
-The cold box could not move: `-inflow 0` leaves the painted source as the only rhs, so
+The cold box could not move: zero inflow leaves the painted source as the only rhs, so
 the isotropic normalisation scales b uniformly, which a relative residual never sees.
 
 ## Source and inflow conventions
-The `MaterialSpec` external source (`-region_<r>_source`, and the backgrounds below) is
-an **isotropic, angle-integrated strength**: `UboltFillSource` writes
-`source / sum_weights` on each ordinate — `/2` in 1D, `/4 pi` in 2D — so the same value
-means the same physics in both. Until Aug 2026 the value was the literal per-angle rhs
-entry; the 2026-08-02 baseline re-capture (the six mg t05/stream logs) and the pin
-re-measure above are that change landing.
+A material's `Source` array is an **isotropic, angle-integrated strength**:
+`UboltFillSource` writes `source / sum_weights` on each ordinate — `/2` in 1D, `/4 pi`
+in 2D — so the same value means the same physics in both. Until Aug 2026 the value was
+the literal per-angle rhs entry; the 2026-08-02 baseline re-capture (the six mg
+t05/stream logs) and the pin re-measure above are that change landing.
 
-`-inflow` (box_2dk and slab_1d_mgk) prescribes the vacuum faces' incoming flux - the
-value the Dirichlet rows of b carry, historically hard-coded at 1.0, which stays the
-default so every single-group recipe and baseline above is untouched. It is deliberately
-still per-angle: it prescribes the incoming ANGULAR flux, which is per-ordinate by
-nature. `slab_1d_mgk` also takes `-source`, `-inflow`'s sibling for the volume: the
-background material's isotropic strength (default 1.0), in every group. `-source 2` puts
-1.0 on each 1D ordinate — exactly `slab_1dk`'s `VecSet` rhs — which is how the t0
-baselines keep their byte-for-byte identity with the single-group logs. `slab_1dk`
-deliberately has neither option: that driver's source and inflow are one per-angle
-`VecSet` by design (it predates the source/inflow split and is the frozen baseline
-driver), which is why its baselines and its `-check_inf_medium` value are untouched by
-the isotropic convention.
+A problem file's `inflow` prescribes the vacuum faces' incoming flux — the value the
+Dirichlet rows of b carry, historically hard-coded at 1.0, which stays the default so
+every single-group recipe and baseline above is untouched. It is deliberately still
+per-angle: it prescribes the incoming ANGULAR flux, which is per-ordinate by nature.
+The retired `slab_1dk` had neither knob — its source and inflow were one per-angle
+`VecSet(b, 1.0)` by design — and its baselines survive it because `Source 2.0` with
+`inflow 1.0` rebuilds that rhs exactly (the 1D single-group problem files all carry
+that pair), which was verified byte-for-byte on the unification.
+
+Two old recipes died with the option surface, both strictly subsumed: the "runtime
+phase space sizes" slab run (every size is runtime-from-file on every run now) and the
+"multigroup with 1 group" run (a 1-group file IS the single-group path in the unified
+driver — there is no separate code path left to compare).
+
+## Adding a test problem
+1. Write a problem file in `tests/problems/` (schema: `docs/problem_files.md`,
+   walkthrough: `docs/problem_setup.md`), with a `"_comment"` saying what it pins.
+   Values that are not exact dyadics get 17 significant digits so the file round-trips
+   to the intended doubles.
+2. Add invocation lines to the appropriate `run_*` recipe in `tests/Makefile`: an
+   `@echo` label plus the literal `./transportk -problem problems/<file> -options`
+   line, serial and `-n 2` variants, with `-ksp_max_it` pinned to the observed
+   converged count.
+3. No output files from any recipe: `output.flux_vtk` (and the `-flux_vtk` override)
+   are fine on a problem file you run by hand but must not appear in anything a `run_*`
+   recipe names — a test run leaves nothing behind.
 
 ## Adding a test driver
+Should a second driver ever be needed (the next `verify_*`, say):
 1. Add the executable name to `TEST_TARGETS` (and `CHECK_TARGETS` if it belongs in
    `make check`) in the top `Makefile`. The two lists are identical today; the split
    exists for the day a driver is too slow for `check`.
 2. Nothing to do for `.gitignore` — `tests/*k` covers every driver binary, since every
    translation unit is a Kokkos one and the executables all end in `k`.
-3. Add invocation lines to the appropriate `run_*` recipe in `tests/Makefile`:
-   an `@echo` label plus the literal `./exe -options` line, serial and `-n 2` variants,
-   with `-ksp_max_it` pinned to the observed converged count.
-4. Driver rules: exit non-zero unless `KSPGetConvergedReason() > 0`; no output files from
-   any recipe. Opt-in output flags (`-flux_vtk`, the scalar flux VTK writer) are fine on a
-   driver but must not appear in a `run_*` recipe — a test run leaves nothing behind.
+3. Driver rules: exit non-zero unless `KSPGetConvergedReason() > 0`; diagnostics to
+   stderr so `-ksp_monitor` stdout stays capture-clean; problem definition through
+   `ProblemSpec`, not new physics options.
 
 ## DMDA layout (Phases 3 and 4)
 Every discretisation backend builds its layout from a DMDA, which is also what decides the
