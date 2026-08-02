@@ -4,6 +4,7 @@
 #include "ubolt/types.hpp"
 #include "ubolt/phase_space.hpp"
 #include "ubolt/coo_pattern.hpp"
+#include "ubolt/sn_quadrature.hpp"
 #include <vector>
 
 // What each material is made of: per-material, per-group cross sections and an
@@ -33,8 +34,9 @@ public:
    PetscErrorCode set_sigma_t(PetscInt mat, PetscInt g, PetscScalar value);
    // g_from == g_to is the within-group scattering that stays on the lhs
    PetscErrorCode set_sigma_s(PetscInt mat, PetscInt g_from, PetscInt g_to, PetscScalar value);
-   // The external source, as the PER-ANGLE rhs entry - exactly what
-   // VecSet(b, 1.0) puts on every angle today, no sum_weights normalisation
+   // The external source, as the angle-integrated (isotropic) strength -
+   // UboltFillSource shares it out over the ordinates by dividing by the
+   // quadrature's sum_weights
    PetscErrorCode set_source(PetscInt mat, PetscInt g, PetscScalar value);
 
    PetscInt n_materials() const { return n_materials_; }
@@ -55,13 +57,15 @@ private:
    std::vector<PetscScalar> source_;
 };
 
-// b = source(material(cell), g) on every row of every cell, EXCEPT the BC
-// rows: the rhs there belongs to the boundary condition - the incoming flux on
-// a Dirichlet row, zero on a reflective one - the same contract the terms and
-// GroupTransfer::add_source have with the BC row mask. So fill b with the
-// inflow value first (VecSet), call this, and let UboltZeroReflectRows take
-// the inflow back off the reflective rows as usual
+// b = source(material(cell), g) / sum_weights on every row of every cell -
+// the isotropic strength shared out over the quadrature's angular domain -
+// EXCEPT the BC rows: the rhs there belongs to the boundary condition - the
+// incoming flux on a Dirichlet row, zero on a reflective one - the same
+// contract the terms and GroupTransfer::add_source have with the BC row mask.
+// So fill b with the inflow value first (VecSet), call this, and let
+// UboltZeroReflectRows take the inflow back off the reflective rows as usual
 PETSC_EXTERN PetscErrorCode UboltFillSource(const PhaseSpace &ps, const BoundaryInfo &boundary, \
-   const MaterialSpec &mats, const PetscIntKokkosView &mat_id_d, PetscInt g, Vec b);
+   const AngularQuadrature &quad, const MaterialSpec &mats, const PetscIntKokkosView &mat_id_d, \
+   PetscInt g, Vec b);
 
 #endif

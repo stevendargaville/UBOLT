@@ -13,8 +13,8 @@ Codebase map
   `tests/slab_1dk.kokkos.cxx`: 1D slab single-group SN driver — the frozen baseline
   driver: no materials machinery, source and inflow are one `VecSet` by design.
   `tests/slab_1d_mgk.kokkos.cxx`: the multigroup one (`-n_groups`, `-sigma_transfer`,
-  `-inflow`, painted regions via `-region_<r>_interval` + `_density`/`_source`); it
-  is also where the group sweep itself lives, until a second sweep strategy justifies
+  `-inflow`, `-source`, painted regions via `-region_<r>_interval` + `_density`/`_source`);
+  it is also where the group sweep itself lives, until a second sweep strategy justifies
   promoting it into the library.
   `tests/box_2dk.kokkos.cxx`: the 2D single-group driver (`-n_cells_x/-n_cells_y`,
   `-length_x/-length_y`, `-sigma_scatter`, `-inflow`, painted regions via
@@ -33,7 +33,9 @@ Codebase map
   BC family {vacuum, reflect}, keyed the way DMPlex "Face Sets" ids are — the structured
   backends' `FACE_*` constants match PETSc's box-mesh convention, and each solve driver
   exposes per-face `-bc_left`/`-bc_right`/... options); `MaterialSpec` (BCSpec's sibling
-  for cell data: per-material, per-group xsections + external source, DENSE indices 0..n-1
+  for cell data: per-material, per-group xsections + external source — an isotropic
+  strength, shared over the ordinates as `source / sum_weights` by `UboltFillSource` —
+  DENSE indices 0..n-1
   because the tables reach device kernels — a DMPlex backend remaps "Cell Sets" labels to
   indices at paint time; which cells are which material is geometry, painted per-backend
   into a per-cell index view, then expanded through `GroupXSections::set_from_materials`

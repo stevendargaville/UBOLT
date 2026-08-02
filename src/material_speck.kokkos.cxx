@@ -98,7 +98,7 @@ static void MaterialIdRange(const PetscIntKokkosView &mat_id_d, PetscInt local_c
 
 static void FillSourceKernel(PetscScalarKokkosView b_d, PetscScalarKokkosView source_tab_d, \
    PetscIntKokkosView mat_id_d, PetscIntKokkosView is_bc_row_d, PetscInt n_groups, PetscInt g, \
-   PetscInt n_angles, PetscInt local_cells)
+   PetscInt n_angles, PetscInt local_cells, PetscScalar sum_weights)
 {
    Kokkos::parallel_for(
       Kokkos::TeamPolicy<>(PetscGetKokkosExecutionSpace(), local_cells, Kokkos::AUTO()),
@@ -106,9 +106,10 @@ static void FillSourceKernel(PetscScalarKokkosView b_d, PetscScalarKokkosView so
 
          // cell
          const PetscInt i = t.league_rank();
-         const PetscScalar q = source_tab_d(mat_id_d(i) * n_groups + g);
+         // The isotropic strength shared out over the angular domain
+         const PetscScalar q = source_tab_d(mat_id_d(i) * n_groups + g) / sum_weights;
 
-         // The same source into every angle of the cell
+         // The same per-angle share into every angle of the cell
          Kokkos::parallel_for(
             Kokkos::TeamThreadRange(t, n_angles), [&](const PetscInt j) {
 
@@ -122,7 +123,8 @@ static void FillSourceKernel(PetscScalarKokkosView b_d, PetscScalarKokkosView so
 
 // See the declaration in material_spec.hpp for the BC row contract
 PetscErrorCode UboltFillSource(const PhaseSpace &ps, const BoundaryInfo &boundary, \
-   const MaterialSpec &mats, const PetscIntKokkosView &mat_id_d, PetscInt g, Vec b)
+   const AngularQuadrature &quad, const MaterialSpec &mats, const PetscIntKokkosView &mat_id_d, \
+   PetscInt g, Vec b)
 {
    PetscInt local_rows_b = 0;
    PetscInt id_min = 0, id_max = 0;
@@ -136,6 +138,9 @@ PetscErrorCode UboltFillSource(const PhaseSpace &ps, const BoundaryInfo &boundar
 
    PetscCheck(g >= 0 && g < mats.n_groups(), PETSC_COMM_SELF, PETSC_ERR_ARG_OUTOFRANGE, \
       "group %" PetscInt_FMT " out of range, n_groups is %" PetscInt_FMT, g, mats.n_groups());
+   PetscCheck(quad.n_angles() == ps.n_angles, PETSC_COMM_SELF, PETSC_ERR_ARG_INCOMP, \
+      "the quadrature has %" PetscInt_FMT " angles but the phase space has %" PetscInt_FMT, \
+      quad.n_angles(), ps.n_angles);
    PetscCheck((PetscInt)mat_id_d.extent(0) == ps.local_cells, PETSC_COMM_SELF, PETSC_ERR_ARG_INCOMP, \
       "material ids cover %" PetscInt_FMT " cells but there are %" PetscInt_FMT " local cells", \
       (PetscInt)mat_id_d.extent(0), ps.local_cells);
@@ -161,7 +166,7 @@ PetscErrorCode UboltFillSource(const PhaseSpace &ps, const BoundaryInfo &boundar
    PetscScalarKokkosView b_d;
    PetscCall(VecGetKokkosView(b, &b_d));
    FillSourceKernel(b_d, source_tab_d, mat_id_d, boundary.is_bc_row_d, mats.n_groups(), g, \
-      ps.n_angles, ps.local_cells);
+      ps.n_angles, ps.local_cells, quad.sum_weights());
    PetscCall(VecRestoreKokkosView(b, &b_d));
 
    PetscFunctionReturn(PETSC_SUCCESS);

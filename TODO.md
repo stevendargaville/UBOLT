@@ -415,7 +415,35 @@ previous one's verification has passed and been reviewed.
         Baseline logs and docs notation moved me<0|2> -> st<0|2>; a full recapture under
         the new option reproduced all 24 renamed logs byte-for-byte.
 
-## Research notes
+## Phase 4 postscript 2 — isotropic external source (own commit, Aug 2026)
+- [x] `MaterialSpec::set_source` is now the angle-integrated (isotropic) strength Q, and
+      `UboltFillSource` takes the `AngularQuadrature` and writes `Q / sum_weights` on
+      each ordinate (Q/2 in 1D, Q/4pi in 2D) — the convention `sum_weights()` was
+      documented for but the fill never used. Before this the source was the literal
+      per-angle rhs entry, so the same `-region_<r>_source` value meant a different
+      physical source in 1D and 2D. `-inflow` stays per-angle: it prescribes the
+      incoming ANGULAR flux on Dirichlet rows. `slab_1dk` is untouched — its single
+      VecSet is per-angle by design and the 16 single-group baselines stand.
+      - `slab_1d_mgk` grew `-source` (`-inflow`'s sibling: the background material's
+        isotropic strength, default 1.0). `-source 2` puts 1.0 on each 1D ordinate,
+        exactly `slab_1dk`'s VecSet, which is what the t0 baseline captures now pass —
+        so the t0-equals-single-group byte-for-byte check survives the convention change.
+      - `box_2dk`'s `-check_inf_medium` expectation moved from `1/(sigma_t - sigma_s)`
+        to `1/(sum_weights (sigma_t - sigma_s))` — the sharpest direct check of the new
+        normalisation (unit isotropic source + unit absorption gives scalar flux 1
+        exactly, verified to 1e-13).
+      Verified: t0 captures with `-source 2` reproduce the previous logs byte-for-byte
+      (files unchanged in the commit); the 6 t05/stream multigroup baselines re-captured
+      deliberately (per-group counts moved within their max: t05 6,6,6,5 -> 6,6,6,6,
+      stream 11,11,10,9 -> 11,11,11,9); painting identity still bitwise vs uniform at
+      np=1 and np=4 (both now 7 its at np=4); cold box count unchanged (uniform rhs
+      scaling is invisible to a relative residual); the two streaming-only pmat 2D
+      serial references moved 8 -> 9 and 9 -> 10. The set of configs needing CI slack
+      moved with the rhs: a full re-sweep of both CI images (64-bit, OMP) put the
+      streaming-pmat serial pins back on their references (9, 10) and instead gave +1
+      to the 50x50 ratio-1 serial solve and its two-call/painting-identity twins
+      (64-bit), the np2 streaming pmat and the serial 100x100 S4 (OMP) — see
+      docs/dev/testing.md.
 - **"Scattering ratio 1 in 2D degrades on non-square grids" — RESOLVED, it was the
   Dirichlet bug** (observed in Phase 4b, explained by the postscript fix above; recorded
   because the wrong conclusion is an easy one to reach again). The observation was real:
