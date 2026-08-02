@@ -2,7 +2,8 @@
 
 ## Pass/fail contract
 - Pass/fail is the process exit code — no output diffing, no log grepping (this must stay
-  true so CI can later just run `make tests`). `make` stops on the first non-zero exit.
+  true so CI can just run `make tests`, which it does — see
+  `.github/workflows/ci_build.yml`). `make` stops on the first non-zero exit.
 - Every solve recipe in `tests/Makefile` pins `-ksp_max_it` to the baseline iteration
   count, so an iteration-count regression fails the run. The same recipes run on every
   CI arch (opt/debug/64-bit/OpenMP), so a pin is the max over those environments —
@@ -14,11 +15,13 @@
   are what pin the per-group counts.
 - The drivers return 1 unless `KSPGetConvergedReason() > 0` (since Phase 1a), so a
   non-converged solve fails the recipe on its own — no `-ksp_error_if_not_converged`
-  or `-on_error_abort` needed. Driver diagnostics go to stderr so they never appear in a
-  captured baseline. The four non-converging `capture_baselines` lines carry `|| true`.
-- Targets: `make check` (fast sanity, 5 runs) < `make tests_short` < `make tests`.
+  or `-on_error_abort` is needed for pass/fail (CI sets `-on_error_abort` in
+  `PETSC_OPTIONS` anyway, belt and braces against a hang inside PETSc). Driver
+  diagnostics go to stderr so they never appear in a captured baseline. The four
+  non-converging `capture_baselines` lines carry `|| true`.
+- Targets: `make check` (fast sanity, 6 runs) < `make tests_short` < `make tests`.
   Parallel variants use `$(MPIEXEC) -n 2` — plus one `-n 4` run, see the 2D section — and
-  are skipped under MPIUNI.
+  are skipped under MPIUNI, including `run_check`'s single parallel line.
 - `tests/verify_2dk` is the exception to "pass/fail is a pinned iteration count": it is a
   discretisation check and its exit code comes from tolerances on two numerical checks
   (below). It prints what it measured against the tolerance, so a run that is drifting
@@ -230,7 +233,8 @@ group always has ratio 1 (no downscatter out of it).
 
 ## Adding a test driver
 1. Add the executable name to `TEST_TARGETS` (and `CHECK_TARGETS` if it belongs in
-   `make check`) in the top `Makefile`.
+   `make check`) in the top `Makefile`. The two lists are identical today; the split
+   exists for the day a driver is too slow for `check`.
 2. Nothing to do for `.gitignore` — `tests/*k` covers every driver binary, since every
    translation unit is a Kokkos one and the executables all end in `k`.
 3. Add invocation lines to the appropriate `run_*` recipe in `tests/Makefile`:
