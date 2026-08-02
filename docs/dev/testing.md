@@ -44,10 +44,10 @@ came from the pre-refactor code (the single-file `UBOLTk.kokkos.cxx`); Phase 1a 
 1b each reproduced all 16 bitwise, which is what those phases were verified against. The
 `-ubolt_coo_two_call` assembly fallback reproduces them bitwise.
 
-- Full matrix: {default pc, `-precon_stream -ksp_pc_side right`} x {`-max_exponent` 0, 2}
+- Full matrix: {default pc, `-precon_stream -ksp_pc_side right`} x {`-sigma_t` 0, 2}
   x {np 1, 2} x {`-diag_scale` off, on}. File naming:
-  `slab1d_<default|stream>_me<0|2>_np<1|2>[_ds].log`.
-- Capture is capped at `-ksp_max_it 200`: all four me=2 diag_scale configs are pathological
+  `slab1d_<default|stream>_st<0|2>_np<1|2>[_ds].log`.
+- Capture is capped at `-ksp_max_it 200`: all four st=2 diag_scale configs are pathological
   (see table) and a 200-iteration residual history is a strong enough fingerprint.
   Non-converged baselines are still valid fingerprints for a refactor diff. None of those
   four converges, so all four capture lines carry `|| true`.
@@ -67,16 +67,16 @@ file did:
 
 | config | np=1 | np=2 | sign fix (np=1, np=2) | pre-refactor |
 |---|---|---|---|---|
-| default pc, me=0 | 1 | 1 | 1, 1 | 1, 1 |
-| default pc, me=2 | 6 | 6 | 5, 5 | 10, 10 |
-| default pc, me=0, diag_scale | 1 | 1 | 1, 1 | 1, 1 |
-| default pc, me=2, diag_scale | DIVERGED_ITS (200) | DIVERGED_ITS (200) | 175, 173 | DIVERGED_ITS |
-| precon_stream, me=0 | 1 | 1 | 1, 1 | 1, 1 |
-| precon_stream, me=2 | 9 | 9 | 10, 10 | 16, 16 |
-| precon_stream, me=0, diag_scale | 3 | 3 | 3, 3 | 3, 3 |
-| precon_stream, me=2, diag_scale | DIVERGED_BREAKDOWN (150) | DIVERGED_BREAKDOWN (150) | DIVERGED_BREAKDOWN (90) | DIVERGED_ITS |
+| default pc, st=0 | 1 | 1 | 1, 1 | 1, 1 |
+| default pc, st=2 | 6 | 6 | 5, 5 | 10, 10 |
+| default pc, st=0, diag_scale | 1 | 1 | 1, 1 | 1, 1 |
+| default pc, st=2, diag_scale | DIVERGED_ITS (200) | DIVERGED_ITS (200) | 175, 173 | DIVERGED_ITS |
+| precon_stream, st=0 | 1 | 1 | 1, 1 | 1, 1 |
+| precon_stream, st=2 | 9 | 9 | 10, 10 | 16, 16 |
+| precon_stream, st=0, diag_scale | 3 | 3 | 3, 3 | 3, 3 |
+| precon_stream, st=2, diag_scale | DIVERGED_BREAKDOWN (150) | DIVERGED_BREAKDOWN (150) | DIVERGED_BREAKDOWN (90) | DIVERGED_ITS |
 
-The me=0 rows are identical across all three captures, and must be: `sigma_s = 0` there,
+The st=0 rows are identical across all three captures, and must be: `sigma_s = 0` there,
 so neither the scatter nor its Dirichlet rows exist.
 
 History of these baselines:
@@ -92,37 +92,37 @@ History of these baselines:
   term wrote the upwind neighbour coefficient as `-mu/dx`, correct for `mu > 0` but the
   wrong sign for `mu < 0`, so those rows were `|mu|/dx (psi_i + psi_i+1)` instead of
   `|mu|/dx (psi_i - psi_i+1)`. Fixing it makes the interior streaming rows sum to zero,
-  and every well-behaved config converges in fewer iterations (me=2 went 10 -> 5, the
-  streaming-pmat me=2 16 -> 10). Phase 1 deliberately preserved the bug so the refactor
+  and every well-behaved config converges in fewer iterations (st=2 went 10 -> 5, the
+  streaming-pmat st=2 16 -> 10). Phase 1 deliberately preserved the bug so the refactor
   could be verified bit-for-bit, then fixed it in one commit of its own.
 - **Parallel out-of-bounds bug in the matrix-free scatter** (FIXED, Phase 1a-pre): the
   original code reshaped the LOCAL vector with the GLOBAL `N_CELLS` and looped kernels
   over `N_CELLS`, so at np>1 it read past the local `x`/`sigma_s` arrays and wrote past
-  the end of local `y`, sending `default pc, me=2, np=2` to NaN.
+  the end of local `y`, sending `default pc, st=2, np=2` to NaN.
 - **diag_scale + strong removal is still pathological** (175 its, or breakdown): diagonal
   scaling makes the removal shell PC an identity and degrades the composite. The sign fix
   improved it a lot but did not cure it. Known current behavior, not a target — excluded
   from pass/fail recipes; revisit when the diag_scale semantics are looked at again.
 
 ## Multigroup baselines (Phase 2)
-`slab1dmg_<default|stream>_me<0|2>_g4_t<0|05>_np<1|2>.log` — `slab_1d_mgk` with 4 groups,
+`slab1dmg_<default|stream>_st<0|2>_g4_t<0|05>_np<1|2>.log` — `slab_1d_mgk` with 4 groups,
 `t0`/`t05` being `-sigma_transfer` 0.0/0.5. Each log is the whole group sweep: one KSP
 history after another, in group order. That is what pins the per-group iteration counts
 and the downscatter source arithmetic, neither of which a single `-ksp_max_it` can reach.
 
 The `t0` logs are exactly four byte-for-byte copies of the matching single-group
-`slab1d_default_me2_np<n>.log`. That is the Phase 2 uncoupled-groups verification, and it
+`slab1d_default_st2_np<n>.log`. That is the Phase 2 uncoupled-groups verification, and it
 is worth re-checking as a structural property rather than only diffing the file — a change
 that broke both files the same way would still diff clean. It was re-checked that way on
 the 2026-08-01 re-capture, when both files moved.
 
 | multigroup config | per-group iterations (np=1 and np=2) |
 |---|---|
-| default pc, me=0, transfer 0.5 | 1, 1, 1, 1 |
-| default pc, me=2, transfer 0.0 | 6, 6, 6, 6 (= single group, four times) |
-| default pc, me=2, transfer 0.5 | 6, 6, 6, 5 |
-| default pc, me=2, transfer 2.0 | 6, 5, 5, 5 (recipe only, not captured) |
-| precon_stream, me=2, transfer 0.5 | 11, 11, 10, 9 |
+| default pc, st=0, transfer 0.5 | 1, 1, 1, 1 |
+| default pc, st=2, transfer 0.0 | 6, 6, 6, 6 (= single group, four times) |
+| default pc, st=2, transfer 0.5 | 6, 6, 6, 5 |
+| default pc, st=2, transfer 2.0 | 6, 5, 5, 5 (recipe only, not captured) |
+| precon_stream, st=2, transfer 0.5 | 11, 11, 10, 9 |
 
 Group 0 matches the single-group count because its rhs is just the external source; the
 later groups carry a downscatter source as well. The last group has no outgoing transfer,
@@ -167,7 +167,11 @@ decomposition with a genuinely 2D processor grid and the one where the patch-lex
 global numbering is least like the natural one. Both are in `run_tests_short_parallel`.
 
 ## 2D iteration counts (`box_2dk`)
-`-max_exponent` sets `sigma_t`; `-sigma_scatter` sets `sigma_s`, defaulting to the same
+`-sigma_t` sets `sigma_t` — until Aug 2026 this option was `-max_exponent`, a fossil of
+the original driver's random per-cell xsection (`mantissa * 10^exponent` with the
+exponent drawn up to it); the rename is why the baseline logs and the tables here say
+`st`, and why anything older (commit messages, the history notes above at their capture
+dates) says `me`. `-sigma_scatter` sets `sigma_s`, defaulting to the same
 value, which is a scattering ratio of exactly 1 (no absorption). Counts below are with the
 Dirichlet-row fix; before it, ratio 1 took 18 to 87 iterations on square grids and did not
 converge at all on any other shape, which is what led to the fix — see the research note
@@ -175,18 +179,18 @@ in `TODO.md`.
 
 | config | np=1 | np=2 |
 |---|---|---|
-| 50x50, me=2 (ratio 1) | 6 | 6 |
-| 50x50, me=2, ratio 0.5 | 5 | 5 |
-| 60x30 (dx != dy), me=2 | 6 | 6 |
-| 120x60 (same shape, 4x finer), me=2 | 7 | 7 |
-| 80x20 in a 1x0.25 box (dx == dy), me=2 | 5 | 5 |
-| 50x50, me=0 (pure streaming) | 3 | 3 |
-| 100x100, me=0 | 3 | 3 |
-| 100x100, me=2 | 7 | 7 |
-| 50x50, streaming-only pmat, me=2 | 8 | 9 |
-| 120x60, streaming-only pmat, me=2 | 9 | — |
-| 30x30 S4, me=2 | 6 | 6 |
-| 100x100 S4, me=2 | 6 | 6 |
+| 50x50, st=2 (ratio 1) | 6 | 6 |
+| 50x50, st=2, ratio 0.5 | 5 | 5 |
+| 60x30 (dx != dy), st=2 | 6 | 6 |
+| 120x60 (same shape, 4x finer), st=2 | 7 | 7 |
+| 80x20 in a 1x0.25 box (dx == dy), st=2 | 5 | 5 |
+| 50x50, st=0 (pure streaming) | 3 | 3 |
+| 100x100, st=0 | 3 | 3 |
+| 100x100, st=2 | 7 | 7 |
+| 50x50, streaming-only pmat, st=2 | 8 | 9 |
+| 120x60, streaming-only pmat, st=2 | 9 | — |
+| 30x30 S4, st=2 | 6 | 6 |
+| 100x100 S4, st=2 | 6 | 6 |
 
 Mesh independent on every shape: 60x30 to 120x60 moves 6 to 7, and 200x50 in the 1x0.25
 box (not a recipe) is 5, the same as 80x20.
@@ -217,17 +221,17 @@ parallel oracle for the reflect partner columns.
 
 Singularity constraint: all-reflect with a scattering ratio of exactly 1 has the
 constants in the operator's kernel. Hence the all-reflect recipes carry absorption
-(`-sigma_scatter 1.0` under `-max_exponent 2`), `slab_1dk` grew `-sigma_scatter` for
+(`-sigma_scatter 1.0` under `-sigma_t 2`), `slab_1dk` grew `-sigma_scatter` for
 exactly this, and the multigroup reflective recipe keeps the right face vacuum — the last
 group always has ratio 1 (no downscatter out of it).
 
 | reflective config | np=1 | np=2 |
 |---|---|---|
-| 1D, left reflect, me=2 (ratio 1) | 8 | — |
-| 1D, left reflect, me=2, two-call assembly | 8 | — |
+| 1D, left reflect, st=2 (ratio 1) | 8 | — |
+| 1D, left reflect, st=2, two-call assembly | 8 | — |
 | 1D all-reflect infinite medium (rtol 1e-12) | 10 | 11 |
 | 1D multigroup 4 groups t05, left reflect | 8 (max over groups) | — |
-| 2D 50x50, left+bottom reflect, me=2 ratio 0.5 | 6 | 6 |
+| 2D 50x50, left+bottom reflect, st=2 ratio 0.5 | 6 | 6 |
 | 2D 50x50 S4, left+bottom reflect, ratio 0.5 | 6 | — |
 | 2D all-reflect infinite medium (rtol 1e-12) | 10 | 10 |
 
@@ -250,8 +254,8 @@ depression over the block, ~3.5 against ~11-12 in the surrounding medium).
 
 | painted config | np=1 | np=2 | np=4 |
 |---|---|---|---|
-| 2D 50x50 identity: 2 regions = background, me=2 | 6 | — | 6 |
-| 2D 50x50 absorbing sourceless block (sigma_t 10, sigma_s 1, q 0) over me=2 ratio 0.5 | 5 | 5 | — |
+| 2D 50x50 identity: 2 regions = background, st=2 | 6 | — | 6 |
+| 2D 50x50 absorbing sourceless block (sigma_t 10, sigma_s 1, q 0) over st=2 ratio 0.5 | 5 | 5 | — |
 | 2D 100x100 cold box: `-inflow 0`, zero source outside a central 0.1x0.1 region | 5 | 5 | — |
 | 1D multigroup 4 groups t05, double-density region 0.4-0.6 | 6, 6, 6, 6 | 6, 6, 6, 6 | — |
 
@@ -316,5 +320,5 @@ From Phase 1a the parallel decomposition is decided in cells (rows = local_cells
 n_angles) — by `PetscSplitOwnership` then, by the DMDA since Phase 3, which is the same
 split. The pre-refactor code used PETSC_DECIDE over rows, which can split mid-cell
 (e.g. 1000 cells x 4 angles on 3 ranks) — so np=3 results legitimately differ from the
-pre-refactor binary (np=3, me=2 converges in the same 5 iterations as serial).
+pre-refactor binary (np=3, st=2 converges in the same 5 iterations as serial).
 Baselines and tests use np=1,2 only, where the decompositions coincide.

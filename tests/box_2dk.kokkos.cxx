@@ -5,7 +5,7 @@
 // removal shell PC and PCAIR
 //
 // Currently run with:
-// make build_tests && ./box_2dk -ksp_monitor -precon_stream -ksp_pc_side right -max_exponent 2
+// make build_tests && ./box_2dk -ksp_monitor -precon_stream -ksp_pc_side right -sigma_t 2
 
 // ubolt.hpp pulls in petscvec_kokkos.hpp which must come before any other
 // PETSc header in a C++ file (see docs/dev/kokkos.md)
@@ -43,15 +43,15 @@ int main(int argc, char **args) {
    PetscBool precon_stream = PETSC_FALSE;
    PetscCall(PetscOptionsGetBool(NULL, NULL, "-precon_stream", &precon_stream, NULL));
    // Total xsection, constant across the box
-   PetscInt max_exponent = 1;
-   PetscCall(PetscOptionsGetInt(NULL, NULL, "-max_exponent", &max_exponent, NULL));
+   PetscReal sigma_t = 1.0;
+   PetscCall(PetscOptionsGetReal(NULL, NULL, "-sigma_t", &sigma_t, NULL));
    // Scattering xsection, defaulting to the total one as in the 1D drivers -
    // that is a scattering ratio of exactly 1, i.e. no absorption at all. Set it
    // lower to get some. Nothing in the preconditioner does anything about the
    // scattering, so the ratio is the knob to turn when asking whether that
    // matters (see the research note in ../TODO.md, where it once looked like it
    // did and the real answer was a bug in the operator)
-   PetscReal sigma_scatter = (PetscReal)max_exponent;
+   PetscReal sigma_scatter = sigma_t;
    PetscCall(PetscOptionsGetReal(NULL, NULL, "-sigma_scatter", &sigma_scatter, NULL));
    // Heterogeneous regions: -n_regions N, then per region r (1-based) an
    // axis-aligned box -region_<r>_box x0,x1,y0,y1 painted over the background
@@ -66,7 +66,7 @@ int main(int argc, char **args) {
 
    MaterialSpec mats;
    PetscCall(mats.create(n_regions + 1, 1));
-   PetscCall(mats.set_sigma_t(0, 0, (PetscScalar)max_exponent));
+   PetscCall(mats.set_sigma_t(0, 0, (PetscScalar)sigma_t));
    PetscCall(mats.set_sigma_s(0, 0, 0, (PetscScalar)sigma_scatter));
    PetscCall(mats.set_source(0, 0, 1.0));
 
@@ -82,7 +82,7 @@ int main(int argc, char **args) {
          "%s must be given as x0,x1,y0,y1", opt);
       boxes[r - 1] = {box[0], box[1], box[2], box[3], r};
 
-      PetscReal sigma_t_r = (PetscReal)max_exponent, sigma_s_r = sigma_scatter, source_r = 1.0;
+      PetscReal sigma_t_r = sigma_t, sigma_s_r = sigma_scatter, source_r = 1.0;
       PetscCall(PetscSNPrintf(opt, sizeof(opt), "-region_%" PetscInt_FMT "_sigma_t", r));
       PetscCall(PetscOptionsGetReal(NULL, NULL, opt, &sigma_t_r, NULL));
       PetscCall(PetscSNPrintf(opt, sizeof(opt), "-region_%" PetscInt_FMT "_sigma_s", r));
@@ -114,8 +114,8 @@ int main(int argc, char **args) {
    PetscCall(PetscOptionsGetBool(NULL, NULL, "-check_inf_medium", &check_inf_medium, NULL));
    PetscCheck(!check_inf_medium || (bc_left == 1 && bc_right == 1 && bc_bottom == 1 && bc_top == 1), \
       PETSC_COMM_WORLD, PETSC_ERR_ARG_INCOMP, "-check_inf_medium needs all four -bc_* reflect");
-   PetscCheck(!check_inf_medium || sigma_scatter < (PetscReal)max_exponent, PETSC_COMM_WORLD, \
-      PETSC_ERR_ARG_INCOMP, "-check_inf_medium needs absorption: -sigma_scatter below -max_exponent");
+   PetscCheck(!check_inf_medium || sigma_scatter < sigma_t, PETSC_COMM_WORLD, \
+      PETSC_ERR_ARG_INCOMP, "-check_inf_medium needs absorption: -sigma_scatter below -sigma_t");
    PetscCheck(!check_inf_medium || n_regions == 0, PETSC_COMM_WORLD, PETSC_ERR_ARG_INCOMP, \
       "-check_inf_medium needs uniform xsections and source: -n_regions 0");
    // Write the scalar flux of the solution for inspection, e.g.
@@ -206,7 +206,7 @@ int main(int argc, char **args) {
       // so the exact discrete solution is the constant 1 / (sigma_t - sigma_s)
       // in every cell and angle - to solver tolerance, not discretisation error
       if (check_inf_medium) {
-         const PetscScalar expected = 1.0 / ((PetscScalar)max_exponent - (PetscScalar)sigma_scatter);
+         const PetscScalar expected = 1.0 / ((PetscScalar)sigma_t - (PetscScalar)sigma_scatter);
          PetscCall(VecShift(x, -expected));
          PetscCall(VecNorm(x, NORM_INFINITY, &inf_medium_err));
          PetscCall(VecShift(x, expected));

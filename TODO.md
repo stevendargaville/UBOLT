@@ -8,12 +8,12 @@ previous one's verification has passed and been reviewed.
 - [x] Directory tree, top Makefile (library skeleton), tests/Makefile (PFLARE-style recipes)
 - [x] Bookkeeping: CLAUDE.md, AGENTS.md, TODO.md, docs/dev/{testing,kokkos}.md
 - [x] Move unmodified source to tests/slab_1dk.kokkos.cxx, builds as tests/slab_1dk
-- [x] Capture baselines: {default pc, precon_stream} x {max_exponent 0, 2} x {np 1, 2}
+- [x] Capture baselines: {default pc, precon_stream} x {sigma_t 0, 2} x {np 1, 2}
       x {diag_scale off, on} into tests/baselines/; iteration table in docs/dev/testing.md
 - [x] Pin per-recipe -ksp_max_it to baseline counts in tests/Makefile
 - Verify: `make check` and `make tests` pass; baselines committed.
 - Findings during capture (see docs/dev/testing.md): (i) parallel out-of-bounds bug in the
-  matrix-free scatter (global N_CELLS used on local arrays) — np=2 default/me=2 goes NaN;
+  matrix-free scatter (global N_CELLS used on local arrays) — np=2 default/st=2 goes NaN;
   fix scheduled as its own commit at the start of Phase 1a; (ii) diag_scale + strong
   removal is pathological (6305 its / divergence) — excluded from pass/fail recipes.
 
@@ -21,7 +21,7 @@ previous one's verification has passed and been reviewed.
 - [x] 1a-pre (own commit): fix the parallel scatter out-of-bounds bug — ShellMatMultApply
       must reshape/loop over LOCAL cells (local_rows/N_ANGLES), and the sigma/scalar_flux
       views must be sized/filled with local counts; then re-capture the invalidated np=2
-      default/me=2 baselines. Done: np=1 bitwise identical, only the two NaN logs changed
+      default/st=2 baselines. Done: np=1 bitwise identical, only the two NaN logs changed
       on re-capture, repaired config converges in 10 its matching serial.
 - [x] 1a: mechanical split of existing free functions into src/, driver calls them;
       #defines become -n_cells/-n_angles/-length options; driver exits nonzero unless
@@ -64,7 +64,7 @@ previous one's verification has passed and been reviewed.
 - Verify: -n_groups 1 reproduces Phase 1 exactly; identical groups + zero transfer
   reproduce single-group answer per group; pinned per-group iterations.
   Done, all three: `-n_groups 1` is bitwise identical to `slab_1dk` for
-  {default pc, precon_stream} x {me 0, 2}; the 4-group zero-transfer log is four
+  {default pc, precon_stream} x {st 0, 2}; the 4-group zero-transfer log is four
   byte-for-byte copies of the single-group log at np=1 and np=2; 8 multigroup baselines
   captured and the recipes pinned. All 16 single-group baselines still reproduce bitwise.
   Notes:
@@ -284,8 +284,8 @@ previous one's verification has passed and been reviewed.
       instead of `|mu|/dx (psi_i - psi_i+1)`. Found during 1b and deliberately preserved
       so Phase 1 could be verified bit-for-bit, then fixed on its own with a full baseline
       re-capture. Interior streaming rows now sum to zero and everything well-behaved
-      converges faster (me=2: 10 -> 5 its, streaming pmat me=2: 16 -> 10). New counts in
-      `docs/dev/testing.md`; recipes re-pinned. diag_scale + me=2 is still pathological.
+      converges faster (st=2: 10 -> 5 its, streaming pmat st=2: 16 -> 10). New counts in
+      `docs/dev/testing.md`; recipes re-pinned. diag_scale + st=2 is still pathological.
 
 ## Phase 4 postscript — the matrix-free scatter ignored the Dirichlet mask (own commit)
 - [x] `ScatteringTerm::apply_add` subtracted `sigma_s phi / sum_weights` from EVERY row,
@@ -304,8 +304,8 @@ previous one's verification has passed and been reviewed.
       dropped. `verify_2dk`'s reference matrix now says a Dirichlet row is the identity and
       nothing else, and the operator matches it bitwise.
       Everything with `sigma_s = 0` is unchanged; everything else moved. In 1D the
-      well-behaved configs are a wash (me=2: 5 -> 6, streaming pmat me=2: 10 -> 9,
-      multigroup streaming sweep max 13 -> 11) and the pathological diag_scale + me=2 pair
+      well-behaved configs are a wash (st=2: 5 -> 6, streaming pmat st=2: 10 -> 9,
+      multigroup streaming sweep max 13 -> 11) and the pathological diag_scale + st=2 pair
       got worse (175 its -> capped at 200; breakdown at 90 -> 150). In 2D it is a large
       win — see the research note below, which the fix rewrote.
 
@@ -427,7 +427,7 @@ previous one's verification has passed and been reviewed.
   Re-baseline that question before starting: `-precon_stream` is already a streaming-only
   pmat with strong removal, and the Aug 2026 Dirichlet fix moved those numbers. As of now
   it costs roughly a factor of 1.5 over the full pmat rather than the several-fold gap the
-  note was written against — 1D me=2 goes 6 -> 9, the multigroup sweep max 6 -> 11, 2D
+  note was written against — 1D st=2 goes 6 -> 9, the multigroup sweep max 6 -> 11, 2D
   50x50 6 -> 8 and 120x60 7 -> 9. Phase 5's cost/benefit looks different at that ratio, and
   the numbers in `docs/dev/testing.md` are the ones to argue from.
 - **MFEM as Phase 6 backend**: MFEM owns mesh/FE spaces/integrators (ConvectionIntegrator +

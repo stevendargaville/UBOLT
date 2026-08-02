@@ -10,7 +10,7 @@
 // through TransportOperator::assemble()
 //
 // Currently run with:
-// make build_tests && ./slab_1d_mgk -ksp_monitor -n_groups 4 -sigma_transfer 0.5 -max_exponent 2
+// make build_tests && ./slab_1d_mgk -ksp_monitor -n_groups 4 -sigma_transfer 0.5 -sigma_t 2
 
 // ubolt.hpp pulls in petscvec_kokkos.hpp which must come before any other
 // PETSc header in a C++ file (see docs/dev/kokkos.md)
@@ -45,9 +45,12 @@ int main(int argc, char **args) {
    // Do we precondition with streaming or streaming/removal
    PetscBool precon_stream = PETSC_FALSE;
    PetscCall(PetscOptionsGetBool(NULL, NULL, "-precon_stream", &precon_stream, NULL));
-   // Within-group total and scattering xsections, constant across the slab
-   PetscInt max_exponent = 1;
-   PetscCall(PetscOptionsGetInt(NULL, NULL, "-max_exponent", &max_exponent, NULL));
+   // The within-group scattering xsection and the base of each group's total:
+   // a group with downscatter has sigma_t(g) = sigma_t + sigma_transfer, so
+   // the transfer moves reaction rate between groups instead of inventing it
+   // (see the xsection build below). Constant across the slab
+   PetscReal sigma_t = 1.0;
+   PetscCall(PetscOptionsGetReal(NULL, NULL, "-sigma_t", &sigma_t, NULL));
    // Downscatter into the next group down. Zero leaves the groups uncoupled,
    // which is what makes -n_groups 1 the single-group problem exactly
    PetscReal sigma_transfer = 0.0;
@@ -145,8 +148,8 @@ int main(int argc, char **args) {
             const PetscBool has_downscatter = (g + 1 < n_groups) ? PETSC_TRUE : PETSC_FALSE;
             const PetscScalar out = has_downscatter ? (PetscScalar)sigma_transfer : 0.0;
 
-            PetscCall(mats.set_sigma_t(m, g, density * ((PetscScalar)max_exponent + out)));
-            PetscCall(mats.set_sigma_s(m, g, g, density * (PetscScalar)max_exponent));
+            PetscCall(mats.set_sigma_t(m, g, density * ((PetscScalar)sigma_t + out)));
+            PetscCall(mats.set_sigma_s(m, g, g, density * (PetscScalar)sigma_t));
             if (has_downscatter) PetscCall(mats.set_sigma_s(m, g, g + 1, density * out));
             PetscCall(mats.set_source(m, g, source));
          }
