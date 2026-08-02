@@ -100,6 +100,7 @@ OBJS := $(SRCDIR)/sn_quadraturek.o \
 		  $(SRCDIR)/discretisationk.o \
 		  $(SRCDIR)/structured_fd_1dk.o \
 		  $(SRCDIR)/structured_fd_2dk.o \
+		  $(SRCDIR)/structured_fd_3dk.o \
 		  $(SRCDIR)/material_speck.o \
 		  $(SRCDIR)/problem_speck.o \
 		  $(SRCDIR)/termsk.o \
@@ -123,9 +124,9 @@ $(OBJS): $(UBOLT_HEADERS)
 $(SRCDIR)/problem_speck.o: $(SRCDIR)/external/nlohmann/json.hpp
 
 # Define a variable containing all the tests
-export TEST_TARGETS = transportk verify_2dk
+export TEST_TARGETS = transportk verify_2dk verify_3dk
 # Define a variable containing all the tests that the make check runs
-export CHECK_TARGETS = transportk verify_2dk
+export CHECK_TARGETS = transportk verify_2dk verify_3dk
 
 # Output the library - either static or dynamic
 ifeq ($(PETSC_USE_SHARED_LIBRARIES),0)

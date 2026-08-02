@@ -1,7 +1,7 @@
 // The solve driver: everything physical comes from a JSON problem-definition
 // file (see docs/problem_files.md), everything about HOW it is solved stays on
 // the command line - PETSc options (-ksp_*, -pc_*) plus the strategy and
-// verification knobs below. One driver for both dimensions and any number of
+// verification knobs below. One driver for every dimension and any number of
 // groups: the file picks the backend, and a single-group file IS the
 // single-group problem, so there is no separate driver for it
 //
@@ -80,7 +80,8 @@ int main(int argc, char **args) {
       if (check_inf_medium) {
          PetscCheck(spec.n_reflect_faces == 2 * spec.dimension, PETSC_COMM_WORLD, \
             PETSC_ERR_ARG_INCOMP, "-check_inf_medium needs every face reflective");
-         PetscCheck(spec.intervals.empty() && spec.boxes.empty(), PETSC_COMM_WORLD, \
+         PetscCheck(spec.intervals.empty() && spec.boxes.empty() && spec.boxes_3d.empty(), \
+            PETSC_COMM_WORLD, \
             PETSC_ERR_ARG_INCOMP, "-check_inf_medium needs uniform xsections and source: no paint");
          for (PetscInt g = 0; g < n_groups; g++) {
             PetscCheck(PetscRealPart(spec.materials.sigma_s_host()[(bg * n_groups + g) * n_groups + g]) \
@@ -99,10 +100,13 @@ int main(int argc, char **args) {
       PhaseSpace ps;
       SNQuadrature quad_1d;
       SNQuadrature2D quad_2d;
+      SNQuadrature3D quad_3d;
       StructuredFD1D disc_1d;
       StructuredFD2D disc_2d;
+      StructuredFD3D disc_3d;
       StreamingTerm streaming_1d;
       StreamingTerm2D streaming_2d;
+      StreamingTerm3D streaming_3d;
       const AngularQuadrature *quad = NULL;
       Discretisation *disc = NULL;
       OperatorTerm *streaming = NULL;
@@ -118,7 +122,7 @@ int main(int argc, char **args) {
          disc = &disc_1d;
          streaming = &streaming_1d;
       }
-      else {
+      else if (spec.dimension == 2) {
          PetscCall(ps.create(PETSC_COMM_WORLD, spec.n_cells_x * spec.n_cells_y, spec.n_angles, \
             n_groups));
          PetscCall(quad_2d.create(spec.n_angles));
@@ -130,6 +134,20 @@ int main(int argc, char **args) {
          disc = &disc_2d;
          streaming = &streaming_2d;
       }
+      else if (spec.dimension == 3) {
+         PetscCall(ps.create(PETSC_COMM_WORLD, \
+            spec.n_cells_x * spec.n_cells_y * spec.n_cells_z, spec.n_angles, n_groups));
+         PetscCall(quad_3d.create(spec.n_angles));
+         PetscCall(disc_3d.create(PETSC_COMM_WORLD, ps, spec.n_cells_x, spec.n_cells_y, \
+            spec.n_cells_z, spec.length_x, spec.length_y, spec.length_z, quad_3d, spec.bcs));
+         PetscCall(disc_3d.paint_boxes(bg, spec.boxes_3d, mat_id_d));
+         PetscCall(streaming_3d.create(ps, disc_3d, quad_3d));
+         quad = &quad_3d;
+         disc = &disc_3d;
+         streaming = &streaming_3d;
+      }
+      else SETERRQ(PETSC_COMM_WORLD, PETSC_ERR_SUP, "no backend for dimension %" PetscInt_FMT, \
+         spec.dimension);
 
       // ~~~~~~~~~~~~~
       // Cross sections per group and local cell: the file's material table

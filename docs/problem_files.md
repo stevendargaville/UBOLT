@@ -34,10 +34,10 @@ ignored everywhere (JSON has no comments), holding provenance prose.
 
 | key | type | required | meaning |
 |---|---|---|---|
-| `dimension` | int, 1 or 2 | yes | picks the backend: `StructuredFD1D` or `StructuredFD2D` |
-| `mesh.n_cells` | int[dimension] | yes | `[nx]` or `[nx, ny]`, all positive |
-| `mesh.lengths` | number[dimension] | yes | `[lx]` or `[lx, ly]`, all positive |
-| `n_angles` | int | yes | SN ordinates; what is valid is the quadrature's business ({2, 4} in 1D, {4, 12} in 2D today) |
+| `dimension` | int, 1, 2 or 3 | yes | picks the backend: `StructuredFD1D`, `StructuredFD2D` or `StructuredFD3D` |
+| `mesh.n_cells` | int[dimension] | yes | `[nx]`, `[nx, ny]` or `[nx, ny, nz]`, all positive |
+| `mesh.lengths` | number[dimension] | yes | `[lx]`, `[lx, ly]` or `[lx, ly, lz]`, all positive |
+| `n_angles` | int | yes | SN ordinates; what is valid is the quadrature's business ({2, 4} in 1D, {4, 12} in 2D, {8, 24} in 3D today - a 3D set has twice the ordinates of the same-order 2D set, because there is no xi > 0 half to fold over) |
 | `materials` | string or object | yes | a path to a materials file, resolved relative to the problem file's own directory, or the same schema inline |
 | `regions` | object | no | which cells are which material - see below; absent = uniform background |
 | `boundary_conditions` | object | no | per-face `"vacuum"` or `"reflect"`; unset faces are vacuum |
@@ -61,13 +61,18 @@ its shape by the dimension's key:
 }
 ```
 
-In 1D the shape is `"interval": [x0, x1]` instead.
+In 1D the shape is `"interval": [x0, x1]` instead, and in 3D the box carries
+its z extents too: `"box": [x0, x1, y0, y1, z0, z1]`.
 
 ### Boundary conditions
 
-Face names are `left`/`right` in 1D and `left`/`right`/`bottom`/`top` in 2D,
-mapped onto the backends' `FACE_*` label ids (PETSc's box-mesh "Face Sets"
-convention). Keep at least one face vacuum when the scattering ratio is
+Face names are `left`/`right` in 1D, `left`/`right`/`bottom`/`top` in 2D and
+`left`/`right`/`front`/`back`/`bottom`/`top` in 3D, mapped onto the backends'
+`FACE_*` label ids (PETSc's box-mesh "Face Sets" convention). CAREFUL:
+following that convention, `bottom`/`top` change axis between dimensions -
+they are the y faces in 2D but the **z** faces in 3D, where the y faces are
+`front` (y-min) and `back` (y-max). `left`/`right` are the x faces
+everywhere. Keep at least one face vacuum when the scattering ratio is
 exactly 1 anywhere: an all-reflective group with no absorption is singular
 (see `docs/dev/testing.md`).
 

@@ -100,6 +100,44 @@ private:
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
+// 3D SN quadrature: the level-symmetric sets, S2 (8 ordinates) and S4 (24),
+// which is 8 octants x {1, 3} directions each
+//
+// Unlike 2D there is no symmetry plane to fold over, so all eight octants are
+// tracked and xi is a real cosine the streaming term reads. That doubles the
+// ordinate count of the same-order 2D set: S2 is 8 here against 2D's 4, S4 is
+// 24 against 12. The weights still sum to the full 4 pi
+class PETSC_VISIBILITY_PUBLIC SNQuadrature3D : public AngularQuadrature {
+public:
+   PetscErrorCode create(PetscInt n_angles);
+
+   const PetscScalar *mu_host() const { return mu_h_.data(); }
+   const PetscScalar *eta_host() const { return eta_h_.data(); }
+   const PetscScalar *xi_host() const { return xi_h_.data(); }
+   const PetscScalarKokkosView &mu_d() const { return mu_d_; }
+   const PetscScalarKokkosView &eta_d() const { return eta_d_; }
+   const PetscScalarKokkosView &xi_d() const { return xi_d_; }
+   // The reflection partners, one per axis: each map flips the sign of its own
+   // cosine and keeps the other two. Host only: the COO preallocation is the
+   // only consumer
+   const PetscInt *reflect_mu_host() const { return reflect_mu_h_.data(); }
+   const PetscInt *reflect_eta_host() const { return reflect_eta_h_.data(); }
+   const PetscInt *reflect_xi_host() const { return reflect_xi_h_.data(); }
+
+private:
+   std::vector<PetscScalar> mu_h_;
+   std::vector<PetscScalar> eta_h_;
+   std::vector<PetscScalar> xi_h_;
+   std::vector<PetscInt> reflect_mu_h_;
+   std::vector<PetscInt> reflect_eta_h_;
+   std::vector<PetscInt> reflect_xi_h_;
+   PetscScalarKokkosView mu_d_;
+   PetscScalarKokkosView eta_d_;
+   PetscScalarKokkosView xi_d_;
+};
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
 // The angular integral: scalar_flux(cell, 0) = sum_a w_a psi(cell, a), over the
 // LOCAL part of psi only. Runs on the device
 //

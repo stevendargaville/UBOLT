@@ -129,6 +129,77 @@ PetscErrorCode StreamingTerm2D::assemble_add(PetscScalarKokkosView &coo_v_d) con
 }
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+// StreamingTerm3D
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+PetscErrorCode StreamingTerm3D::create(const PhaseSpace &ps, const StructuredFD3D &disc, const SNQuadrature3D &quad)
+{
+   PetscFunctionBeginUser;
+
+   PetscCall(ps.check_decomposed());
+
+   n_angles_ = ps.n_angles;
+   local_rows_ = ps.local_rows();
+   dx_ = disc.dx();
+   dy_ = disc.dy();
+   dz_ = disc.dz();
+   mu_d_ = quad.mu_d();
+   eta_d_ = quad.eta_d();
+   xi_d_ = quad.xi_d();
+   pattern_ = disc.coo_pattern();
+   boundary_ = disc.boundary_info();
+
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+// Add the upwinded mu dpsi/dx + eta dpsi/dy + xi dpsi/dz stencil into the
+// shared COO values
+// This happens entirely on the device
+PetscErrorCode StreamingTerm3D::assemble_add(PetscScalarKokkosView &coo_v_d) const
+{
+   const PetscInt n_angles = n_angles_;
+   const PetscScalar dx = dx_;
+   const PetscScalar dy = dy_;
+   const PetscScalar dz = dz_;
+   const PetscScalarKokkosView mu_d = mu_d_;
+   const PetscScalarKokkosView eta_d = eta_d_;
+   const PetscScalarKokkosView xi_d = xi_d_;
+   const PetscIntKokkosView row_slot_offset_d = pattern_.row_slot_offset_d;
+   const PetscIntKokkosView diag_slot_d = pattern_.diag_slot_d;
+   const PetscIntKokkosView is_bc_row_d = boundary_.is_bc_row_d;
+
+   PetscFunctionBeginUser;
+
+   Kokkos::parallel_for(
+      Kokkos::RangePolicy<>(0, local_rows_), KOKKOS_LAMBDA(PetscInt r) {
+
+         // BC rows carry only what the assembly puts on them
+         if (is_bc_row_d(r)) return;
+
+         const PetscInt a = r % n_angles;
+         // Slot order is the discretisation's: upwind-x, upwind-y, upwind-z,
+         // diagonal - the off-diagonals addressed positionally, as in 2D
+         const PetscInt first = row_slot_offset_d(r);
+
+         const PetscScalar cx = PetscAbsScalar(mu_d(a)) / dx;
+         const PetscScalar cy = PetscAbsScalar(eta_d(a)) / dy;
+         const PetscScalar cz = PetscAbsScalar(xi_d(a)) / dz;
+
+         // Each axis contributes |cosine| / h (psi_here - psi_upwind), whichever
+         // way it points - the direction is already baked into which neighbour
+         // the discretisation put in the slot
+         coo_v_d(diag_slot_d(r)) += cx + cy + cz;
+         coo_v_d(first)     += -cx;
+         coo_v_d(first + 1) += -cy;
+         coo_v_d(first + 2) += -cz;
+      });
+
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 // RemovalTerm
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 

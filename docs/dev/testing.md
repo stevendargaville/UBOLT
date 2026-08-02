@@ -292,10 +292,65 @@ absorbing block was eyeballed via `-flux_vtk`: a clear flux depression over the 
 The cold box could not move: zero inflow leaves the painted source as the only rhs, so
 the isotropic normalisation scales b uniformly, which a relative residual never sees.
 
+## 3D verification
+The 2D story, one axis wider, and the same deliberate absence: there are **no 3D
+baselines** — `tests/verify_3dk` compares the operator itself, `make baselines` stays
+1D + multigroup only.
+
+`verify_3dk` runs the two checks of `verify_2dk`, both S2 (8 angles) and S4 (24 — a 3D
+level-symmetric set has twice the ordinates of the same-order 2D set):
+
+1. **Pure-streaming closed form**, `psi = x + y + z` on an 8x6x4 grid over a 1x2x3 box —
+   all three extents distinct, so no axis mix-up can hide. Residual ~8e-15 against the
+   1e-12 tolerance, then the solve.
+2. **Shell operator vs a reference matrix** on 4x3x2, natural ordering, serial only, with
+   its own independent boundary classification as in 2D. Three BC configurations apiece:
+   all-vacuum, all-reflect, and mixed with reflect on **left + front + bottom** — three
+   reflective faces meeting at one corner, so the checked matrix carries the single,
+   double AND triple cosine flips (the triple is new behaviour 2D cannot exercise) plus
+   vacuum-wins edges and corners against the other three faces. Agrees to 0.0, i.e.
+   bitwise, in all six runs.
+
+Mind the face names in 3D: `bottom`/`top` are the **z** faces (PETSc's box-mesh "Face
+Sets" convention), the y faces are `front`/`back` — see `docs/problem_files.md`.
+
+**Parallel.** A 3D DMDA splits one direction at `-n 2` and two at `-n 4`; the recipes run
+the closed form and the painting identity at both, and `-n 8` (the first genuinely 3D
+processor grid) was checked by hand when the backend landed but stays out of the recipes —
+CI runners have few cores. The infinite-medium check is the decomposition-independent
+parallel oracle, exactly as in 1D/2D (`cube_20_inf_medium.json`, ~1e-13 against 1e-9).
+
+## 3D iteration counts
+Measured 2026-08-02 on the reference build at capture. **These pins have not yet been
+swept over the CI arches** (64-bit indices, OpenMP Kokkos) — a pin is the max over those,
+so expect the first CI run to move a few by one, and re-sweep both images rather than
+carrying slack (see the 2D section for the precedent).
+
+| config | np=1 | np=2 |
+|---|---|---|
+| 20^3, st=2 (ratio 1) | 6 | 6 |
+| 20^3, st=2, ratio 0.5 | 5 | 5 |
+| 20x10x10 (dx, dy, dz all differ), st=2 | 6 | 6 |
+| 30^3 (same shape, 1.5x finer), st=2 | 6 | 6 |
+| 20^3, streaming-only pmat, st=2 | 7 | 7 |
+| 10^3 S4, st=2 | 6 | 6 |
+| 20^3, left+front+bottom reflect, ratio 0.5 | 5 | 5 |
+| 20^3 all-reflect infinite medium (rtol 1e-12) | 10 | 10 |
+| 20^3 identity: 2 regions = background, st=2 | 6 | 6 (np=4) |
+| 20^3 absorbing sourceless block over ratio 0.5 | 4 | 4 |
+| 20^3 cold cube: `inflow 0.0`, zero source outside a central 0.1^3 region | 4 | 5 |
+| 10^3 multigroup 4 groups t05 | 5, 5, 5, 5 | 5, 5, 5, 5 |
+
+Mesh independent: 20^3 to 30^3 holds at 6. The painting identity was checked bitwise
+against the uniform 20^3 history at np=1 when the pins were captured, and the absorbing
+block was eyeballed via `-flux_vtk` (sigma_t 10 painted mid-cube, flux ~3.3 over the
+block against ~10 in the surrounding medium).
+
 ## Source and inflow conventions
 A material's `Source` array is an **isotropic, angle-integrated strength**:
 `UboltFillSource` writes `source / sum_weights` on each ordinate — `/2` in 1D, `/4 pi`
-in 2D — so the same value means the same physics in both. Until Aug 2026 the value was
+in 2D and 3D — so the same value means the same physics in every dimension. Until Aug
+2026 the value was
 the literal per-angle rhs entry; the 2026-08-02 baseline re-capture (the six mg
 t05/stream logs) and the pin re-measure above are that change landing.
 

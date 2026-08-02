@@ -6,6 +6,7 @@
 #include "ubolt/material_spec.hpp"
 #include "ubolt/structured_fd_1d.hpp"
 #include "ubolt/structured_fd_2d.hpp"
+#include "ubolt/structured_fd_3d.hpp"
 #include <string>
 #include <vector>
 
@@ -38,9 +39,9 @@ public:
    PetscErrorCode create(MPI_Comm comm, const char *problem_path);
 
    PetscInt dimension = 0;
-   // Only the x entries mean anything when dimension == 1
-   PetscInt n_cells_x = 0, n_cells_y = 0;
-   PetscReal length_x = 0.0, length_y = 0.0;
+   // Only the first `dimension` axes mean anything
+   PetscInt n_cells_x = 0, n_cells_y = 0, n_cells_z = 0;
+   PetscReal length_x = 0.0, length_y = 0.0, length_z = 0.0;
    PetscInt n_angles = 0;
    // From the materials schema - the phase space takes it from here
    PetscInt n_groups = 0;
@@ -53,10 +54,11 @@ public:
 
    // The geometry half: the background everywhere, then the paint list in
    // order with later entries winning - exactly paint_intervals/paint_boxes
-   // semantics. One of the two lists is filled, by dimension
+   // semantics. One of the three lists is filled, by dimension
    PetscInt background_material = 0;
    std::vector<MaterialInterval1D> intervals;
    std::vector<MaterialBox2D> boxes;
+   std::vector<MaterialBox3D> boxes_3d;
 
    // Keyed with the dimension's FACE_* ids, ready for the backend's create.
    // n_reflect_faces lets a driver ask "all faces reflective?" (the

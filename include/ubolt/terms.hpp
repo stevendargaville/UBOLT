@@ -7,6 +7,7 @@
 #include "ubolt/sn_quadrature.hpp"
 #include "ubolt/structured_fd_1d.hpp"
 #include "ubolt/structured_fd_2d.hpp"
+#include "ubolt/structured_fd_3d.hpp"
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -53,6 +54,34 @@ private:
    PetscScalar dy_ = 0.0;
    PetscScalarKokkosView mu_d_;
    PetscScalarKokkosView eta_d_;
+   CooPattern pattern_;
+   BoundaryInfo boundary_;
+};
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+// Streaming in 3D: mu dpsi/dx + eta dpsi/dy + xi dpsi/dz, each upwinded onto
+// its own axis
+//
+// The next sibling along: it writes StructuredFD3D's four slots positionally -
+// upwind-x, upwind-y, upwind-z, diagonal - the same contract the 1D and 2D
+// pairs have, one axis wider again
+class PETSC_VISIBILITY_PUBLIC StreamingTerm3D : public OperatorTerm {
+public:
+   PetscErrorCode create(const PhaseSpace &ps, const StructuredFD3D &disc, const SNQuadrature3D &quad);
+
+   PetscBool assembled() const override { return PETSC_TRUE; }
+   PetscErrorCode assemble_add(PetscScalarKokkosView &coo_v_d) const override;
+
+private:
+   PetscInt n_angles_ = 0;
+   PetscInt local_rows_ = 0;
+   PetscScalar dx_ = 0.0;
+   PetscScalar dy_ = 0.0;
+   PetscScalar dz_ = 0.0;
+   PetscScalarKokkosView mu_d_;
+   PetscScalarKokkosView eta_d_;
+   PetscScalarKokkosView xi_d_;
    CooPattern pattern_;
    BoundaryInfo boundary_;
 };

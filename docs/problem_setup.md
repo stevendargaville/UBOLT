@@ -41,9 +41,11 @@ sections are per (a materials file may state `length_unit`; UBOLT does not
 convert, it just trusts you to be consistent).
 
 ### 2. Angles
-`n_angles` is the SN ordinate count: {2, 4} in 1D, {4 (S2), 12 (S4)} in 2D
-today. An invalid count fails in the quadrature's `create` with the valid set
-in the message.
+`n_angles` is the SN ordinate count: {2, 4} in 1D, {4 (S2), 12 (S4)} in 2D,
+{8 (S2), 24 (S4)} in 3D today. A 3D set has twice the ordinates of the
+same-order 2D set - 2D folds the xi > 0 half over, 3D has nothing to fold -
+so the counts are not comparable across dimensions. An invalid count fails in
+the quadrature's `create` with the valid set in the message.
 
 ### 3. Materials
 Three ways to fill `"materials"`:
@@ -73,12 +75,14 @@ you:
   if every face is reflective (see step 5).
 - `Source` is isotropic and angle-integrated: each ordinate receives
   `Source / sum_weights`. To reproduce a per-angle rhs value of `q` on every
-  ordinate, set `Source = q * sum_weights` — 2q in 1D, 4*pi*q in 2D (the 1D
-  single-group test files carry `Source 2.0` for exactly this reason).
+  ordinate, set `Source = q * sum_weights` — 2q in 1D, 4*pi*q in 2D and 3D
+  alike (both cover the full sphere; the 1D single-group test files carry
+  `Source 2.0` for exactly this reason).
 
 ### 4. Regions
 No `regions` = the background material everywhere. Otherwise paint shapes
-(`interval` in 1D, `box` in 2D) over `regions.background` in list order,
+(`interval` in 1D, `box` in 2D and 3D - four or six numbers as the dimension
+says) over `regions.background` in list order,
 later entries winning, membership by cell CENTRE — so a region boundary that
 falls exactly on a cell face owns the cells whose centres it covers, and a
 region thinner than a cell can own nothing. Reference materials by `id` or by
@@ -91,7 +95,9 @@ negative-space shape.
 
 ### 5. Boundary conditions and inflow
 Unset faces are vacuum: the rhs carries `inflow` on their incoming
-directions. `reflect` mirrors the outgoing flux back in.
+directions. `reflect` mirrors the outgoing flux back in. Mind the face names
+in 3D: `bottom`/`top` are the **z** faces there (PETSc's box convention), not
+y as in 2D — the y faces are `front`/`back`.
 
 The one trap: **all faces reflective + scattering ratio 1 anywhere is
 singular** (the constants are in the operator's kernel). Keep a vacuum face,
@@ -168,5 +174,9 @@ your machine.
 | 2D with reflective faces | `box_50_reflect_lb.json` |
 | Infinite-medium check setup | `slab_inf_medium.json`, `box_50_inf_medium.json` |
 | Heterogeneous 2D (absorber block, by-name reference) | `box_50_absorber.json` |
-| Cold problem driven by a source region | `box_100_cold.json` |
-| S4 angular resolution | `box_30_s4_st2.json` |
+| Cold problem driven by a source region | `box_100_cold.json` (2D), `cube_20_cold.json` (3D) |
+| S4 angular resolution | `box_30_s4_st2.json` (2D), `cube_10_s4_st2.json` (3D) |
+| 3D uniform cube | `cube_20_st2.json` |
+| 3D with reflective faces (three-face corner) | `cube_20_reflect_3faces.json` |
+| Heterogeneous 3D (absorber block) | `cube_20_absorber.json` |
+| 3D multigroup | `cube_10_mg4_t05.json` |

@@ -65,14 +65,16 @@ fill runs on device (MATAIJKOKKOS dispatches `MatSetValuesCOO` to the GPU):
 - The matrix is built by hand from that COO pattern and NOT by `DMCreateMatrix`, even
   though the discretisation owns a DM. A DMDA preallocates from its stencil — every point
   the stencil reaches, times dof — while the upwind operator reaches one neighbour per
-  axis: 3 stencil points against 2 entries per row in 1D, and a 5-point star against 3 in
-  2D. `DMCreateMatrix` would hand PCAIR a different sparsity. Don't "simplify" it, and
+  axis: 3 stencil points against 2 entries per row in 1D, a 5-point star against 3 in
+  2D, a 7-point star against 4 in 3D. `DMCreateMatrix` would hand PCAIR a different
+  sparsity. Don't "simplify" it, and
   keep "what the stencil preallocates" and "what the operator touches" apart when
   reasoning about a new backend.
 - The COO indices are GLOBAL, and where the global index of a node comes from is the
   backend's problem, not arithmetic you can assume. A 1D DMDA numbers globally in the
-  natural order so 1D computes them; a 2D DMDA numbers each rank's patch contiguously and
-  lexicographically *within* the patch, so `StructuredFD2D` reads them out of the DM's
+  natural order so 1D computes them; a 2D or 3D DMDA numbers each rank's patch contiguously
+  and lexicographically *within* the patch, so `StructuredFD2D`/`StructuredFD3D` read them
+  out of the DM's
   local-to-global map (which covers the ghost nodes, so a column can point into a
   neighbour's patch). Each backend asserts the layout property it actually relies on in its
   own `CheckDALayout` — see `docs/dev/testing.md`.
@@ -86,7 +88,8 @@ fill runs on device (MATAIJKOKKOS dispatches `MatSetValuesCOO` to the GPU):
   records the slot in `BoundaryInfo::reflect_slot_d`, and the assembly writes the -1.0
   coupling there. No sparsity growth, and `slots_per_row` stays uniform.
 - The ordering of entries per row is fixed at preallocation time, off-diagonals first and
-  the diagonal LAST — 1D: upwind, diagonal; 2D: upwind-x, upwind-y, diagonal — every row
+  the diagonal LAST — 1D: upwind, diagonal; 2D: upwind-x, upwind-y, diagonal; 3D:
+  upwind-x, upwind-y, upwind-z, diagonal — every row
   the same regardless of the sign of the direction cosines, and value fills must match it
   exactly. `Discretisation::set_uniform_pattern(slots_per_row, is_bc_row, reflect_slot)`
   builds the slot maps from that convention, so a fixed-entries-per-row backend states it
