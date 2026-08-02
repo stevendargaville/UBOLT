@@ -96,7 +96,8 @@ previous one's verification has passed and been reviewed.
     so the scatter and the group transfer do bit-identical arithmetic. Verified inert:
     all 16 single-group baselines unchanged.
 - Deferred out of this phase: upscatter + the outer iteration it needs; spatially varying
-  xsections (the tables support it, only the constant setters are written); promoting the
+  xsections — DONE Aug 2026, see the per-region materials postscript (`MaterialSpec` +
+  `GroupXSections::set_from_materials`); promoting the
   group loop out of the driver into a MultigroupSolver (wait for a second sweep strategy).
 
 ## Phase 3 — DMDA adoption (behavior-preserving)
@@ -401,6 +402,18 @@ previous one's verification has passed and been reviewed.
       cell-centre mapping is least like the natural one; and new heterogeneous pins —
       a sourceless absorber in a scattering box (5 its, flux depression confirmed by
       eye via -flux_vtk) and a double-density mid-slab multigroup region (6 per group).
+- [x] Follow-ons, own commits in the same PR:
+      - `-inflow` on `box_2dk` and `slab_1d_mgk`: the vacuum faces' incoming flux,
+        previously hard-coded at 1.0 by the same VecSet that filled the source (default
+        unchanged, baselines re-verified bitwise). `-inflow 0` plus a painted source
+        region is a cold box driven by that region alone — pinned as a recipe (5 its).
+        `slab_1dk` deliberately keeps its single VecSet: it is the frozen baseline driver
+        and predates the source/inflow split.
+      - `-max_exponent` renamed to `-sigma_t` (now PetscReal) on all three solve drivers:
+        the old name was a fossil of the original random `mantissa * 10^exponent`
+        per-cell xsection, commented out before the first baselines were captured.
+        Baseline logs and docs notation moved me<0|2> -> st<0|2>; a full recapture under
+        the new option reproduced all 24 renamed logs byte-for-byte.
 
 ## Research notes
 - **"Scattering ratio 1 in 2D degrades on non-square grids" — RESOLVED, it was the

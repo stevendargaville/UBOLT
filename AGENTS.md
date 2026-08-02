@@ -10,12 +10,17 @@ but deliberately creates no solver matrices or vectors itself.
 
 Codebase map
 - `tests/`: test drivers (they are also the examples) + a Makefile of literal run commands.
-  `tests/slab_1dk.kokkos.cxx`: 1D slab single-group SN driver.
-  `tests/slab_1d_mgk.kokkos.cxx`: the multigroup one (`-n_groups`, `-sigma_transfer`); it
+  `tests/slab_1dk.kokkos.cxx`: 1D slab single-group SN driver — the frozen baseline
+  driver: no materials machinery, source and inflow are one `VecSet` by design.
+  `tests/slab_1d_mgk.kokkos.cxx`: the multigroup one (`-n_groups`, `-sigma_transfer`,
+  `-inflow`, painted regions via `-region_<r>_interval` + `_density`/`_source`); it
   is also where the group sweep itself lives, until a second sweep strategy justifies
   promoting it into the library.
   `tests/box_2dk.kokkos.cxx`: the 2D single-group driver (`-n_cells_x/-n_cells_y`,
-  `-length_x/-length_y`, `-sigma_scatter`).
+  `-length_x/-length_y`, `-sigma_scatter`, `-inflow`, painted regions via
+  `-region_<r>_box` + `_sigma_t`/`_sigma_s`/`_source`).
+  All three take `-sigma_t` for the background total xsection (named `-max_exponent`
+  until Aug 2026 — see docs/dev/testing.md for the notation mapping).
   `tests/verify_2dk.kokkos.cxx`: the 2D discretisation check — a pure-streaming closed
   form and the shell operator against a reference matrix. `tests/baselines/`: captured
   reference `-ksp_monitor` logs, 1D only — never regenerate casually
