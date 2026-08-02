@@ -92,6 +92,12 @@ int main(int argc, char **args) {
    PetscInt bc_left = 0, bc_right = 0;
    PetscCall(PetscOptionsGetEList(NULL, NULL, "-bc_left", bc_names, 2, &bc_left, NULL));
    PetscCall(PetscOptionsGetEList(NULL, NULL, "-bc_right", bc_names, 2, &bc_right, NULL));
+   // The incoming flux prescribed on the vacuum faces, every group (it lands
+   // on the Dirichlet rows of b and only means something there - reflective
+   // rows owe the rhs a zero). -inflow 0 with a painted source region is a
+   // cold slab driven by that region alone
+   PetscReal inflow = 1.0;
+   PetscCall(PetscOptionsGetReal(NULL, NULL, "-inflow", &inflow, NULL));
    // Write the scalar flux of the solution for inspection, one file per group:
    // -flux_vtk flux.vts writes flux_g0.vts, flux_g1.vts, ... The extension
    // picks the format, .vts or .vtr
@@ -213,7 +219,7 @@ int main(int argc, char **args) {
          // everything downscattered out of the groups already solved. A
          // reflective row's rhs is zero, so the inflow comes off those rows
          // (add_source skips every BC row on its own)
-         PetscCall(VecSet(b, 1.0));
+         PetscCall(VecSet(b, (PetscScalar)inflow));
          PetscCall(UboltFillSource(ps, disc.boundary_info(), mats, mat_id_d, g, b));
          PetscCall(UboltZeroReflectRows(disc.boundary_info(), b));
          for (PetscInt g_from = 0; g_from < g; g_from++) {

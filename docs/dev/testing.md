@@ -252,7 +252,14 @@ depression over the block, ~3.5 against ~11-12 in the surrounding medium).
 |---|---|---|---|
 | 2D 50x50 identity: 2 regions = background, me=2 | 6 | — | 6 |
 | 2D 50x50 absorbing sourceless block (sigma_t 10, sigma_s 1, q 0) over me=2 ratio 0.5 | 5 | 5 | — |
+| 2D 100x100 cold box: `-inflow 0`, zero source outside a central 0.1x0.1 region | 5 | 5 | — |
 | 1D multigroup 4 groups t05, double-density region 0.4-0.6 | 6, 6, 6, 6 | 6, 6, 6, 6 | — |
+
+`-inflow` (box_2dk and slab_1d_mgk) prescribes the vacuum faces' incoming flux - the
+value the Dirichlet rows of b carry, historically hard-coded at 1.0, which stays the
+default so every recipe and baseline above is untouched. `slab_1dk` deliberately does
+not have it: that driver's source and inflow are one `VecSet` by design (it predates
+the source/inflow split and is the frozen baseline driver).
 
 ## Adding a test driver
 1. Add the executable name to `TEST_TARGETS` (and `CHECK_TARGETS` if it belongs in
