@@ -337,6 +337,23 @@ previous one's verification has passed and been reviewed.
       (spot-checked np=1 single-group and np=2 multigroup), so the change is numerically
       inert — as it must be, since coordinates are the only thing the solve path even
       sees, and nothing reads them.
+- [x] The inputs alongside the flux (Aug 2026): each file now also carries `sigma_t` and
+      `source` for its group, so a file says what was solved without going back to the
+      problem definition — the fastest check that a painted region landed where it was
+      meant to. `UboltWriteScalarFluxVTK` grew an `(n_extra, UboltCellField *)` pair, a
+      name plus a per-local-cell view, and queues each one onto the SAME dof-1 compatible
+      DMDA; PETSc's VTK viewer holds every queued Vec and writes them as fields of the one
+      file at destroy time (it duplicates what it is given, so ownership stays here).
+      The writer stays free of materials: `sigma_t` is the slice `GroupXSections` already
+      hands the removal term, and the source arrives as a per-cell view from
+      `UboltFillCellSource`, `UboltFillSource`'s sibling — the isotropic strength as the
+      spec holds it, NOT the `/ sum_weights` per-ordinate share and with no BC-row
+      special case, because this is an output, not a rhs.
+      Verified: `mg4_t05_dense` (painted mid-slab) writes 2.5/5.0 and 2.0/4.0 for g0/g3
+      exactly as the materials file says; `box_50_absorber` writes sigma_t {2, 10} and
+      source {0, 1} with the 10 x 10 block exactly on [0.4, 0.6]^2; both fields are
+      bitwise identical serial vs np=2/np=3 while the flux agrees to solver tolerance, so
+      the gather order is right; `make check` and `make tests` pass.
 
 ## Phase 4 postscript — reflective boundary conditions (own commit, Aug 2026)
 - [x] Specular reflective BCs, selectable per boundary face, alongside the existing

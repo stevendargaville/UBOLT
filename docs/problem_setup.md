@@ -115,6 +115,15 @@ nothing behind) and opt in from the command line when you want to look:
 
 Multigroup writes `flux_g0.vts`, `flux_g1.vts`, ...
 
+Each file also carries the two group-dependent inputs that produced that
+flux, as fields on the same mesh: `sigma_t` and `source`, both per cell,
+straight out of what the regions painted. So the file says what was solved —
+which is what you actually want when checking a new problem, since the fastest
+way to see that a region landed where you meant it is to look at `sigma_t` and
+`source` rather than to infer it from the flux. `source` is the isotropic
+strength as the file writes it, NOT the `source / sum_weights` share
+`UboltFillSource` puts on each ordinate.
+
 ## Values that must survive the round trip
 
 The file is read back as C doubles. Powers of two and their short sums (0.25,
@@ -137,7 +146,8 @@ captures — but that is exactly when it matters completely.
   `-ksp_monitor` history against the unpainted file — it must be bitwise
   identical (`box_50_identity.json` is this as a permanent test).
 - **Eyeball**: `-flux_vtk` and look. An absorber should dent the flux; a
-  source region should glow.
+  source region should glow. The `sigma_t` and `source` fields in the same
+  file are the direct check that the regions landed where the file says.
 
 ## Turning it into a test
 
