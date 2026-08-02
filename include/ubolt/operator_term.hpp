@@ -30,9 +30,17 @@ public:
    virtual PetscBool matrix_free() const { return PETSC_FALSE; }
 
    // Add this term's contribution into the shared COO values (device)
-   virtual PetscErrorCode assemble_add(PetscScalarKokkosView &) const { return PETSC_SUCCESS; }
+   virtual PetscErrorCode assemble_add(PetscScalarKokkosView &) const
+   {
+      PetscFunctionBeginUser;
+      PetscFunctionReturn(PETSC_SUCCESS);
+   }
    // Add this term's action to y: y += term * x
-   virtual PetscErrorCode apply_add(Vec, Vec) const { return PETSC_SUCCESS; }
+   virtual PetscErrorCode apply_add(Vec, Vec) const
+   {
+      PetscFunctionBeginUser;
+      PetscFunctionReturn(PETSC_SUCCESS);
+   }
 };
 
 #endif

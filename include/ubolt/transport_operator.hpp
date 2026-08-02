@@ -21,7 +21,7 @@ public:
 
    // Fill the assembled matrix from every assembled term and build the shell.
    // Values-only: the sparsity is preallocated once by the discretisation, so
-   // this is what a per-group refill will call in Phase 2
+   // this is what the multigroup sweep's per-group refill calls
    PetscErrorCode assemble();
 
    // Assemble a subset of the terms into a matrix of their own - used to build a

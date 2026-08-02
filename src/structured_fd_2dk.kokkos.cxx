@@ -146,7 +146,7 @@ static RowKind ClassifyRow(PetscInt i, PetscInt j, PetscInt a, \
 PetscErrorCode StructuredFD2D::create(MPI_Comm comm, PhaseSpace &ps, PetscInt n_cells_x, PetscInt n_cells_y, \
    PetscReal length_x, PetscReal length_y, const SNQuadrature2D &quad, const BCSpec &bcs)
 {
-   const PetscInt *ltog = NULL;
+   const PetscInt *ltog = nullptr;
    ISLocalToGlobalMapping ltog_map = NULL;
 
    PetscFunctionBeginUser;

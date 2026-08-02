@@ -74,11 +74,12 @@ PetscErrorCode StructuredFD1D::create(MPI_Comm comm, PhaseSpace &ps, PetscReal l
    // We allocate device memory below, and PETSc brings Kokkos up lazily
    PetscCall(PetscKokkosInitializeCheck());
 
-   PetscCheck(quad.n_angles() == ps.n_angles, comm, PETSC_ERR_ARG_INCOMP, \
+   comm_ = comm;
+
+   PetscCheck(quad.n_angles() == ps.n_angles, comm_, PETSC_ERR_ARG_INCOMP, \
       "quadrature has %" PetscInt_FMT " angles but the phase space has %" PetscInt_FMT, \
       quad.n_angles(), ps.n_angles);
 
-   comm_ = comm;
    // Uniform grid so every cell has the same width
    dx_ = length / ps.n_cells;
 

@@ -11,8 +11,8 @@
 // over rows it can, e.g. 1000 cells x 4 angles on 3 ranks)
 //
 // This struct does NOT decide the decomposition - the discretisation's DM does,
-// and the backend's create() writes local_cells back here (Phase 3b). Until
-// then local_cells is PETSC_DECIDE, so anything sized off it must be built
+// and the backend's create() writes local_cells back here. Until that create
+// runs, local_cells is PETSC_DECIDE, so anything sized off it must be built
 // AFTER the discretisation and calls check_decomposed() to say so
 //
 // Dof ordering is angle-fastest: row = cell * n_angles + angle
@@ -21,7 +21,7 @@
 // (one Vec and one system per group, swept in a group Gauss-Seidel), so the
 // row counts below - and therefore the sparsity, the COO pattern and the
 // assembled matrix - are the same for every group
-struct PhaseSpace {
+struct PETSC_VISIBILITY_PUBLIC PhaseSpace {
    PetscInt n_cells     = 0;  // global number of spatial cells
    PetscInt n_angles    = 0;
    PetscInt n_groups    = 1;  // energy groups, ordered high energy to low

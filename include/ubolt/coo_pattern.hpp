@@ -8,7 +8,7 @@
 // A discretisation backend fixes the COO ordering once (in its preallocation)
 // and hands out these slot maps; assembled terms address entries through them
 // and never touch raw COO positions. See docs/dev/kokkos.md
-struct CooPattern {
+struct PETSC_VISIBILITY_PUBLIC CooPattern {
    // CSR-shaped: row r owns slots [row_slot_offset_d(r), row_slot_offset_d(r+1))
    // Sized local_rows + 1
    PetscIntKokkosView row_slot_offset_d;
@@ -29,7 +29,7 @@ struct CooPattern {
 // - reflective: psi_r - psi_partner = 0, the identity plus a -1.0 in one
 //   repurposed slot whose column the backend pointed at (same cell, mirrored
 //   angle) at preallocation time. The rhs there must be zero
-struct BoundaryInfo {
+struct PETSC_VISIBILITY_PUBLIC BoundaryInfo {
    // 1 on rows the assembly owns (Dirichlet AND reflective), 0 elsewhere.
    // Sized local_rows
    PetscIntKokkosView is_bc_row_d;
