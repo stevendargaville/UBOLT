@@ -2,7 +2,7 @@
  "_comment": "3D cube with three reflective faces meeting at one corner (left x-min, front y-min, bottom z-min): exercises the single, double and triple cosine flips. Note bottom is the Z face in 3D, not y as in 2D.",
  "dimension": 3,
  "mesh": {
-  "n_cells": [20, 20, 20],
+  "n_cells": [10, 10, 10],
   "lengths": [1.0, 1.0, 1.0]
  },
  "n_angles": 8,

@@ -15,6 +15,18 @@ LABEL description="UBOLT_kokkos"
 ENV PETSC_DIR=$PETSC_DIR
 ENV PETSC_ARCH=$ARCH
 ENV OMP_NUM_THREADS=$OMP_NUM_THREADS
+# The OpenMP arch runs more than one thread per rank, and every parallel recipe
+# is mpiexec -n 2 (four are -n 4), so on a 2-core runner the ranks' threads
+# oversubscribe the box. Two defaults turn that from ordinary contention into a
+# 16x slowdown: OpenMPI confines each rank to a single core at these rank
+# counts, so a rank's threads end up sharing ONE core, and libgomp spins at
+# parallel-region barriers, so the descheduled thread burns that core instead
+# of yielding. The cost is per kernel launch rather than per element, which is
+# why it hits a 1D slab as hard as a 3D cube. Neither default buys anything on
+# a 2-core runner, and both lines are no-ops where OMP_NUM_THREADS is 1
+ENV OMPI_MCA_hwloc_base_binding_policy=none
+ENV OMP_PROC_BIND=false
+ENV OMP_WAIT_POLICY=PASSIVE
 ENV PFLARE_DIR=/build/PFLARE
 # -on_error_abort ensures any test failures are caught and the build fails
 ENV PETSC_OPTIONS="-on_error_abort"

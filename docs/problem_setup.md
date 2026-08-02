@@ -86,12 +86,15 @@ says) over `regions.background` in list order,
 later entries winning, membership by cell CENTRE — so a region boundary that
 falls exactly on a cell face owns the cells whose centres it covers, and a
 region thinner than a cell can own nothing. Reference materials by `id` or by
-`name`; names read better in files with more than two materials.
+`name`; names read better in files with more than two materials. Boxes may
+overlap freely — the last one listed owns the overlap
+(`box_30_overlap.json`/`cube_10_overlap.json` pin that).
 
-The whole-box paint trick is legitimate: painting `[0, 1, 0, 1]` with a
-sourceless copy of the background and then a small source region over it
-(see `box_100_cold.json`) is how "zero source except HERE" is said without a
-negative-space shape.
+"Zero source except HERE" is said without a negative-space shape: make the
+sourceless material the background and paint the small source region over it
+(see `box_60_cold.json`). Don't spend a material on a background you then
+paint over everywhere — the background is whatever `regions.background` names,
+material 0 by default.
 
 ### 5. Boundary conditions and inflow
 Unset faces are vacuum: the rhs carries `inflow` on their incoming
@@ -174,9 +177,10 @@ your machine.
 | 2D with reflective faces | `box_50_reflect_lb.json` |
 | Infinite-medium check setup | `slab_inf_medium.json`, `box_50_inf_medium.json` |
 | Heterogeneous 2D (absorber block, by-name reference) | `box_50_absorber.json` |
-| Cold problem driven by a source region | `box_100_cold.json` (2D), `cube_20_cold.json` (3D) |
+| Cold problem driven by a source region | `box_60_cold.json` (2D), `cube_10_cold.json` (3D) |
+| Overlapping paint boxes (later paint wins) | `box_30_overlap.json` (2D), `cube_10_overlap.json` (3D) |
 | S4 angular resolution | `box_30_s4_st2.json` (2D), `cube_10_s4_st2.json` (3D) |
-| 3D uniform cube | `cube_20_st2.json` |
-| 3D with reflective faces (three-face corner) | `cube_20_reflect_3faces.json` |
-| Heterogeneous 3D (absorber block) | `cube_20_absorber.json` |
+| 3D uniform cube | `cube_10_st2.json` |
+| 3D with reflective faces (three-face corner) | `cube_10_reflect_3faces.json` |
+| Heterogeneous 3D (absorber block) | `cube_10_absorber.json` |
 | 3D multigroup | `cube_10_mg4_t05.json` |
