@@ -109,24 +109,32 @@ History of these baselines:
 `t0`/`t05` being `-sigma_transfer` 0.0/0.5. Each log is the whole group sweep: one KSP
 history after another, in group order. That is what pins the per-group iteration counts
 and the downscatter source arithmetic, neither of which a single `-ksp_max_it` can reach.
+The six t05/stream logs were re-captured 2026-08-02 for the isotropic-source change
+(below); the two t0 logs deliberately did not move.
 
 The `t0` logs are exactly four byte-for-byte copies of the matching single-group
 `slab1d_default_st2_np<n>.log`. That is the Phase 2 uncoupled-groups verification, and it
 is worth re-checking as a structural property rather than only diffing the file — a change
 that broke both files the same way would still diff clean. It was re-checked that way on
-the 2026-08-01 re-capture, when both files moved.
+the 2026-08-01 re-capture, when both files moved. Since the isotropic-source change the
+t0 capture lines carry `-source 2`: the isotropic strength that puts 1.0 on each 1D
+ordinate, which is exactly the rhs `slab_1dk`'s `VecSet` writes — that is what keeps the
+identity byte-for-byte (verified on the 2026-08-02 re-capture: the t0 files came out
+unchanged).
 
 | multigroup config | per-group iterations (np=1 and np=2) |
 |---|---|
 | default pc, st=0, transfer 0.5 | 1, 1, 1, 1 |
-| default pc, st=2, transfer 0.0 | 6, 6, 6, 6 (= single group, four times) |
-| default pc, st=2, transfer 0.5 | 6, 6, 6, 5 |
-| default pc, st=2, transfer 2.0 | 6, 5, 5, 5 (recipe only, not captured) |
-| precon_stream, st=2, transfer 0.5 | 11, 11, 10, 9 |
+| default pc, st=2, transfer 0.0 | 6, 6, 6, 6 (= single group, four times; `-source 2`) |
+| default pc, st=2, transfer 0.5 | 6, 6, 6, 6 |
+| default pc, st=2, transfer 2.0 | 6, 6, 5, 5 (recipe only, not captured) |
+| precon_stream, st=2, transfer 0.5 | 11, 11, 11, 9 |
 
-Group 0 matches the single-group count because its rhs is just the external source; the
-later groups carry a downscatter source as well. The last group has no outgoing transfer,
-so its `sigma_t` is lower than the others' — that is why the counts are not uniform.
+Group 0 matches the single-group count because its rhs is just the external source (a
+count match only at the default `-source 1.0` — the history match needs `-source 2`, see
+above); the later groups carry a downscatter source as well. The last group has no
+outgoing transfer, so its `sigma_t` is lower than the others' — that is why the counts
+are not uniform.
 
 With `-precon_stream` the streaming-only pmat does not depend on the group, so PCAIR is
 set up once for the whole sweep; with the default pc the assembled matrix is refilled per
@@ -175,7 +183,9 @@ dates) says `me`. `-sigma_scatter` sets `sigma_s`, defaulting to the same
 value, which is a scattering ratio of exactly 1 (no absorption). Counts below are with the
 Dirichlet-row fix; before it, ratio 1 took 18 to 87 iterations on square grids and did not
 converge at all on any other shape, which is what led to the fix — see the research note
-in `TODO.md`.
+in `TODO.md`. They were re-measured 2026-08-02 under the isotropic external source (see
+the painted-regions section): only the two streaming-only pmat serial references moved,
+8 -> 9 and 9 -> 10.
 
 | config | np=1 | np=2 |
 |---|---|---|
@@ -187,19 +197,20 @@ in `TODO.md`.
 | 50x50, st=0 (pure streaming) | 3 | 3 |
 | 100x100, st=0 | 3 | 3 |
 | 100x100, st=2 | 7 | 7 |
-| 50x50, streaming-only pmat, st=2 | 8 | 9 |
-| 120x60, streaming-only pmat, st=2 | 9 | — |
+| 50x50, streaming-only pmat, st=2 | 9 | 9 |
+| 120x60, streaming-only pmat, st=2 | 10 | — |
 | 30x30 S4, st=2 | 6 | 6 |
 | 100x100 S4, st=2 | 6 | 6 |
 
 Mesh independent on every shape: 60x30 to 120x60 moves 6 to 7, and 200x50 in the 1x0.25
 box (not a recipe) is 5, the same as 80x20.
 
-The two streaming-only pmat serial recipes pin one above their np=1 counts (9 and 10):
+The two streaming-only pmat serial recipes pin one above their np=1 counts (10 and 11):
 under 64-bit indices and under the OpenMP Kokkos backend — both CI arches — those two
 configs take one more iteration (measured 2026-08-02 by sweeping every pinned recipe in
-both CI images; every other recipe's count was identical to the reference). PCAIR's
-setup on the streaming matrix is the sensitive part; the assembled-pmat configs do not
+both CI images, under the pre-isotropic-source counts; the same +1 slack is carried onto
+the new references rather than re-swept, since PCAIR's setup on the streaming matrix is
+the sensitive part and that matrix did not change). The assembled-pmat configs do not
 move. The cost is one iteration of slack on the reference build for these two recipes —
 the 1D streaming-pmat baselines still pin their counts exactly.
 
@@ -214,10 +225,14 @@ the coupling too), so these counts have no reason to match their vacuum counterp
 
 The sharp oracles are the verify_2dk reference configs above and the **infinite-medium
 check**: with every face reflective, a uniform unit source and uniform xsections, the
-exact discrete solution is `psi = 1 / (sigma_t - sigma_s)` in every cell and angle — no
-discretisation error, so `-check_inf_medium` compares against 1e-9 under `-ksp_rtol
-1e-12` (lands at ~1e-13). It is decomposition independent, which is what makes it the
-parallel oracle for the reflect partner columns.
+exact discrete solution is constant in every cell and angle — no discretisation error,
+so `-check_inf_medium` compares against 1e-9 under `-ksp_rtol 1e-12` (lands at ~1e-13).
+The constant is the per-angle source over the absorption: `1 / (sigma_t - sigma_s)` in
+`slab_1dk` (its VecSet source is per-angle by design) and
+`1 / (sum_weights (sigma_t - sigma_s))` in `box_2dk` (isotropic source shared over 4 pi
+— equivalently, unit isotropic source and unit absorption give scalar flux exactly 1,
+which is the sharpest direct check of the isotropic normalisation). It is decomposition
+independent, which is what makes it the parallel oracle for the reflect partner columns.
 
 Singularity constraint: all-reflect with a scattering ratio of exactly 1 has the
 constants in the operator's kernel. Hence the all-reflect recipes carry absorption
@@ -246,24 +261,44 @@ The sharp oracle is the **painting identity**: regions whose values equal the
 background's must land exactly on the uniform recipe's residual history, because
 painting and expansion change nothing but which table entry a cell reads. The recipe
 pins the count; the bitwise history match was checked at np=1 and np=4 when the pins
-were captured. It runs at `-n 4` in the parallel suite deliberately — painting maps
-cell centres through the patch-lexicographic local ordering, and the 2D processor grid
-is where that ordering is least like the natural one. The heterogeneous recipes are
-ordinary pins (and the absorbing block was eyeballed via `-flux_vtk`: a clear flux
-depression over the block, ~3.5 against ~11-12 in the surrounding medium).
+were captured, and re-checked on the 2026-08-02 isotropic-source re-measure (where the
+np=4 count moved 6 -> 7, uniform and painted together). It runs at `-n 4` in the
+parallel suite deliberately — painting maps cell centres through the
+patch-lexicographic local ordering, and the 2D processor grid is where that ordering is
+least like the natural one. The heterogeneous recipes are ordinary pins (and the
+absorbing block was eyeballed via `-flux_vtk`: a clear flux depression over the block,
+~1.9 against ~7-10 in the surrounding medium).
 
 | painted config | np=1 | np=2 | np=4 |
 |---|---|---|---|
-| 2D 50x50 identity: 2 regions = background, st=2 | 6 | — | 6 |
+| 2D 50x50 identity: 2 regions = background, st=2 | 6 | — | 7 |
 | 2D 50x50 absorbing sourceless block (sigma_t 10, sigma_s 1, q 0) over st=2 ratio 0.5 | 5 | 5 | — |
 | 2D 100x100 cold box: `-inflow 0`, zero source outside a central 0.1x0.1 region | 5 | 5 | — |
 | 1D multigroup 4 groups t05, double-density region 0.4-0.6 | 6, 6, 6, 6 | 6, 6, 6, 6 | — |
 
+The cold box could not move: `-inflow 0` leaves the painted source as the only rhs, so
+the isotropic normalisation scales b uniformly, which a relative residual never sees.
+
+## Source and inflow conventions
+The `MaterialSpec` external source (`-region_<r>_source`, and the backgrounds below) is
+an **isotropic, angle-integrated strength**: `UboltFillSource` writes
+`source / sum_weights` on each ordinate — `/2` in 1D, `/4 pi` in 2D — so the same value
+means the same physics in both. Until Aug 2026 the value was the literal per-angle rhs
+entry; the 2026-08-02 baseline re-capture (the six mg t05/stream logs) and the pin
+re-measure above are that change landing.
+
 `-inflow` (box_2dk and slab_1d_mgk) prescribes the vacuum faces' incoming flux - the
 value the Dirichlet rows of b carry, historically hard-coded at 1.0, which stays the
-default so every recipe and baseline above is untouched. `slab_1dk` deliberately does
-not have it: that driver's source and inflow are one `VecSet` by design (it predates
-the source/inflow split and is the frozen baseline driver).
+default so every single-group recipe and baseline above is untouched. It is deliberately
+still per-angle: it prescribes the incoming ANGULAR flux, which is per-ordinate by
+nature. `slab_1d_mgk` also takes `-source`, `-inflow`'s sibling for the volume: the
+background material's isotropic strength (default 1.0), in every group. `-source 2` puts
+1.0 on each 1D ordinate — exactly `slab_1dk`'s `VecSet` rhs — which is how the t0
+baselines keep their byte-for-byte identity with the single-group logs. `slab_1dk`
+deliberately has neither option: that driver's source and inflow are one per-angle
+`VecSet` by design (it predates the source/inflow split and is the frozen baseline
+driver), which is why its baselines and its `-check_inf_medium` value are untouched by
+the isotropic convention.
 
 ## Adding a test driver
 1. Add the executable name to `TEST_TARGETS` (and `CHECK_TARGETS` if it belongs in

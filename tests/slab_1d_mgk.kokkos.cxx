@@ -61,8 +61,9 @@ int main(int argc, char **args) {
    // scaled by -region_<r>_density (sigma_t, sigma_s and the transfer
    // together, i.e. a denser or lighter slab of the same stuff - one knob
    // rather than one per group and pair), plus its own -region_<r>_source
-   // (the same value in every group, default 1.0). Region r is material index
-   // r; material 0 is the background. -n_regions 0 is the uniform problem
+   // (an isotropic strength like -source below, the same value in every group,
+   // default 1.0). Region r is material index r; material 0 is the background.
+   // -n_regions 0 is the uniform problem
    PetscInt n_regions = 0;
    PetscCall(PetscOptionsGetInt(NULL, NULL, "-n_regions", &n_regions, NULL));
    PetscCheck(n_regions >= 0, PETSC_COMM_WORLD, PETSC_ERR_ARG_OUTOFRANGE, \
@@ -101,6 +102,13 @@ int main(int argc, char **args) {
    // cold slab driven by that region alone
    PetscReal inflow = 1.0;
    PetscCall(PetscOptionsGetReal(NULL, NULL, "-inflow", &inflow, NULL));
+   // -inflow's sibling for the volume: the background material's external
+   // source, every group, as an isotropic (angle-integrated) strength -
+   // UboltFillSource puts source / sum_weights on each ordinate. -source 2
+   // reproduces the per-angle 1.0 that slab_1dk's VecSet writes (sum_weights
+   // is 2 in 1D), which is what the t0 baseline captures use
+   PetscReal source = 1.0;
+   PetscCall(PetscOptionsGetReal(NULL, NULL, "-source", &source, NULL));
    // Write the scalar flux of the solution for inspection, one file per group:
    // -flux_vtk flux.vts writes flux_g0.vts, flux_g1.vts, ... The extension
    // picks the format, .vts or .vtr
@@ -141,7 +149,7 @@ int main(int argc, char **args) {
       for (PetscInt m = 0; m <= n_regions; m++) {
 
          const PetscScalar density = (m == 0) ? 1.0 : (PetscScalar)region_density[m - 1];
-         const PetscScalar source = (m == 0) ? 1.0 : (PetscScalar)region_source[m - 1];
+         const PetscScalar mat_source = (m == 0) ? (PetscScalar)source : (PetscScalar)region_source[m - 1];
 
          for (PetscInt g = 0; g < n_groups; g++) {
 
@@ -151,7 +159,7 @@ int main(int argc, char **args) {
             PetscCall(mats.set_sigma_t(m, g, density * ((PetscScalar)sigma_t + out)));
             PetscCall(mats.set_sigma_s(m, g, g, density * (PetscScalar)sigma_t));
             if (has_downscatter) PetscCall(mats.set_sigma_s(m, g, g + 1, density * out));
-            PetscCall(mats.set_source(m, g, source));
+            PetscCall(mats.set_source(m, g, mat_source));
          }
       }
 
@@ -223,7 +231,7 @@ int main(int argc, char **args) {
          // reflective row's rhs is zero, so the inflow comes off those rows
          // (add_source skips every BC row on its own)
          PetscCall(VecSet(b, (PetscScalar)inflow));
-         PetscCall(UboltFillSource(ps, disc.boundary_info(), mats, mat_id_d, g, b));
+         PetscCall(UboltFillSource(ps, disc.boundary_info(), quad, mats, mat_id_d, g, b));
          PetscCall(UboltZeroReflectRows(disc.boundary_info(), b));
          for (PetscInt g_from = 0; g_from < g; g_from++) {
             PetscCall(transfer.add_source(g_from, g, b));

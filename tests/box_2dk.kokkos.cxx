@@ -57,8 +57,10 @@ int main(int argc, char **args) {
    // axis-aligned box -region_<r>_box x0,x1,y0,y1 painted over the background
    // in order, later regions winning, plus optional -region_<r>_sigma_t,
    // -region_<r>_sigma_s and -region_<r>_source (defaulting to the background
-   // values above and a unit source). Region r is material index r; material 0
-   // is the background. The default -n_regions 0 is the uniform problem
+   // values above and a unit source). Sources are isotropic strengths -
+   // UboltFillSource puts source / sum_weights, i.e. source / 4 pi, on each
+   // ordinate. Region r is material index r; material 0 is the background.
+   // The default -n_regions 0 is the uniform problem
    PetscInt n_regions = 0;
    PetscCall(PetscOptionsGetInt(NULL, NULL, "-n_regions", &n_regions, NULL));
    PetscCheck(n_regions >= 0, PETSC_COMM_WORLD, PETSC_ERR_ARG_OUTOFRANGE, \
@@ -178,7 +180,7 @@ int main(int argc, char **args) {
       // The inflow value everywhere first - the Dirichlet rows keep it - then
       // the per-material source over the non-BC rows
       PetscCall(VecSet(b, (PetscScalar)inflow));
-      PetscCall(UboltFillSource(ps, disc.boundary_info(), mats, mat_id_d, 0, b));
+      PetscCall(UboltFillSource(ps, disc.boundary_info(), quad, mats, mat_id_d, 0, b));
       // A reflective row's rhs is zero - psi_r = psi_partner - so the inflow
       // has to come off those rows again
       PetscCall(UboltZeroReflectRows(disc.boundary_info(), b));
@@ -203,10 +205,12 @@ int main(int argc, char **args) {
 
       // The infinite-medium check: uniform source, uniform xsections and no
       // boundary to leak through leave nothing for the streaming term to do,
-      // so the exact discrete solution is the constant 1 / (sigma_t - sigma_s)
-      // in every cell and angle - to solver tolerance, not discretisation error
+      // so the exact discrete solution is the constant per-angle source over
+      // the absorption, 1 / (sum_weights (sigma_t - sigma_s)), in every cell
+      // and angle - to solver tolerance, not discretisation error
       if (check_inf_medium) {
-         const PetscScalar expected = 1.0 / ((PetscScalar)sigma_t - (PetscScalar)sigma_scatter);
+         const PetscScalar expected = 1.0 / \
+            (quad.sum_weights() * ((PetscScalar)sigma_t - (PetscScalar)sigma_scatter));
          PetscCall(VecShift(x, -expected));
          PetscCall(VecNorm(x, NORM_INFINITY, &inf_medium_err));
          PetscCall(VecShift(x, expected));
