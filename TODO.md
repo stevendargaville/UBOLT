@@ -484,8 +484,9 @@ previous one's verification has passed and been reviewed.
   still no DSA and a genuinely diffusive problem will still want one, but nothing in the
   current test set demonstrates that — the lesson is to suspect the operator before the
   preconditioner when a count depends on something the operator should not care about.
-  `-sigma_scatter` on `box_2dk`, added to investigate this, stays: varying the ratio
-  independently of `sigma_t` is worth having.
+  `-sigma_scatter`, added to `box_2dk` to investigate this, survives the driver
+  unification as a problem file's independent `Sigma_s`: varying the ratio
+  independently of `Sigma_t` is worth having.
 - **Single assembled streaming matrix across all groups** (Phase 5 direction): apply
   removal + scatter matrix-free so only one assembled matrix is stored for all energy
   groups. Open question: an effective preconditioner for streaming-only pmat when removal

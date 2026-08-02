@@ -314,9 +314,10 @@ phase space sizes" slab run (every size is runtime-from-file on every run now) a
 driver — there is no separate code path left to compare).
 
 ## Adding a test problem
-1. Write a problem file in `tests/problems/` (schema: `docs/problem_files.md`), with a
-   `"_comment"` saying what it pins. Values that are not exact dyadics get 17
-   significant digits so the file round-trips to the intended doubles.
+1. Write a problem file in `tests/problems/` (schema: `docs/problem_files.md`,
+   walkthrough: `docs/problem_setup.md`), with a `"_comment"` saying what it pins.
+   Values that are not exact dyadics get 17 significant digits so the file round-trips
+   to the intended doubles.
 2. Add invocation lines to the appropriate `run_*` recipe in `tests/Makefile`: an
    `@echo` label plus the literal `./transportk -problem problems/<file> -options`
    line, serial and `-n 2` variants, with `-ksp_max_it` pinned to the observed

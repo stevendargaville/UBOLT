@@ -22,6 +22,10 @@ Parsing lives in `ProblemSpec` (`include/ubolt/problem_spec.hpp`), which any
 future driver can reuse. The vendored parser is `src/external/nlohmann/json.hpp`
 and must never be included from a public header.
 
+This file is the schema REFERENCE. For the hands-on walkthrough — the
+decisions in order, the pitfalls, checking a new problem and turning it into
+a test — see `docs/problem_setup.md`.
+
 ## The problem file
 
 The problem file is STRICT: an unknown key anywhere in it is an error, because

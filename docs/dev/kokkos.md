@@ -125,8 +125,8 @@ fill runs on device (MATAIJKOKKOS dispatches `MatSetValuesCOO` to the GPU):
 - Input views must be `const` views (`VecGetKokkosView` with a const view type) so PETSc
   doesn't mark the vector dirty.
 - Mind device-view scope: views captured by a MatShell context must outlive the KSP solve,
-  and all of them must be gone before `PetscFinalize` takes Kokkos down (the solve drivers
-  keep the whole problem in a block scope; `verify_2dk` needs none because its views live
+  and all of them must be gone before `PetscFinalize` takes Kokkos down (`transportk`
+  keeps the whole problem in a block scope; `verify_2dk` needs none because its views live
   inside its `Check*` functions).
 - Kernels in member functions must capture value copies of what they need, never `this` —
   a member access inside a `KOKKOS_LAMBDA` dereferences a host pointer on the device.

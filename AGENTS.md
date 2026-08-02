@@ -93,6 +93,8 @@ Codebase map
 
 Read only when the task needs it
 - `TODO.md` — roadmap, current phase, per-phase verification criteria, research notes
+- `docs/problem_files.md` — the problem/materials JSON schema reference;
+  `docs/problem_setup.md` — the walkthrough for writing a new problem file
 - `docs/dev/testing.md` — before adding or modifying tests, and before touching baselines
 - `docs/dev/kokkos.md` — before touching `*.kokkos.cxx`, COO assembly or MatShell code,
   before writing a new discretisation backend (it has the COO/slot-order/Dirichlet
