@@ -199,19 +199,24 @@ the painted-regions section): only the two streaming-only pmat serial references
 |---|---|---|
 | 50x50, st=2 (ratio 1) | 6 | 6 |
 | 50x50, st=2, ratio 0.5 | 5 | 5 |
-| 60x30 (dx != dy), st=2 | 6 | 6 |
-| 120x60 (same shape, 4x finer), st=2 | 7 | 7 |
+| 40x20 (dx != dy), st=2 | 6 | 6 |
+| 80x40 (same shape, 4x finer), st=2 | 6 | 6 |
 | 80x20 in a 1x0.25 box (dx == dy), st=2 | 5 | 5 |
 | 50x50, st=0 (pure streaming) | 3 | 3 |
-| 100x100, st=0 | 3 | 3 |
-| 100x100, st=2 | 7 | 7 |
+| 60x60, st=0 | — | 3 |
+| 60x60, st=2 | 7 | 7 |
 | 50x50, streaming-only pmat, st=2 | 9 | 9 |
-| 120x60, streaming-only pmat, st=2 | 10 | — |
+| 80x40, streaming-only pmat, st=2 | 10 | — |
 | 30x30 S4, st=2 | 6 | 6 |
-| 100x100 S4, st=2 | 6 | 6 |
+| 60x60 S4, st=2 | 6 | 6 |
 
-Mesh independent on every shape: 60x30 to 120x60 moves 6 to 7, and 200x50 in the 1x0.25
+Mesh independent on every shape: 40x20 to 80x40 holds at 6, and 200x50 in the 1x0.25
 box (not a recipe) is 5, the same as 80x20.
+
+These sizes were cut on 2026-08-02 to bring CI down (see "Recipe cost" below): the
+"larger grid" family went 100x100 -> 60x60, the non-square mesh-independence pair
+60x30/120x60 -> 40x20/80x40 with its 2x ratio intact, and the S4 reflective run joined
+the plain S4 recipe at 30x30. The counts above are the re-measured references.
 
 A pin is the max over the reference build and the two sensitive CI arches (64-bit
 indices and the OpenMP Kokkos backend), re-swept 2026-08-02 in both CI images after the
@@ -220,8 +225,11 @@ it: the two streaming-only pmat serial recipes now measure the same everywhere (
 their pins equal the table), and instead the 50x50 ratio-1 SERIAL solve takes 7 under
 64-bit — pinned 7 on all three recipes that run it (plain, `-ubolt_coo_two_call`, and
 the painting identity, which is the same history by construction) — while under OpenMP
-the np2 streaming-only pmat takes 10 (pinned 10) and the serial 100x100 S4 takes 7
-(pinned 7). Every other recipe measures its reference count in both images. The cost is
+the np2 streaming-only pmat takes 10 (pinned 10) and the serial large-grid S4 takes 7
+(pinned 7 — that slack is kept across the 2026-08-02 resize, since the OpenMP image has
+not been re-swept at 60x60). Every other recipe measures its reference count in both
+images, and the resized recipes' pins are debug-arch measurements pending a sweep. The
+cost is
 one iteration of slack on the reference build for those five recipes — the 1D
 streaming-pmat baselines still pin their counts exactly.
 
@@ -288,7 +296,7 @@ over a box that contains it, so later-paint-wins makes the result uniform and th
 has to land on the uniform ratio-0.5 history. Both were checked bitwise against a
 uniform twin of the same mesh when the pins were captured. Reversing the paint list
 (letting the earlier box win) moves 2D 30x30 from 5 to 4 iterations, so the pin alone
-catches it; in 3D 10^3 the count does not move at the default rtol - the history does,
+catches it; in 3D 10^3 the count does not move at the default rtol — the history does,
 and that is what the bitwise check covers. The covering box stays strictly inside the
 domain on purpose: a whole-domain cover would leave the background material unused.
 
@@ -297,7 +305,7 @@ domain on purpose: a whole-domain cover would leave the background material unus
 | 2D 50x50 identity: 2 regions = background, st=2 | 6 | — | 7 |
 | 2D 30x30 overlap: masked box covered by a background copy, st=2 ratio 0.5 | 5 | — | — |
 | 2D 50x50 absorbing sourceless block (sigma_t 10, sigma_s 1, q 0) over st=2 ratio 0.5 | 5 | 5 | — |
-| 2D 100x100 cold box: `inflow 0.0`, zero source outside a central 0.1x0.1 region | 5 | 5 | — |
+| 2D 60x60 cold box: `inflow 0.0`, zero source outside a central 0.1x0.1 region | 5 | 5 | — |
 | 1D multigroup 4 groups t05, double-density region 0.4-0.6 | 6, 6, 6, 6 | 6, 6, 6, 6 | — |
 
 The cold box could not move: zero inflow leaves the painted source as the only rhs, so
@@ -329,7 +337,7 @@ Sets" convention), the y faces are `front`/`back` — see `docs/problem_files.md
 the closed form and the painting identity at both, and `-n 8` (the first genuinely 3D
 processor grid) was checked by hand when the backend landed but stays out of the recipes —
 CI runners have few cores. The infinite-medium check is the decomposition-independent
-parallel oracle, exactly as in 1D/2D (`cube_20_inf_medium.json`, ~1e-13 against 1e-9).
+parallel oracle, exactly as in 1D/2D (`cube_10_inf_medium.json`, ~1e-13 against 1e-9).
 
 ## 3D iteration counts
 Measured 2026-08-02 on the reference build at capture. **These pins have not yet been
@@ -339,24 +347,38 @@ carrying slack (see the 2D section for the precedent).
 
 | config | np=1 | np=2 |
 |---|---|---|
-| 20^3, st=2 (ratio 1) | 6 | 6 |
-| 20^3, st=2, ratio 0.5 | 5 | 5 |
-| 20x10x10 (dx, dy, dz all differ), st=2 | 6 | 6 |
-| 30^3 (same shape, 1.5x finer), st=2 | 6 | 6 |
-| 20^3, streaming-only pmat, st=2 | 7 | 7 |
+| 10^3, st=2 (ratio 1) | 5 | 5 |
+| 10^3, st=2, ratio 0.5 | 4 | 4 |
+| 10x5x5 (dx, dy, dz all differ), st=2 | 6 | 6 |
+| 15^3 (same shape, 1.5x finer), st=2 | 6 | 6 |
+| 10^3, streaming-only pmat, st=2 | 6 | 6 |
 | 10^3 S4, st=2 | 6 | 6 |
-| 20^3, left+front+bottom reflect, ratio 0.5 | 5 | 5 |
-| 20^3 all-reflect infinite medium (rtol 1e-12) | 10 | 10 |
-| 20^3 identity: 2 regions = background, st=2 | 6 | 6 (np=4) |
+| 10^3, left+front+bottom reflect, ratio 0.5 | 5 | 5 |
+| 10^3 all-reflect infinite medium (rtol 1e-12) | 10 | 10 |
+| 10^3 identity: 2 regions = background, st=2 | 5 | 5 (np=4) |
 | 10^3 overlap: masked box covered by a background copy, st=2 ratio 0.5 | 4 | — |
-| 20^3 absorbing sourceless block over ratio 0.5 | 4 | 4 |
-| 20^3 cold cube: `inflow 0.0`, zero source outside a central 0.1^3 region | 4 | 5 |
+| 10^3 absorbing sourceless block over ratio 0.5 | 4 | 4 |
+| 10^3 cold cube: `inflow 0.0`, zero source outside a central 0.2^3 region | 4 | 4 |
 | 10^3 multigroup 4 groups t05 | 5, 5, 5, 5 | 5, 5, 5, 5 |
 
-Mesh independent: 20^3 to 30^3 holds at 6. The painting identity was checked bitwise
-against the uniform 20^3 history at np=1 when the pins were captured, and the absorbing
+Every cube dropped from 20^3 to 10^3 on 2026-08-02 to bring CI down (see "Recipe cost"
+below), and the mesh-independence twin from 30^3 to 15^3 to keep its 1.5x ratio; the
+counts above are the re-measured references, one lower than the 20^3 ones almost
+throughout. Mesh independence is now a weaker statement than it was: 10^3 to 15^3 moves
+5 to 6, where 20^3 to 30^3 held flat at 6. A one-iteration move over a 1.5x refinement is
+the same behaviour 2D shows across its own pair, but if the flat span is wanted back,
+that costs the 27000-cell run.
+
+The cold cube's source region had to widen from 0.1^3 to 0.2^3: at 10 cells the old
+0.45/0.55 bounds land exactly on cell centres, where membership is a floating-point coin
+toss. Any resize has to re-check that — a bound `b` is fragile at `n` cells whenever
+`b*n` is a half-integer.
+
+The painting identity was re-checked bitwise
+against the uniform 10^3 history at np=1 when the pins were re-captured. The absorbing
 block was eyeballed via `-flux_vtk` (sigma_t 10 painted mid-cube, flux ~3.3 over the
-block against ~10 in the surrounding medium).
+block against ~10 in the surrounding medium) — those numbers are from the 20^3 file,
+before the 2026-08-02 resize, and have not been re-measured at 10^3.
 
 ## Source and inflow conventions
 A material's `Source` array is an **isotropic, angle-integrated strength**:
@@ -379,6 +401,31 @@ Two old recipes died with the option surface, both strictly subsumed: the "runti
 phase space sizes" slab run (every size is runtime-from-file on every run now) and the
 "multigroup with 1 group" run (a 1-group file IS the single-group path in the unified
 driver — there is no separate code path left to compare).
+
+## Recipe cost
+CI runs the whole suite on four arches in parallel (opt/debug/64-bit/OpenMP), so the wall
+time is the slowest job — the debug one. The suite is what dominates it, and within the
+suite 3D dominated everything else: on the reference debug build a single 20^3 cube run
+cost 21-34 s against ~2 s for a 50x50 2D run, because cost grows faster than cell count
+(20x10x10, at a quarter of 20^3's cells, took 3.5 s to its 21 s).
+
+That is what the 2026-08-02 resize addressed. Measured over the 43 serial recipes of
+`run_check` + `run_tests_short_serial`, on the reference debug build:
+
+| | before | after |
+|---|---|---|
+| the 9 resized recipes in that set | 145 s | 19 s |
+| all 43 (the rest are 1D, unchanged) | 200 s | 77 s |
+
+`make check && make tests` end to end after the resize is **272 s** on that build. The
+before-figure for the whole suite was never captured cleanly (it ran well past 20
+minutes), so the 43-recipe subset above is the like-for-like measurement; the full suite
+gains more than the 2.6x it shows, because it also carries the parallel duplicates of
+every 3D recipe and the 30^3 mesh-independence run, the single most expensive line in it.
+
+Keep new recipes cheap by default. A 3D recipe wants a reason to be bigger than 10^3, and
+the discretisation checks (`verify_2dk`/`verify_3dk`) make their point on 4x3x2 grids —
+resolution is not what a pinned iteration count or an operator comparison is testing.
 
 ## Adding a test problem
 1. Write a problem file in `tests/problems/` (schema: `docs/problem_files.md`,

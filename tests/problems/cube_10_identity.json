@@ -1,8 +1,8 @@
 {
- "_comment": "Painting identity in 3D: two painted boxes whose materials carry exactly the background values, so the residual history must be bitwise identical to cube_20_st2.json's - painting and expansion change nothing but which table entry a cell reads.",
+ "_comment": "Painting identity in 3D: two painted boxes whose materials carry exactly the background values, so the residual history must be bitwise identical to cube_10_st2.json's - painting and expansion change nothing but which table entry a cell reads.",
  "dimension": 3,
  "mesh": {
-  "n_cells": [20, 20, 20],
+  "n_cells": [10, 10, 10],
   "lengths": [1.0, 1.0, 1.0]
  },
  "n_angles": 8,

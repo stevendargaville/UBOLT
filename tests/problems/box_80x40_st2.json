@@ -1,11 +1,11 @@
 {
- "_comment": "3D cube, sigma_t 2, scattering ratio 1 (no absorption): the 3D workhorse.",
- "dimension": 3,
+ "_comment": "2D box, non-square grid, four times as fine (mesh independence).",
+ "dimension": 2,
  "mesh": {
-  "n_cells": [20, 20, 20],
-  "lengths": [1.0, 1.0, 1.0]
+  "n_cells": [80, 40],
+  "lengths": [1.0, 1.0]
  },
- "n_angles": 8,
+ "n_angles": 4,
  "materials": {
   "n_groups": 1,
   "materials": [

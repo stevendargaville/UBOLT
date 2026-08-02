@@ -2,7 +2,7 @@
  "_comment": "3D cube, all six faces reflective with absorption: the exact discrete solution is the constant Source/(sum_weights*(sigma_t - sigma_s)), checked by -check_inf_medium.",
  "dimension": 3,
  "mesh": {
-  "n_cells": [20, 20, 20],
+  "n_cells": [10, 10, 10],
   "lengths": [1.0, 1.0, 1.0]
  },
  "n_angles": 8,

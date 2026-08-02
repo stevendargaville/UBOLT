@@ -1,11 +1,11 @@
 {
- "_comment": "2D box, non-square grid, four times as fine (mesh independence).",
+ "_comment": "2D box, S4 on a larger grid.",
  "dimension": 2,
  "mesh": {
-  "n_cells": [120, 60],
+  "n_cells": [60, 60],
   "lengths": [1.0, 1.0]
  },
- "n_angles": 4,
+ "n_angles": 12,
  "materials": {
   "n_groups": 1,
   "materials": [

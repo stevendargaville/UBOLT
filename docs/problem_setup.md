@@ -92,7 +92,7 @@ overlap freely — the last one listed owns the overlap
 
 "Zero source except HERE" is said without a negative-space shape: make the
 sourceless material the background and paint the small source region over it
-(see `box_100_cold.json`). Don't spend a material on a background you then
+(see `box_60_cold.json`). Don't spend a material on a background you then
 paint over everywhere — the background is whatever `regions.background` names,
 material 0 by default.
 
@@ -177,10 +177,10 @@ your machine.
 | 2D with reflective faces | `box_50_reflect_lb.json` |
 | Infinite-medium check setup | `slab_inf_medium.json`, `box_50_inf_medium.json` |
 | Heterogeneous 2D (absorber block, by-name reference) | `box_50_absorber.json` |
-| Cold problem driven by a source region | `box_100_cold.json` (2D), `cube_20_cold.json` (3D) |
+| Cold problem driven by a source region | `box_60_cold.json` (2D), `cube_10_cold.json` (3D) |
 | Overlapping paint boxes (later paint wins) | `box_30_overlap.json` (2D), `cube_10_overlap.json` (3D) |
 | S4 angular resolution | `box_30_s4_st2.json` (2D), `cube_10_s4_st2.json` (3D) |
-| 3D uniform cube | `cube_20_st2.json` |
-| 3D with reflective faces (three-face corner) | `cube_20_reflect_3faces.json` |
-| Heterogeneous 3D (absorber block) | `cube_20_absorber.json` |
+| 3D uniform cube | `cube_10_st2.json` |
+| 3D with reflective faces (three-face corner) | `cube_10_reflect_3faces.json` |
+| Heterogeneous 3D (absorber block) | `cube_10_absorber.json` |
 | 3D multigroup | `cube_10_mg4_t05.json` |
