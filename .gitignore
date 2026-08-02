@@ -8,6 +8,10 @@ tests/*k
 !tests/*.cxx
 !tests/*.hpp
 
+# Scalar flux VTK output (-flux_vtk is opt-in on the drivers; no recipe writes one)
+*.vts
+*.vtr
+
 # Old root-level executable (pre-Phase-0 layout)
 UBOLTk
 
