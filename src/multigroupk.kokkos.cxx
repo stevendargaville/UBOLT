@@ -180,16 +180,19 @@ PetscErrorCode GroupTransfer::add_source(PetscInt g_from, PetscInt g_to, Vec b) 
    const PetscScalar sum_weights = sum_weights_;
    const PetscScalar2DKokkosView scalar_flux_d = scalar_flux_d_;
    const PetscIntKokkosView is_bc_row_d = is_bc_row_d_;
-   const PetscScalarKokkosView sigma_s_d = xs_->sigma_s(g_from, g_to);
 
    PetscFunctionBeginUser;
 
    PetscCheck(g_from >= 0 && g_from < (PetscInt)phi_.size(), PETSC_COMM_SELF, PETSC_ERR_ARG_OUTOFRANGE, \
       "group %" PetscInt_FMT " out of range, n_groups is %" PetscInt_FMT, g_from, (PetscInt)phi_.size());
+   PetscCheck(g_to >= 0 && g_to < (PetscInt)phi_.size(), PETSC_COMM_SELF, PETSC_ERR_ARG_OUTOFRANGE, \
+      "group %" PetscInt_FMT " out of range, n_groups is %" PetscInt_FMT, g_to, (PetscInt)phi_.size());
    PetscCheck(phi_set_[g_from], PETSC_COMM_SELF, PETSC_ERR_ARG_WRONGSTATE, \
       "no scalar flux cached for group %" PetscInt_FMT " - set_scalar_flux() must be called " \
       "when that group is solved, before anything scatters out of it", g_from);
 
+   // The subview is only taken once the group indices have been checked
+   const PetscScalarKokkosView sigma_s_d = xs_->sigma_s(g_from, g_to);
    const PetscScalar2DKokkosView phi_d = phi_[g_from];
 
    // Scale by the transfer xsection, and by the sum of weights to get the
