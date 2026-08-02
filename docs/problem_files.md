@@ -77,12 +77,11 @@ exactly 1 anywhere: an all-reflective group with no absorption is singular
 
 ## The materials schema
 
-The `materials` entry - standalone file or inline object - uses the multigroup
-materials schema of the upstream code
-(`Neural_Physics_RT/sn_solver/data/materials_c5g7.json` is the reference
-example), so an existing upstream materials file loads directly. Unlike the
-problem file this schema is TOLERANT: unknown keys are accepted and ignored,
-because it is a foreign schema that carries fields UBOLT has no use for yet.
+The `materials` entry - standalone file or inline object - is a multigroup
+materials table designed to interoperate with materials JSON files authored
+by other transport codes, which load directly. Unlike the problem file this
+schema is TOLERANT: unknown keys are accepted and ignored, because externally
+authored files carry fields UBOLT has no use for yet.
 
 | key | handling |
 |---|---|
@@ -102,11 +101,12 @@ Per material:
 | `Source` | optional, `[n_groups]`: UBOLT's one extension - the external source as an isotropic, angle-integrated strength, shared over the ordinates as `Source / sum_weights` by `UboltFillSource`. Absent = zero (void) |
 | `Sigma_f`, `Nu`, `Chi` | accepted, ignored - UBOLT is a fixed-source solver today; these come back with a fission phase |
 
-The asymmetry with the upstream code, documented so nobody trips on it: the upstream code
-REQUIRES `length_unit` and UBOLT ignores it (UBOLT is unitless - the mesh
-lengths are in whatever unit the xsections are per). So every upstream file
-loads in UBOLT, but a UBOLT-authored materials file without `length_unit`
-(and without the fission arrays) will not load in the upstream code.
+The interoperability asymmetry, documented so nobody trips on it: UBOLT is
+unitless and ignores `length_unit` (the mesh lengths are in whatever unit the
+xsections are per), while an external consumer of the same schema may require
+it. So an externally authored file loads in UBOLT, but a UBOLT-authored
+materials file that omits `length_unit` (and the fission arrays) may not load
+elsewhere - add those fields when a file is meant to travel.
 
 ## Writing values that survive the round trip
 

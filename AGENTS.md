@@ -40,7 +40,8 @@ Codebase map
   and `UboltFillSource`, so terms never learn materials exist; a problem file's
   `regions` section is what gets painted); `ProblemSpec` (the JSON problem-definition
   reader filling MaterialSpec/BCSpec/paint lists/mesh sizes from one file — materials
-  use the upstream code's multigroup schema, path or inline, plus UBOLT's `Source[g]`
+  are a multigroup schema interoperable with other codes' materials files, path or
+  inline, plus UBOLT's `Source[g]`
   extension; parsing lives in the one TU that includes the vendored
   `src/external/nlohmann/json.hpp`, which must NEVER be included from
   `include/ubolt/`); `Discretisation` (the backend

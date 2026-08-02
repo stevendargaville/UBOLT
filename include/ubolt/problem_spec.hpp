@@ -18,16 +18,16 @@
 //
 // The materials entry is either a path to a standalone materials file
 // (resolved relative to the problem file's directory) or the same schema
-// inline. That schema is the upstream code's multigroup one - n_groups, then per
-// material dense ids 0..n-1, Sigma_t[g] and the Sigma_s[from][to] transfer
-// matrix - so an existing upstream materials file loads directly; its
-// fission fields (Sigma_f, Nu, Chi) and bookkeeping (schema_version,
-// length_unit, outside_id) are accepted and ignored, and UBOLT adds one
-// optional field, Source[g], the isotropic external strength MaterialSpec
-// carries (absent = 0, void). The materials file is deliberately TOLERANT of
-// unknown keys - it is a foreign schema - while the problem file is STRICT:
-// an unknown key there is a typo and an error. "_comment" is ignored
-// everywhere, as in the upstream code
+// inline: n_groups, then per material dense ids 0..n-1, Sigma_t[g] and the
+// Sigma_s[from][to] transfer matrix. Materials files authored by other
+// transport codes load directly: fission fields (Sigma_f, Nu, Chi) and
+// bookkeeping (schema_version, length_unit, outside_id) are accepted and
+// ignored, and UBOLT adds one optional field, Source[g], the isotropic
+// external strength MaterialSpec carries (absent = 0, void). The materials
+// schema is deliberately TOLERANT of unknown keys - external files carry
+// fields UBOLT has no use for - while the problem file is STRICT: an unknown
+// key there is a typo and an error. "_comment" is ignored everywhere (JSON
+// has no comments)
 //
 // See docs/problem_files.md for the full schema of both files
 class PETSC_VISIBILITY_PUBLIC ProblemSpec {

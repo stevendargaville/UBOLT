@@ -77,7 +77,7 @@ static PetscErrorCode JsonGetRealArray(const json &arr, const char *key, const c
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 // The problem file is strict: any key not in `allowed` is a typo and an
-// error. "_comment" is always allowed and ignored, as in the upstream code
+// error. "_comment" is always allowed and ignored (JSON has no comments)
 static PetscErrorCode JsonCheckKeys(const json &obj, const char *what, const char *file, \
    std::initializer_list<const char *> allowed)
 {
@@ -150,9 +150,9 @@ static PetscErrorCode ReadAndResolve(const char *problem_path, std::string &reso
 }
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-// The materials schema - the upstream code's multigroup one plus UBOLT's Source.
-// Tolerant of unknown keys: it is a foreign schema, and upstream materials files
-// carry fission fields and bookkeeping UBOLT has no use for yet
+// The materials schema - the multigroup table plus UBOLT's Source.
+// Tolerant of unknown keys: materials files authored by other codes carry
+// fission fields and bookkeeping UBOLT has no use for yet
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 static PetscErrorCode ParseMaterials(const json &mats_j, const char *file, PetscInt *n_groups, \
@@ -166,7 +166,7 @@ static PetscErrorCode ParseMaterials(const json &mats_j, const char *file, Petsc
       "%s: \"materials\" must be a path string or an object", file);
 
    // The only representation UBOLT reads is the plain multigroup table -
-   // absent means multigroup, so old upstream files keep working
+   // absent means multigroup, so files that omit the key keep working
    if (mats_j.contains("representation")) {
       const json &rep = mats_j.at("representation");
       PetscCheck(rep.is_string() && rep.get<std::string>() == "multigroup", PETSC_COMM_SELF, \

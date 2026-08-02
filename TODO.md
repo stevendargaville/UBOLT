@@ -450,9 +450,10 @@ previous one's verification has passed and been reviewed.
       dimension, mesh, angles, materials, painted regions, BCs, inflow, flux output.
       `ProblemSpec` reads it (rank 0 reads + broadcasts, nlohmann vendored at
       `src/external/nlohmann/json.hpp`, never included from public headers); materials
-      use the upstream code's multigroup schema — path or inline, fission
-      fields accepted-ignored — plus UBOLT's `Source[g]` extension. The problem file is
-      strict about unknown keys, the materials schema tolerant (it is foreign).
+      are a multigroup schema interoperable with other codes' files — path or inline,
+      fission fields accepted-ignored — plus UBOLT's `Source[g]` extension. The problem
+      file is strict about unknown keys, the materials schema tolerant (files authored
+      elsewhere carry fields UBOLT does not use).
 - [x] `transportk` replaced `slab_1dk`, `slab_1d_mgk` and `box_2dk`: one driver, both
       dimensions, any group count; CLI keeps PETSc options + `-precon_stream`,
       `-diag_scale`, `-check_inf_medium`, `-flux_vtk`. The group sweep moved over

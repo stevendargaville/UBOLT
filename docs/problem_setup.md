@@ -37,7 +37,7 @@ rather than from scratch — the table at the bottom maps features to exemplars.
 ### 1. Dimension and mesh
 `dimension` picks the backend; `mesh.n_cells`/`mesh.lengths` take one entry
 per dimension. UBOLT is unitless — the lengths are in whatever unit your cross
-sections are per (an upstream file states `length_unit`; UBOLT does not
+sections are per (a materials file may state `length_unit`; UBOLT does not
 convert, it just trusts you to be consistent).
 
 ### 2. Angles
@@ -52,10 +52,10 @@ Three ways to fill `"materials"`:
 - **By path** (`"materials": "materials/my.json"`, relative to the problem
   file's directory): right when several problems share a material set — the
   values live once.
-- **An existing upstream materials file by path**: loads as-is; the fission fields
-  and bookkeeping are ignored (see the reference for the exact list). Add a
-  `Source` array per material if you need an external source — the upstream code's
-  k-eigenvalue format has none, so a pristine upstream file is sourceless
+- **A materials file from another code by path**: loads as-is; the fission
+  fields and bookkeeping are ignored (see the reference for the exact list).
+  Add a `Source` array per material if you need an external source — a
+  k-eigenvalue code's format typically has none, so such a file is sourceless
   and the problem is driven by `inflow` alone.
 
 Rules the loader enforces: ids dense `0..n-1` (they ARE the device-table
