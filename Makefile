@@ -159,14 +159,15 @@ else
 endif
 endif
 
-# The same header problem for the drivers, but they cannot be fixed the same
-# way: PETSc's `% : %.kokkos.cxx` rule compiles and links in one go and hands
-# every remaining prerequisite to the linker, so giving an executable a header
+# The same header problem for the drivers - and the library itself, which the
+# drivers link - but they cannot be fixed the same way: PETSc's
+# `% : %.kokkos.cxx` rule compiles and links in one go and hands every
+# remaining prerequisite to the linker, so giving an executable a header
 # dependency would pass mpicxx a .hpp as an input file. Drop the stale driver
 # objects and binaries instead and let PETSc's own rules rebuild them - no
 # rule and no flag of PETSc's is touched either way
-HEADER_STAMP := $(LIBDIR)/.ubolt_headers_stamp
-$(HEADER_STAMP): $(UBOLT_HEADERS)
+HEADER_STAMP := $(LIBDIR)/.ubolt_deps_stamp
+$(HEADER_STAMP): $(UBOLT_HEADERS) $(OUT)
 	@mkdir -p $(LIBDIR)
 	@$(RM) $(foreach t,$(TEST_TARGETS),tests/$(t) tests/$(t).o)
 	@touch $@
