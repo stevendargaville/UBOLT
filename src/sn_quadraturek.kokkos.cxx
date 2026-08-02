@@ -1,5 +1,6 @@
 #include "ubolt/sn_quadrature.hpp"
 #include <KokkosBlas.hpp>
+#include <array>
 #include <utility>
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -29,22 +30,26 @@ PetscErrorCode AngularQuadrature::set_weights(const std::vector<PetscScalar> &w,
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-// Find the ordinate whose cosines equal (mu, eta) exactly - eta is ignored when
-// there is none (1D). The cosine tables are sign-symmetric literals, so exact
-// comparison holds; the PetscCheck is the load-bearing part, making a future
+// Find the ordinate whose cosines equal (mu, eta, xi) exactly - a cosine the
+// dimension does not carry passes NULL and is ignored (1D has only mu, 2D has
+// no xi). The cosine tables are sign-symmetric literals, so exact comparison
+// holds; the PetscCheck is the load-bearing part, making a future
 // non-symmetric set fail loudly rather than silently reflect into a wrong angle
 static PetscErrorCode FindOrdinate(const PetscScalar *mu, const PetscScalar *eta, \
-   PetscInt n_angles, PetscScalar mu_want, PetscScalar eta_want, PetscInt *found)
+   const PetscScalar *xi, PetscInt n_angles, PetscScalar mu_want, PetscScalar eta_want, \
+   PetscScalar xi_want, PetscInt *found)
 {
    PetscFunctionBeginUser;
 
    *found = -1;
    for (PetscInt b = 0; b < n_angles; b++) {
-      if (mu[b] == mu_want && (!eta || eta[b] == eta_want)) { *found = b; break; }
+      if (mu[b] == mu_want && (!eta || eta[b] == eta_want) && (!xi || xi[b] == xi_want)) \
+         { *found = b; break; }
    }
    PetscCheck(*found >= 0, PETSC_COMM_SELF, PETSC_ERR_PLIB, \
-      "Quadrature set is not symmetric: no ordinate at the reflection of (%g, %g)", \
-      (double)PetscRealPart(mu_want), (double)PetscRealPart(eta_want));
+      "Quadrature set is not symmetric: no ordinate at the reflection of (%g, %g, %g)", \
+      (double)PetscRealPart(mu_want), (double)PetscRealPart(eta_want), \
+      (double)PetscRealPart(xi_want));
 
    PetscFunctionReturn(PETSC_SUCCESS);
 }
@@ -85,7 +90,7 @@ PetscErrorCode SNQuadrature::create(PetscInt n_angles)
    // boundary's correctness rests on
    reflect_mu_h_.resize(n_angles);
    for (PetscInt a = 0; a < n_angles; a++) {
-      PetscCall(FindOrdinate(mu, NULL, n_angles, -mu[a], 0.0, &reflect_mu_h_[a]));
+      PetscCall(FindOrdinate(mu, NULL, NULL, n_angles, -mu[a], 0.0, 0.0, &reflect_mu_h_[a]));
       PetscCheck(w_h[reflect_mu_h_[a]] == w_h[a], PETSC_COMM_SELF, PETSC_ERR_PLIB, \
          "Quadrature weights are not symmetric under mu -> -mu");
    }
@@ -165,10 +170,10 @@ PetscErrorCode SNQuadrature2D::create(PetscInt n_angles)
    reflect_mu_h_.resize(n_angles);
    reflect_eta_h_.resize(n_angles);
    for (PetscInt a = 0; a < n_angles; a++) {
-      PetscCall(FindOrdinate(mu_h_.data(), eta_h_.data(), n_angles, -mu_h_[a], eta_h_[a], \
-         &reflect_mu_h_[a]));
-      PetscCall(FindOrdinate(mu_h_.data(), eta_h_.data(), n_angles, mu_h_[a], -eta_h_[a], \
-         &reflect_eta_h_[a]));
+      PetscCall(FindOrdinate(mu_h_.data(), eta_h_.data(), NULL, n_angles, -mu_h_[a], eta_h_[a], \
+         0.0, &reflect_mu_h_[a]));
+      PetscCall(FindOrdinate(mu_h_.data(), eta_h_.data(), NULL, n_angles, mu_h_[a], -eta_h_[a], \
+         0.0, &reflect_eta_h_[a]));
    }
 
    // Copy the ordinates to device memory
@@ -178,6 +183,95 @@ PetscErrorCode SNQuadrature2D::create(PetscInt n_angles)
    PetscScalarKokkosViewHostUnmanaged eta_host_view(eta_h_.data(), n_angles);
    Kokkos::deep_copy(mu_d_, mu_host_view);
    Kokkos::deep_copy(eta_d_, eta_host_view);
+
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+// SNQuadrature3D
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+// The same level-symmetric sets as 2D, but with nothing to fold: 3D has no
+// symmetry plane, so every octant is a real octant and xi is a real cosine.
+// S2 keeps its one direction per octant, S4 its three - all three permutations
+// of (mu1, mu1, mu2) now, where XY could drop the xi component - so the counts
+// are 8 and 24 against 2D's 4 and 12
+PetscErrorCode SNQuadrature3D::create(PetscInt n_angles)
+{
+   // The |mu|, |eta|, |xi| of one octant - the sign combinations come after
+   std::vector<std::array<PetscScalar, 3>> octant;
+   std::vector<PetscScalar> w_h;
+
+   PetscFunctionBeginUser;
+
+   if (n_angles == 8) {
+      // S2: c = 1/sqrt(3), the same cosine the 1D and 2D S2 sets use
+      const PetscScalar c = 0.5773502692;
+      octant = {{c, c, c}};
+   } else if (n_angles == 24) {
+      // S4: 2 mu1^2 + mu2^2 = 1, the same pair the 2D S4 set uses
+      const PetscScalar mu1 = 0.3500212;
+      const PetscScalar mu2 = 0.8688903;
+      octant = {{mu1, mu1, mu2}, {mu1, mu2, mu1}, {mu2, mu1, mu1}};
+   } else {
+      SETERRQ(PETSC_COMM_SELF, PETSC_ERR_SUP, \
+         "3D SN quadrature only implemented for 8 (S2) or 24 (S4) angles, was given %" \
+         PetscInt_FMT " - note a 3D set has twice the ordinates of the same-order 2D set", \
+         n_angles);
+   }
+
+   mu_h_.clear();
+   eta_h_.clear();
+   xi_h_.clear();
+   // The whole sphere is 4 pi and the ordinates of a level-symmetric set of
+   // this order all carry the same share of it
+   const PetscScalar w_each = 4.0 * PETSC_PI / n_angles;
+
+   // Ordinate order: base triple slowest, so the eight sign combinations of
+   // each sit together - the 2D quadrant loop one axis deeper. Nothing depends
+   // on the order, but it is fixed here because the COO preallocation and the
+   // value fills have to agree on which angle index is which
+   for (const auto &p : octant) {
+      for (PetscInt sz = -1; sz <= 1; sz += 2) {
+         for (PetscInt sy = -1; sy <= 1; sy += 2) {
+            for (PetscInt sx = -1; sx <= 1; sx += 2) {
+               mu_h_.push_back(sx * p[0]);
+               eta_h_.push_back(sy * p[1]);
+               xi_h_.push_back(sz * p[2]);
+               w_h.push_back(w_each);
+            }
+         }
+      }
+   }
+   PetscCall(set_weights(w_h, 4.0 * PETSC_PI));
+
+   // The reflection maps, one single-axis flip each: a level-symmetric set
+   // carries every sign combination of its base cosines (equal weights within
+   // the set), so all three land on an ordinate. Built by search so the
+   // assertion in FindOrdinate, not the octant ordering above, is what
+   // reflective boundaries rest on
+   reflect_mu_h_.resize(n_angles);
+   reflect_eta_h_.resize(n_angles);
+   reflect_xi_h_.resize(n_angles);
+   for (PetscInt a = 0; a < n_angles; a++) {
+      PetscCall(FindOrdinate(mu_h_.data(), eta_h_.data(), xi_h_.data(), n_angles, \
+         -mu_h_[a], eta_h_[a], xi_h_[a], &reflect_mu_h_[a]));
+      PetscCall(FindOrdinate(mu_h_.data(), eta_h_.data(), xi_h_.data(), n_angles, \
+         mu_h_[a], -eta_h_[a], xi_h_[a], &reflect_eta_h_[a]));
+      PetscCall(FindOrdinate(mu_h_.data(), eta_h_.data(), xi_h_.data(), n_angles, \
+         mu_h_[a], eta_h_[a], -xi_h_[a], &reflect_xi_h_[a]));
+   }
+
+   // Copy the ordinates to device memory
+   mu_d_  = PetscScalarKokkosView("mu_d", n_angles);
+   eta_d_ = PetscScalarKokkosView("eta_d", n_angles);
+   xi_d_  = PetscScalarKokkosView("xi_d", n_angles);
+   PetscScalarKokkosViewHostUnmanaged mu_host_view(mu_h_.data(), n_angles);
+   PetscScalarKokkosViewHostUnmanaged eta_host_view(eta_h_.data(), n_angles);
+   PetscScalarKokkosViewHostUnmanaged xi_host_view(xi_h_.data(), n_angles);
+   Kokkos::deep_copy(mu_d_, mu_host_view);
+   Kokkos::deep_copy(eta_d_, eta_host_view);
+   Kokkos::deep_copy(xi_d_, xi_host_view);
 
    PetscFunctionReturn(PETSC_SUCCESS);
 }

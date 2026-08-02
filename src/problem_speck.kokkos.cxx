@@ -302,8 +302,8 @@ PetscErrorCode ProblemSpec::create(MPI_Comm comm, const char *problem_path)
        "inflow", "output"}));
 
    PetscCall(JsonGetInt(root, "dimension", problem_path, &dimension));
-   PetscCheck(dimension == 1 || dimension == 2, PETSC_COMM_SELF, PETSC_ERR_ARG_OUTOFRANGE, \
-      "%s: dimension must be 1 or 2, was given %" PetscInt_FMT, problem_path, dimension);
+   PetscCheck(dimension >= 1 && dimension <= 3, PETSC_COMM_SELF, PETSC_ERR_ARG_OUTOFRANGE, \
+      "%s: dimension must be 1, 2 or 3, was given %" PetscInt_FMT, problem_path, dimension);
    const size_t dim = (size_t)dimension;
 
    // ~~~~~~~~~~~~~
@@ -329,15 +329,18 @@ PetscErrorCode ProblemSpec::create(MPI_Comm comm, const char *problem_path)
          problem_path, d);
       n = (PetscInt)raw;
       if (d == 0) n_cells_x = n;
-      else n_cells_y = n;
+      else if (d == 1) n_cells_y = n;
+      else n_cells_z = n;
    }
 
    PetscCheck(mesh.contains("lengths"), PETSC_COMM_SELF, PETSC_ERR_ARG_WRONG, \
       "%s: mesh is missing \"lengths\"", problem_path);
    PetscCall(JsonGetRealArray(mesh.at("lengths"), "lengths", problem_path, dim, vals));
    length_x = (PetscReal)PetscRealPart(vals[0]);
-   if (dimension == 2) length_y = (PetscReal)PetscRealPart(vals[1]);
-   PetscCheck(length_x > 0.0 && (dimension == 1 || length_y > 0.0), PETSC_COMM_SELF, \
+   if (dimension >= 2) length_y = (PetscReal)PetscRealPart(vals[1]);
+   if (dimension >= 3) length_z = (PetscReal)PetscRealPart(vals[2]);
+   PetscCheck(length_x > 0.0 && (dimension < 2 || length_y > 0.0) && \
+      (dimension < 3 || length_z > 0.0), PETSC_COMM_SELF, \
       PETSC_ERR_ARG_OUTOFRANGE, "%s: mesh lengths must be positive", problem_path);
 
    PetscCall(JsonGetInt(root, "n_angles", problem_path, &n_angles));
@@ -389,9 +392,13 @@ PetscErrorCode ProblemSpec::create(MPI_Comm comm, const char *problem_path)
                PetscCall(JsonGetRealArray(p.at(shape_key), shape_key, problem_path, 2, vals));
                intervals.push_back({vals[0], vals[1], material});
             }
-            else {
+            else if (dimension == 2) {
                PetscCall(JsonGetRealArray(p.at(shape_key), shape_key, problem_path, 4, vals));
                boxes.push_back({vals[0], vals[1], vals[2], vals[3], material});
+            }
+            else {
+               PetscCall(JsonGetRealArray(p.at(shape_key), shape_key, problem_path, 6, vals));
+               boxes_3d.push_back({vals[0], vals[1], vals[2], vals[3], vals[4], vals[5], material});
             }
          }
       }
@@ -407,6 +414,10 @@ PetscErrorCode ProblemSpec::create(MPI_Comm comm, const char *problem_path)
          "%s: \"boundary_conditions\" must be an object", problem_path);
       const json &bcj = root.at("boundary_conditions");
 
+      // CAREFUL: the face names follow PETSc's box-mesh convention per
+      // dimension, and bottom/top move axis - they are the Y faces in 2D but
+      // the Z faces in 3D, where the y faces are front/back (see the FACE_*
+      // comments on the backends)
       struct Face { const char *name; PetscInt id; };
       const Face faces_1d[] = {{"left", StructuredFD1D::FACE_LEFT}, \
                                {"right", StructuredFD1D::FACE_RIGHT}};
@@ -414,13 +425,21 @@ PetscErrorCode ProblemSpec::create(MPI_Comm comm, const char *problem_path)
                                {"right", StructuredFD2D::FACE_RIGHT}, \
                                {"bottom", StructuredFD2D::FACE_BOTTOM}, \
                                {"top", StructuredFD2D::FACE_TOP}};
-      const Face *faces = (dimension == 1) ? faces_1d : faces_2d;
-      const size_t n_faces = (dimension == 1) ? 2 : 4;
+      const Face faces_3d[] = {{"left", StructuredFD3D::FACE_LEFT}, \
+                               {"right", StructuredFD3D::FACE_RIGHT}, \
+                               {"front", StructuredFD3D::FACE_FRONT}, \
+                               {"back", StructuredFD3D::FACE_BACK}, \
+                               {"bottom", StructuredFD3D::FACE_BOTTOM}, \
+                               {"top", StructuredFD3D::FACE_TOP}};
+      const Face *faces = (dimension == 1) ? faces_1d : ((dimension == 2) ? faces_2d : faces_3d);
+      const size_t n_faces = 2 * (size_t)dimension;
 
       if (dimension == 1) PetscCall(JsonCheckKeys(bcj, "\"boundary_conditions\"", problem_path, \
          {"left", "right"}));
-      else PetscCall(JsonCheckKeys(bcj, "\"boundary_conditions\"", problem_path, \
+      else if (dimension == 2) PetscCall(JsonCheckKeys(bcj, "\"boundary_conditions\"", problem_path, \
          {"left", "right", "bottom", "top"}));
+      else PetscCall(JsonCheckKeys(bcj, "\"boundary_conditions\"", problem_path, \
+         {"left", "right", "front", "back", "bottom", "top"}));
 
       for (size_t f = 0; f < n_faces; f++) {
          if (!bcj.contains(faces[f].name)) continue;

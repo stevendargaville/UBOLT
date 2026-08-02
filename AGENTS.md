@@ -4,7 +4,7 @@ interface so assembly runs on device), apply scattering matrix-free (MatShell + 
 precondition with PCComposite = removal shell PC + PCAIR (pflare inverts streaming).
 Energy groups are solved one at a time in a group Gauss-Seidel sweep, so the sparsity is
 preallocated once and each group is a values-only refill of the same matrix.
-The discretisation is DM-backed (1D and 2D DMDAs): the DM owns the mesh (including its
+The discretisation is DM-backed (1D, 2D and 3D DMDAs): the DM owns the mesh (including its
 coordinates, set by the backend for output), the layout and the parallel decomposition,
 but deliberately creates no solver matrices or vectors itself.
 
@@ -19,14 +19,17 @@ Codebase map
   `box_2dk`) in Aug 2026, verified byte-for-byte against all 24 baselines first.
   `tests/problems/`: the problem files the recipes name (+ `problems/materials/` for
   shared materials files); one file per distinct physics setup.
-  `tests/verify_2dk.kokkos.cxx`: the 2D discretisation check — a pure-streaming closed
-  form and the shell operator against a reference matrix. `tests/baselines/`: captured
+  `tests/verify_2dk.kokkos.cxx` / `tests/verify_3dk.kokkos.cxx`: the 2D/3D
+  discretisation checks — a pure-streaming closed form and the shell operator against a
+  reference matrix (the 3D mixed config puts three reflective faces around one corner).
+  `tests/baselines/`: captured
   reference `-ksp_monitor` logs, 1D only — never regenerate casually
   (see `docs/dev/testing.md`).
 - `src/` + `include/ubolt/`: the libubolt library. `PhaseSpace` (sizes only — `n_groups` is
   metadata on it, NOT part of the row count, and it does NOT decide the decomposition),
   `AngularQuadrature` (the dimension-independent part: n_angles, sum_weights and the
-  weight matrix) with `SNQuadrature` / `SNQuadrature2D` under it, plus
+  weight matrix) with `SNQuadrature` / `SNQuadrature2D` / `SNQuadrature3D` under it
+  (the 3D set folds nothing so it has twice the ordinates of the same-order 2D set), plus
   `UboltAngularIntegral`, the shared angular integral; `BCSpec` (boundary label id →
   BC family {vacuum, reflect}, keyed the way DMPlex "Face Sets" ids are — the structured
   backends' `FACE_*` constants match PETSc's box-mesh convention, and a problem file's
@@ -46,11 +49,15 @@ Codebase map
   `src/external/nlohmann/json.hpp`, which must NEVER be included from
   `include/ubolt/`); `Discretisation` (the backend
   base: `create_matrix`, `coo_pattern`, `boundary_info`, `destroy`, `dm`, and
-  `set_uniform_pattern` for a fixed-entries-per-row backend) with `StructuredFD1D` and
-  `StructuredFD2D` under it (each owns a DMDA and through it the mesh, the cell-based
+  `set_uniform_pattern` for a fixed-entries-per-row backend) with `StructuredFD1D`,
+  `StructuredFD2D` and `StructuredFD3D` under it (each owns a DMDA and through it the
+  mesh, the cell-based
   decomposition and the COO sparsity, and adds only its own geometry — `dx()`, `dy()`,
-  and the material painting, `paint_intervals` / `paint_boxes`);
-  `OperatorTerm` and the `Streaming`/`Streaming2D`/`Removal`/`Scattering` terms,
+  `dz()`, and the material painting, `paint_intervals` / `paint_boxes` — NOTE the 3D
+  `FACE_*` ids follow PETSc's convention, where bottom/top are the Z faces, not y as
+  in 2D);
+  `OperatorTerm` and the `Streaming`/`Streaming2D`/`Streaming3D`/`Removal`/`Scattering`
+  terms,
   `GroupXSections` + `GroupTransfer` (multigroup xsection tables and the group-to-group
   source), `TransportOperator` (assembled terms in one matrix + matrix-free terms behind a
   MatShell), `TransportSolver` (KSP + the composite PC, plus `refresh()` for what the PC

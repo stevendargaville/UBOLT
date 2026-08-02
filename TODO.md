@@ -232,6 +232,36 @@ previous one's verification has passed and been reviewed.
     upwind slot convention and in 2D needs dx and dy). Dimension-specific terms can keep
     taking the concrete class, so the base does not have to grow a geometry interface.
 
+## Phase 4.5 — 3D structured (DMDA 3D) (Aug 2026)
+- [x] `StructuredFD3D` (4-slot rows: upwind-x, upwind-y, upwind-z, diagonal LAST — the
+      DMDA star stencil's 7 points are what it preallocates, not what the operator
+      touches, same discipline as 2D), `SNQuadrature3D`, `StreamingTerm3D`,
+      `MaterialBox3D` + `paint_boxes`, `ProblemSpec` dimension 3, the driver's third
+      branch (the old bare `else` is now `else if` with a SETERRQ default). Everything
+      else — removal, scattering, group transfer, solver, VTK output — worked through
+      the bases untouched, which is the Phase 4 seam paying out.
+- Notes:
+  - `SNQuadrature3D` folds nothing: 3D has no symmetry plane, so all 8 octants are real
+    and xi is a real cosine — S2 is 8 ordinates and S4 is 24, twice the same-order 2D
+    set. Three reflection maps (mu, eta, xi), built by the same FindOrdinate search,
+    widened to three cosines with NULL for the ones a dimension lacks (verified inert:
+    1D baselines re-run bitwise).
+  - FACE ids follow PETSc's 3D box "Face Sets" convention (`plexcreate.c`,
+    DMPlexSetBoxLabel_Internal): bottom/top are the Z faces (1/2), front/back the y
+    faces (3/4), right/left the x faces (5/6). That means bottom/top CHANGE AXIS
+    between 2D and 3D — flagged in the header, ProblemSpec and the docs, since it is
+    the likeliest user-facing confusion.
+  - A corner between three reflective faces composes all three flips — still one
+    partner, one column, the same repurposed first slot.
+- Verify: DONE — `tests/verify_3dk.kokkos.cxx` (closed form psi = x + y + z on 8x6x4
+  over a 1x2x3 box at np 1/2/4/8, residual ~8e-15; reference matrix on 4x3x2 bitwise
+  for vacuum/all-reflect/mixed, where mixed = left+front+bottom so the triple flip is
+  in the checked matrix), the infinite-medium check (~1e-13, np 1 and 2), the painting
+  identity (bitwise vs the uniform cube history), and pinned recipes for the cube
+  problem files (counts in docs/dev/testing.md). No 3D baselines, the 2D precedent.
+- [ ] Follow-up: sweep the 3D pins over the CI arches (64-bit, OpenMP) — the recipe
+      pins are the reference-build measurements and a pin is the max over the arches.
+
 ## Phase 5 — Matrix-free removal / single-streaming-matrix experiment
 - [ ] RemovalTerm::apply_add + -matfree_removal: Assembled{Streaming} +
       MatrixFree{Removal, Scattering}; one assembled matrix for all groups

@@ -1,0 +1,10 @@
+{
+ "_comment": "4 groups with downscatter 0.5 on a 3D cube, so the group sweep runs in 3D; materials by path, shared with the 1D twin.",
+ "dimension": 3,
+ "mesh": {
+  "n_cells": [10, 10, 10],
+  "lengths": [1.0, 1.0, 1.0]
+ },
+ "n_angles": 8,
+ "materials": "materials/slab_mg4_t05.json"
+}

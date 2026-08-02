@@ -1,0 +1,23 @@
+{
+ "_comment": "Non-cubic 3D grid over a non-cubic box, so dx, dy and dz all differ and an axis mix-up cannot hide.",
+ "dimension": 3,
+ "mesh": {
+  "n_cells": [20, 10, 10],
+  "lengths": [1.0, 1.0, 2.0]
+ },
+ "n_angles": 8,
+ "materials": {
+  "n_groups": 1,
+  "materials": [
+   {
+    "id": 0,
+    "name": "st2",
+    "Sigma_t": [2.0],
+    "Sigma_s": [
+     [2.0]
+    ],
+    "Source": [1.0]
+   }
+  ]
+ }
+}

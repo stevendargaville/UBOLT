@@ -94,6 +94,12 @@ endif
 	./transportk -problem problems/box_50_st2.json -ksp_max_it 7
 	@echo "Check 2D box, reflective left + bottom faces"
 	./transportk -problem problems/box_50_reflect_lb.json -ksp_max_it 6
+	@echo "Check 3D cube against the closed form and a reference matrix"
+	./verify_3dk
+	@echo "Check 3D cube streaming/removal + matrix-free scatter with AIRG"
+	./transportk -problem problems/cube_20_st2.json -ksp_max_it 6
+	@echo "Check 3D cube, reflective left + front + bottom faces"
+	./transportk -problem problems/cube_20_reflect_3faces.json -ksp_max_it 5
 
 # ~~~~~~~~~~~
 # ~~~~~~~~~~~
@@ -188,6 +194,35 @@ run_tests_short_serial:
 	./transportk -problem problems/box_50_absorber.json -ksp_max_it 5
 	@echo "Test 2D box, cold box: zero inflow, a central 0.1 x 0.1 source region and nothing else"
 	./transportk -problem problems/box_100_cold.json -ksp_max_it 5
+#
+# 3D. verify_3dk is the discretisation check (closed form + reference matrix,
+# including the three-reflective-face corner). The cube recipes pin iteration
+# counts the same way the 1D and 2D ones do. CAREFUL with face names: in 3D
+# bottom/top are the Z faces (PETSc's box convention), not y as in 2D
+	@echo "Test 3D cube, closed form and reference matrix"
+	./verify_3dk
+	@echo "Test 3D cube, streaming/removal pmat, pure scattering (ratio 1)"
+	./transportk -problem problems/cube_20_st2.json -ksp_max_it 6
+	@echo "Test 3D cube, scattering ratio 0.5"
+	./transportk -problem problems/cube_20_ratio05.json -ksp_max_it 5
+	@echo "Test 3D cube, non-cubic grid (dx, dy and dz all differ)"
+	./transportk -problem problems/cube_20x10x10_st2.json -ksp_max_it 6
+	@echo "Test 3D cube, streaming-only pmat"
+	./transportk -problem problems/cube_20_st2.json -precon_stream -ksp_pc_side right -ksp_max_it 7
+	@echo "Test 3D cube, S4 (24 angles)"
+	./transportk -problem problems/cube_10_s4_st2.json -ksp_max_it 6
+	@echo "Test 3D cube, one MatSetValuesCOO per term instead of a single summed one"
+	./transportk -problem problems/cube_20_st2.json -ksp_max_it 6 -ubolt_coo_two_call
+	@echo "Test 3D cube, reflective left + front + bottom faces (a three-face reflective corner)"
+	./transportk -problem problems/cube_20_reflect_3faces.json -ksp_max_it 5
+	@echo "Test 3D cube, all faces reflective against the infinite-medium solution"
+	./transportk -problem problems/cube_20_inf_medium.json -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 10
+	@echo "Test 3D cube, two regions equal to the background (painting identity)"
+	./transportk -problem problems/cube_20_identity.json -ksp_max_it 6
+	@echo "Test 3D cube, an absorbing sourceless block painted mid-cube"
+	./transportk -problem problems/cube_20_absorber.json -ksp_max_it 4
+	@echo "Test 3D cube multigroup, 4 groups with downscatter"
+	./transportk -problem problems/cube_10_mg4_t05.json -ksp_max_it 5
 
 # ~~~~~~~~~~~
 # ~~~~~~~~~~~
@@ -252,6 +287,39 @@ run_tests_short_parallel:
 	$(MPIEXEC) -n 2 ./transportk -problem problems/box_100_cold.json -ksp_max_it 5
 	@echo "Test 1D slab multigroup, a double-density region in parallel"
 	$(MPIEXEC) -n 2 ./transportk -problem problems/slab_mg4_t05_dense.json -ksp_max_it 6
+#
+# 3D. A 3D DMDA splits in one direction only at -n 2 and two at -n 4, so -n 8
+# would be the first genuinely 3D processor grid - that stays out of the
+# recipes (CI runners have few cores) and -n 4 is where the closed form and
+# the painting identity run, the decompositions where the patch-lexicographic
+# global numbering the layout assert pins already differs from the natural one.
+# The reference matrix check is serial (it is written in natural ordering)
+	@echo "Test 3D cube, closed form in parallel"
+	$(MPIEXEC) -n 2 ./verify_3dk -skip_reference
+	@echo "Test 3D cube, closed form on a 2D processor grid"
+	$(MPIEXEC) -n 4 ./verify_3dk -skip_reference
+	@echo "Test 3D cube, pure scattering in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/cube_20_st2.json -ksp_max_it 6
+	@echo "Test 3D cube, scattering ratio 0.5 in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/cube_20_ratio05.json -ksp_max_it 5
+	@echo "Test 3D cube, non-cubic grid in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/cube_20x10x10_st2.json -ksp_max_it 6
+	@echo "Test 3D cube, streaming-only pmat in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/cube_20_st2.json -precon_stream -ksp_pc_side right -ksp_max_it 7
+	@echo "Test 3D cube, S4 in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/cube_10_s4_st2.json -ksp_max_it 6
+	@echo "Test 3D cube, one MatSetValuesCOO per term in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/cube_20_st2.json -ksp_max_it 6 -ubolt_coo_two_call
+	@echo "Test 3D cube, reflective left + front + bottom faces in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/cube_20_reflect_3faces.json -ksp_max_it 5
+	@echo "Test 3D cube, all faces reflective against the infinite-medium solution in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/cube_20_inf_medium.json -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 10
+	@echo "Test 3D cube, painting identity on a 2D processor grid"
+	$(MPIEXEC) -n 4 ./transportk -problem problems/cube_20_identity.json -ksp_max_it 6
+	@echo "Test 3D cube, an absorbing sourceless block in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/cube_20_absorber.json -ksp_max_it 4
+	@echo "Test 3D cube multigroup, 4 groups with downscatter in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/cube_10_mg4_t05.json -ksp_max_it 5
 
 # ~~~~~~~~~~~
 # ~~~~~~~~~~~
@@ -270,6 +338,8 @@ run_tests_serial:
 	./transportk -problem problems/box_120x60_st2.json -precon_stream -ksp_pc_side right -ksp_max_it 10
 	@echo "Test 2D box, pure scattering on a larger grid"
 	./transportk -problem problems/box_100_st2.json -ksp_max_it 7
+	@echo "Test 3D cube, three-halves as fine in each direction (mesh independence)"
+	./transportk -problem problems/cube_30_st2.json -ksp_max_it 6
 
 # ~~~~~~~~~~~
 # ~~~~~~~~~~~
@@ -292,6 +362,8 @@ run_tests_parallel:
 	$(MPIEXEC) -n 2 ./transportk -problem problems/box_100_st0.json -ksp_max_it 3
 	@echo "Test 2D box, pure scattering on a larger grid in parallel"
 	$(MPIEXEC) -n 2 ./transportk -problem problems/box_100_st2.json -ksp_max_it 7
+	@echo "Test 3D cube, three-halves as fine in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/cube_30_st2.json -ksp_max_it 6
 
 # ~~~~~~~~~~~
 # Re-capture reference baselines into baselines/
