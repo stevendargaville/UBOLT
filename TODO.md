@@ -8,12 +8,12 @@ previous one's verification has passed and been reviewed.
 - [x] Directory tree, top Makefile (library skeleton), tests/Makefile (PFLARE-style recipes)
 - [x] Bookkeeping: CLAUDE.md, AGENTS.md, TODO.md, docs/dev/{testing,kokkos}.md
 - [x] Move unmodified source to tests/slab_1dk.kokkos.cxx, builds as tests/slab_1dk
-- [x] Capture baselines: {default pc, precon_stream} x {max_exponent 0, 2} x {np 1, 2}
+- [x] Capture baselines: {default pc, precon_stream} x {sigma_t 0, 2} x {np 1, 2}
       x {diag_scale off, on} into tests/baselines/; iteration table in docs/dev/testing.md
 - [x] Pin per-recipe -ksp_max_it to baseline counts in tests/Makefile
 - Verify: `make check` and `make tests` pass; baselines committed.
 - Findings during capture (see docs/dev/testing.md): (i) parallel out-of-bounds bug in the
-  matrix-free scatter (global N_CELLS used on local arrays) — np=2 default/me=2 goes NaN;
+  matrix-free scatter (global N_CELLS used on local arrays) — np=2 default/st=2 goes NaN;
   fix scheduled as its own commit at the start of Phase 1a; (ii) diag_scale + strong
   removal is pathological (6305 its / divergence) — excluded from pass/fail recipes.
 
@@ -21,7 +21,7 @@ previous one's verification has passed and been reviewed.
 - [x] 1a-pre (own commit): fix the parallel scatter out-of-bounds bug — ShellMatMultApply
       must reshape/loop over LOCAL cells (local_rows/N_ANGLES), and the sigma/scalar_flux
       views must be sized/filled with local counts; then re-capture the invalidated np=2
-      default/me=2 baselines. Done: np=1 bitwise identical, only the two NaN logs changed
+      default/st=2 baselines. Done: np=1 bitwise identical, only the two NaN logs changed
       on re-capture, repaired config converges in 10 its matching serial.
 - [x] 1a: mechanical split of existing free functions into src/, driver calls them;
       #defines become -n_cells/-n_angles/-length options; driver exits nonzero unless
@@ -64,7 +64,7 @@ previous one's verification has passed and been reviewed.
 - Verify: -n_groups 1 reproduces Phase 1 exactly; identical groups + zero transfer
   reproduce single-group answer per group; pinned per-group iterations.
   Done, all three: `-n_groups 1` is bitwise identical to `slab_1dk` for
-  {default pc, precon_stream} x {me 0, 2}; the 4-group zero-transfer log is four
+  {default pc, precon_stream} x {st 0, 2}; the 4-group zero-transfer log is four
   byte-for-byte copies of the single-group log at np=1 and np=2; 8 multigroup baselines
   captured and the recipes pinned. All 16 single-group baselines still reproduce bitwise.
   Notes:
@@ -96,7 +96,8 @@ previous one's verification has passed and been reviewed.
     so the scatter and the group transfer do bit-identical arithmetic. Verified inert:
     all 16 single-group baselines unchanged.
 - Deferred out of this phase: upscatter + the outer iteration it needs; spatially varying
-  xsections (the tables support it, only the constant setters are written); promoting the
+  xsections — DONE Aug 2026, see the per-region materials postscript (`MaterialSpec` +
+  `GroupXSections::set_from_materials`); promoting the
   group loop out of the driver into a MultigroupSolver (wait for a second sweep strategy).
 
 ## Phase 3 — DMDA adoption (behavior-preserving)
@@ -284,8 +285,8 @@ previous one's verification has passed and been reviewed.
       instead of `|mu|/dx (psi_i - psi_i+1)`. Found during 1b and deliberately preserved
       so Phase 1 could be verified bit-for-bit, then fixed on its own with a full baseline
       re-capture. Interior streaming rows now sum to zero and everything well-behaved
-      converges faster (me=2: 10 -> 5 its, streaming pmat me=2: 16 -> 10). New counts in
-      `docs/dev/testing.md`; recipes re-pinned. diag_scale + me=2 is still pathological.
+      converges faster (st=2: 10 -> 5 its, streaming pmat st=2: 16 -> 10). New counts in
+      `docs/dev/testing.md`; recipes re-pinned. diag_scale + st=2 is still pathological.
 
 ## Phase 4 postscript — the matrix-free scatter ignored the Dirichlet mask (own commit)
 - [x] `ScatteringTerm::apply_add` subtracted `sigma_s phi / sum_weights` from EVERY row,
@@ -304,8 +305,8 @@ previous one's verification has passed and been reviewed.
       dropped. `verify_2dk`'s reference matrix now says a Dirichlet row is the identity and
       nothing else, and the operator matches it bitwise.
       Everything with `sigma_s = 0` is unchanged; everything else moved. In 1D the
-      well-behaved configs are a wash (me=2: 5 -> 6, streaming pmat me=2: 10 -> 9,
-      multigroup streaming sweep max 13 -> 11) and the pathological diag_scale + me=2 pair
+      well-behaved configs are a wash (st=2: 5 -> 6, streaming pmat st=2: 10 -> 9,
+      multigroup streaming sweep max 13 -> 11) and the pathological diag_scale + st=2 pair
       got worse (175 its -> capped at 200; breakdown at 90 -> 150). In 2D it is a large
       win — see the research note below, which the fix rewrote.
 
@@ -371,6 +372,49 @@ previous one's verification has passed and been reviewed.
       scattering ratio 1 is singular, hence `-sigma_scatter` on `slab_1dk` and the
       mg-keeps-a-vacuum-face rule.
 
+## Phase 4 postscript — per-region materials and sources (own commit, Aug 2026)
+- [x] `MaterialSpec` — BCSpec's sibling for cell data: per-material, per-group xsections
+      and an external source (the per-angle rhs value, no sum_weights normalisation).
+      The split mirrors BCSpec exactly: the spec says what a material MEANS, and which
+      cells are which material is geometry, so painting the per-local-cell material index
+      view lives on the concrete backends — `StructuredFD1D::paint_intervals` /
+      `StructuredFD2D::paint_boxes` (background + shapes in order, later wins, membership
+      by cell centre) — and the Phase 6 backends will read a DMPlex "Cell Sets" label
+      into the same view. Unlike BCSpec the tables have to reach device kernels, so
+      materials are DENSE indices 0..n-1, not arbitrary label ids: the unstructured
+      backend remaps its label values to indices at paint time, on the host, the same
+      place BCSpec is consulted at create.
+      - Expansion goes through the surfaces the terms already consume:
+        `GroupXSections::set_from_materials` fills the per-cell tables and
+        `UboltFillSource` writes the source into b's non-BC rows (Dirichlet rows keep
+        the driver's inflow, `UboltZeroReflectRows` still owns the reflect rows). The
+        terms never learn materials exist; both fills check the painted index range
+        out loud.
+      - Drivers: `box_2dk` takes `-n_regions` + `-region_<r>_box x0,x1,y0,y1` with
+        per-region `-region_<r>_sigma_t/_sigma_s/_source`; `slab_1d_mgk` takes
+        `-region_<r>_interval x0,x1` with a per-region `-region_<r>_density` scaling
+        the whole group recipe (one knob, physically a density change) and
+        `-region_<r>_source`. `-n_regions 0` is the uniform problem bit-for-bit.
+      Verified: all 24 baselines reproduce bitwise through the new fill path (the mg
+      driver now builds its xsections and rhs via MaterialSpec); the painting-identity
+      recipes (regions carrying the background values) land exactly on the uniform
+      counts, serial and on the -n 4 2D processor grid where the patch-lexicographic
+      cell-centre mapping is least like the natural one; and new heterogeneous pins —
+      a sourceless absorber in a scattering box (5 its, flux depression confirmed by
+      eye via -flux_vtk) and a double-density mid-slab multigroup region (6 per group).
+- [x] Follow-ons, own commits in the same PR:
+      - `-inflow` on `box_2dk` and `slab_1d_mgk`: the vacuum faces' incoming flux,
+        previously hard-coded at 1.0 by the same VecSet that filled the source (default
+        unchanged, baselines re-verified bitwise). `-inflow 0` plus a painted source
+        region is a cold box driven by that region alone — pinned as a recipe (5 its).
+        `slab_1dk` deliberately keeps its single VecSet: it is the frozen baseline driver
+        and predates the source/inflow split.
+      - `-max_exponent` renamed to `-sigma_t` (now PetscReal) on all three solve drivers:
+        the old name was a fossil of the original random `mantissa * 10^exponent`
+        per-cell xsection, commented out before the first baselines were captured.
+        Baseline logs and docs notation moved me<0|2> -> st<0|2>; a full recapture under
+        the new option reproduced all 24 renamed logs byte-for-byte.
+
 ## Research notes
 - **"Scattering ratio 1 in 2D degrades on non-square grids" — RESOLVED, it was the
   Dirichlet bug** (observed in Phase 4b, explained by the postscript fix above; recorded
@@ -396,7 +440,7 @@ previous one's verification has passed and been reviewed.
   Re-baseline that question before starting: `-precon_stream` is already a streaming-only
   pmat with strong removal, and the Aug 2026 Dirichlet fix moved those numbers. As of now
   it costs roughly a factor of 1.5 over the full pmat rather than the several-fold gap the
-  note was written against — 1D me=2 goes 6 -> 9, the multigroup sweep max 6 -> 11, 2D
+  note was written against — 1D st=2 goes 6 -> 9, the multigroup sweep max 6 -> 11, 2D
   50x50 6 -> 8 and 120x60 7 -> 9. Phase 5's cost/benefit looks different at that ratio, and
   the numbers in `docs/dev/testing.md` are the ones to argue from.
 - **MFEM as Phase 6 backend**: MFEM owns mesh/FE spaces/integrators (ConvectionIntegrator +

@@ -1,4 +1,5 @@
 #include "ubolt/structured_fd_2d.hpp"
+#include "petsc_kokkos.hpp"
 #include <petscdmda.h>
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -323,6 +324,85 @@ PetscErrorCode StructuredFD2D::create(MPI_Comm comm, PhaseSpace &ps, PetscInt n_
    // Slot maps - row r owns COO slots 3r (upwind-x), 3r + 1 (upwind-y) and
    // 3r + 2 (diagonal)
    PetscCall(set_uniform_pattern(3, is_bc_row, reflect_slot));
+
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+// A free function rather than a local lambda: an extended device lambda can't
+// be defined inside another lambda. The box list rides along as flat views -
+// coordinates as (x0, x1, y0, y1) quadruples - because a view of structs is
+// not one of the typedefs types.hpp allows
+static void PaintBoxesKernel(PetscIntKokkosView mat_id_d, PetscInt background_material, \
+   PetscScalarKokkosView box_xy_d, PetscIntKokkosView box_material_d, PetscInt n_boxes, \
+   PetscInt cell_start_x, PetscInt cell_start_y, PetscInt local_cells_x, \
+   PetscScalar dx, PetscScalar dy, PetscInt local_cells)
+{
+   Kokkos::parallel_for(
+      Kokkos::RangePolicy<>(0, local_cells), KOKKOS_LAMBDA(PetscInt c) {
+
+         // The centre of local cell c - the local ordering is the patch's own
+         // lexicographic one, and node (i, j) sits at (i dx, j dy)
+         const PetscScalar xc = ((PetscScalar)(cell_start_x + c % local_cells_x) + 0.5) * dx;
+         const PetscScalar yc = ((PetscScalar)(cell_start_y + c / local_cells_x) + 0.5) * dy;
+
+         PetscInt m = background_material;
+         for (PetscInt b = 0; b < n_boxes; b++) {
+            if (xc >= box_xy_d(4 * b) && xc <= box_xy_d(4 * b + 1) && \
+                yc >= box_xy_d(4 * b + 2) && yc <= box_xy_d(4 * b + 3)) m = box_material_d(b);
+         }
+         mat_id_d(c) = m;
+      });
+}
+
+// See the declaration for the painting rules (background, later boxes win,
+// membership by cell centre)
+PetscErrorCode StructuredFD2D::paint_boxes(PetscInt background_material, \
+   const std::vector<MaterialBox2D> &boxes, PetscIntKokkosView &mat_id_d) const
+{
+   const PetscInt n_boxes = (PetscInt)boxes.size();
+
+   PetscFunctionBeginUser;
+
+   // We allocate device memory below, and PETSc brings Kokkos up lazily
+   PetscCall(PetscKokkosInitializeCheck());
+
+   PetscCall(ps_.check_decomposed());
+
+   PetscCheck(background_material >= 0, comm_, PETSC_ERR_ARG_OUTOFRANGE, \
+      "background material index %" PetscInt_FMT " is negative", background_material);
+   for (PetscInt b = 0; b < n_boxes; b++) {
+      PetscCheck(boxes[b].material >= 0, comm_, PETSC_ERR_ARG_OUTOFRANGE, \
+         "box %" PetscInt_FMT "'s material index %" PetscInt_FMT " is negative", b, boxes[b].material);
+      PetscCheck(boxes[b].x0 <= boxes[b].x1 && boxes[b].y0 <= boxes[b].y1, comm_, \
+         PETSC_ERR_ARG_OUTOFRANGE, "box %" PetscInt_FMT " is inside out - give it as x0,x1,y0,y1 " \
+         "with x0 <= x1 and y0 <= y1", b);
+   }
+
+   // Flatten the boxes for the device
+   std::vector<PetscScalar> box_xy(4 * n_boxes);
+   std::vector<PetscInt> box_material(n_boxes);
+   for (PetscInt b = 0; b < n_boxes; b++) {
+      box_xy[4 * b]     = boxes[b].x0;
+      box_xy[4 * b + 1] = boxes[b].x1;
+      box_xy[4 * b + 2] = boxes[b].y0;
+      box_xy[4 * b + 3] = boxes[b].y1;
+      box_material[b] = boxes[b].material;
+   }
+
+   PetscScalarKokkosView box_xy_d("box_xy_d", 4 * n_boxes);
+   PetscIntKokkosView box_material_d("box_material_d", n_boxes);
+   if (n_boxes > 0) {
+      PetscScalarKokkosViewHostUnmanaged box_xy_h(box_xy.data(), 4 * n_boxes);
+      PetscIntKokkosViewHostUnmanaged box_material_h(box_material.data(), n_boxes);
+      Kokkos::deep_copy(box_xy_d, box_xy_h);
+      Kokkos::deep_copy(box_material_d, box_material_h);
+   }
+
+   mat_id_d = PetscIntKokkosView("mat_id_d", ps_.local_cells);
+   PaintBoxesKernel(mat_id_d, background_material, box_xy_d, box_material_d, n_boxes, \
+      cell_start_x_, cell_start_y_, local_cells_x_, dx_, dy_, ps_.local_cells);
 
    PetscFunctionReturn(PETSC_SUCCESS);
 }

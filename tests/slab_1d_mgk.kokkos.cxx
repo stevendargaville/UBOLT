@@ -10,7 +10,7 @@
 // through TransportOperator::assemble()
 //
 // Currently run with:
-// make build_tests && ./slab_1d_mgk -ksp_monitor -n_groups 4 -sigma_transfer 0.5 -max_exponent 2
+// make build_tests && ./slab_1d_mgk -ksp_monitor -n_groups 4 -sigma_transfer 0.5 -sigma_t 2
 
 // ubolt.hpp pulls in petscvec_kokkos.hpp which must come before any other
 // PETSc header in a C++ file (see docs/dev/kokkos.md)
@@ -45,13 +45,48 @@ int main(int argc, char **args) {
    // Do we precondition with streaming or streaming/removal
    PetscBool precon_stream = PETSC_FALSE;
    PetscCall(PetscOptionsGetBool(NULL, NULL, "-precon_stream", &precon_stream, NULL));
-   // Within-group total and scattering xsections, constant across the slab
-   PetscInt max_exponent = 1;
-   PetscCall(PetscOptionsGetInt(NULL, NULL, "-max_exponent", &max_exponent, NULL));
+   // The within-group scattering xsection and the base of each group's total:
+   // a group with downscatter has sigma_t(g) = sigma_t + sigma_transfer, so
+   // the transfer moves reaction rate between groups instead of inventing it
+   // (see the xsection build below). Constant across the slab
+   PetscReal sigma_t = 1.0;
+   PetscCall(PetscOptionsGetReal(NULL, NULL, "-sigma_t", &sigma_t, NULL));
    // Downscatter into the next group down. Zero leaves the groups uncoupled,
    // which is what makes -n_groups 1 the single-group problem exactly
    PetscReal sigma_transfer = 0.0;
    PetscCall(PetscOptionsGetReal(NULL, NULL, "-sigma_transfer", &sigma_transfer, NULL));
+   // Heterogeneous regions: -n_regions N, then per region r (1-based) an
+   // interval -region_<r>_interval x0,x1 painted over the background in order,
+   // later regions winning. A region's material is the background group recipe
+   // scaled by -region_<r>_density (sigma_t, sigma_s and the transfer
+   // together, i.e. a denser or lighter slab of the same stuff - one knob
+   // rather than one per group and pair), plus its own -region_<r>_source
+   // (the same value in every group, default 1.0). Region r is material index
+   // r; material 0 is the background. -n_regions 0 is the uniform problem
+   PetscInt n_regions = 0;
+   PetscCall(PetscOptionsGetInt(NULL, NULL, "-n_regions", &n_regions, NULL));
+   PetscCheck(n_regions >= 0, PETSC_COMM_WORLD, PETSC_ERR_ARG_OUTOFRANGE, \
+      "-n_regions must not be negative, was given %" PetscInt_FMT, n_regions);
+
+   std::vector<MaterialInterval1D> intervals(n_regions);
+   std::vector<PetscReal> region_density(n_regions, 1.0);
+   std::vector<PetscReal> region_source(n_regions, 1.0);
+   for (PetscInt r = 1; r <= n_regions; r++) {
+      char opt[64];
+      PetscReal interval[2];
+      PetscInt n_vals = 2;
+      PetscBool found = PETSC_FALSE;
+      PetscCall(PetscSNPrintf(opt, sizeof(opt), "-region_%" PetscInt_FMT "_interval", r));
+      PetscCall(PetscOptionsGetRealArray(NULL, NULL, opt, interval, &n_vals, &found));
+      PetscCheck(found && n_vals == 2, PETSC_COMM_WORLD, PETSC_ERR_ARG_WRONG, \
+         "%s must be given as x0,x1", opt);
+      intervals[r - 1] = {interval[0], interval[1], r};
+
+      PetscCall(PetscSNPrintf(opt, sizeof(opt), "-region_%" PetscInt_FMT "_density", r));
+      PetscCall(PetscOptionsGetReal(NULL, NULL, opt, &region_density[r - 1], NULL));
+      PetscCall(PetscSNPrintf(opt, sizeof(opt), "-region_%" PetscInt_FMT "_source", r));
+      PetscCall(PetscOptionsGetReal(NULL, NULL, opt, &region_source[r - 1], NULL));
+   }
    // The boundary condition on each face: vacuum (prescribed inflow, from the
    // rhs) or reflect. Keep at least one face vacuum: the last group's
    // scattering ratio is exactly 1 here, and an all-reflective group with no
@@ -60,6 +95,12 @@ int main(int argc, char **args) {
    PetscInt bc_left = 0, bc_right = 0;
    PetscCall(PetscOptionsGetEList(NULL, NULL, "-bc_left", bc_names, 2, &bc_left, NULL));
    PetscCall(PetscOptionsGetEList(NULL, NULL, "-bc_right", bc_names, 2, &bc_right, NULL));
+   // The incoming flux prescribed on the vacuum faces, every group (it lands
+   // on the Dirichlet rows of b and only means something there - reflective
+   // rows owe the rhs a zero). -inflow 0 with a painted source region is a
+   // cold slab driven by that region alone
+   PetscReal inflow = 1.0;
+   PetscCall(PetscOptionsGetReal(NULL, NULL, "-inflow", &inflow, NULL));
    // Write the scalar flux of the solution for inspection, one file per group:
    // -flux_vtk flux.vts writes flux_g0.vts, flux_g1.vts, ... The extension
    // picks the format, .vts or .vtr
@@ -89,18 +130,36 @@ int main(int argc, char **args) {
       // scatter plus whatever leaves the group by downscatter, so adding
       // transfer moves reaction rate between groups instead of inventing it.
       // The last group has nowhere to scatter down to
+      //
+      // The group recipe goes into a MaterialSpec - the background at density
+      // 1, each region the same recipe scaled by its density - and is expanded
+      // onto the cells through the painted material indices. With -n_regions 0
+      // this fills exactly what the constant setters used to
       // ~~~~~~~~~~~~~
+      MaterialSpec mats;
+      PetscCall(mats.create(n_regions + 1, n_groups));
+      for (PetscInt m = 0; m <= n_regions; m++) {
+
+         const PetscScalar density = (m == 0) ? 1.0 : (PetscScalar)region_density[m - 1];
+         const PetscScalar source = (m == 0) ? 1.0 : (PetscScalar)region_source[m - 1];
+
+         for (PetscInt g = 0; g < n_groups; g++) {
+
+            const PetscBool has_downscatter = (g + 1 < n_groups) ? PETSC_TRUE : PETSC_FALSE;
+            const PetscScalar out = has_downscatter ? (PetscScalar)sigma_transfer : 0.0;
+
+            PetscCall(mats.set_sigma_t(m, g, density * ((PetscScalar)sigma_t + out)));
+            PetscCall(mats.set_sigma_s(m, g, g, density * (PetscScalar)sigma_t));
+            if (has_downscatter) PetscCall(mats.set_sigma_s(m, g, g + 1, density * out));
+            PetscCall(mats.set_source(m, g, source));
+         }
+      }
+
+      PetscIntKokkosView mat_id_d;
+      PetscCall(disc.paint_intervals(0, intervals, mat_id_d));
       GroupXSections xs;
       PetscCall(xs.create(ps));
-      for (PetscInt g = 0; g < n_groups; g++) {
-
-         const PetscBool has_downscatter = (g + 1 < n_groups) ? PETSC_TRUE : PETSC_FALSE;
-         const PetscScalar out = has_downscatter ? (PetscScalar)sigma_transfer : 0.0;
-
-         PetscCall(xs.set_sigma_t(g, (PetscScalar)max_exponent + out));
-         PetscCall(xs.set_sigma_s(g, g, (PetscScalar)max_exponent));
-         if (has_downscatter) PetscCall(xs.set_sigma_s(g, g + 1, out));
-      }
+      PetscCall(xs.set_from_materials(mats, mat_id_d));
 
       // ~~~~~~~~~~~~~
       // The operator: streaming + removal assembled, scattering matrix-free.
@@ -158,11 +217,13 @@ int main(int argc, char **args) {
          // sigma_t changed under the removal preconditioner
          else PetscCall(solver.refresh());
 
-         // Rhs: the external source, the incoming flux on the Dirichlet rows,
-         // and everything downscattered out of the groups already solved. A
-         // reflective row's rhs is zero, so the source comes off those rows
+         // Rhs: the incoming flux everywhere first (the Dirichlet rows keep
+         // it), the per-material external source over the non-BC rows, and
+         // everything downscattered out of the groups already solved. A
+         // reflective row's rhs is zero, so the inflow comes off those rows
          // (add_source skips every BC row on its own)
-         PetscCall(VecSet(b, 1.0));
+         PetscCall(VecSet(b, (PetscScalar)inflow));
+         PetscCall(UboltFillSource(ps, disc.boundary_info(), mats, mat_id_d, g, b));
          PetscCall(UboltZeroReflectRows(disc.boundary_info(), b));
          for (PetscInt g_from = 0; g_from < g; g_from++) {
             PetscCall(transfer.add_source(g_from, g, b));

@@ -1,7 +1,7 @@
 // 1D slab single-group SN driver
 //
 // Currently run with:
-// make build_tests && ./slab_1dk -ksp_monitor -sub_1_pc_air_print_stats_timings -ksp_pc_side right -precon_stream -max_exponent 2
+// make build_tests && ./slab_1dk -ksp_monitor -sub_1_pc_air_print_stats_timings -ksp_pc_side right -precon_stream -sigma_t 2
 
 // ubolt.hpp pulls in petscvec_kokkos.hpp which must come before any other
 // PETSc header in a C++ file (see docs/dev/kokkos.md)
@@ -36,13 +36,13 @@ int main(int argc, char **args) {
    PetscBool precon_stream = PETSC_FALSE;
    PetscCall(PetscOptionsGetBool(NULL, NULL, "-precon_stream", &precon_stream, NULL));
    // Total and scattering xsections, constant across the slab
-   PetscInt max_exponent = 1;
-   PetscCall(PetscOptionsGetInt(NULL, NULL, "-max_exponent", &max_exponent, NULL));
+   PetscReal sigma_t = 1.0;
+   PetscCall(PetscOptionsGetReal(NULL, NULL, "-sigma_t", &sigma_t, NULL));
    // Scattering xsection, defaulting to the total one as before this option
    // existed - that is a scattering ratio of exactly 1, i.e. no absorption at
    // all. Set it lower to get some; an all-reflective slab NEEDS some, or the
    // operator has the constants in its kernel
-   PetscReal sigma_scatter = (PetscReal)max_exponent;
+   PetscReal sigma_scatter = sigma_t;
    PetscCall(PetscOptionsGetReal(NULL, NULL, "-sigma_scatter", &sigma_scatter, NULL));
    // The boundary condition on each face: vacuum (prescribed inflow, from the
    // rhs) or reflect
@@ -57,8 +57,8 @@ int main(int argc, char **args) {
    PetscCall(PetscOptionsGetBool(NULL, NULL, "-check_inf_medium", &check_inf_medium, NULL));
    PetscCheck(!check_inf_medium || (bc_left == 1 && bc_right == 1), PETSC_COMM_WORLD, \
       PETSC_ERR_ARG_INCOMP, "-check_inf_medium needs -bc_left reflect -bc_right reflect");
-   PetscCheck(!check_inf_medium || sigma_scatter < (PetscReal)max_exponent, PETSC_COMM_WORLD, \
-      PETSC_ERR_ARG_INCOMP, "-check_inf_medium needs absorption: -sigma_scatter below -max_exponent");
+   PetscCheck(!check_inf_medium || sigma_scatter < sigma_t, PETSC_COMM_WORLD, \
+      PETSC_ERR_ARG_INCOMP, "-check_inf_medium needs absorption: -sigma_scatter below -sigma_t");
    // Write the scalar flux of the solution for inspection, e.g.
    // -flux_vtk flux.vts - the extension picks the format, .vts or .vtr
    char flux_vtk[PETSC_MAX_PATH_LEN];
@@ -86,7 +86,7 @@ int main(int argc, char **args) {
       // ~~~~~~~~~~~~~
       PetscScalarKokkosView sigma_t_d("sigma_t_d", ps.local_cells);
       PetscScalarKokkosView sigma_s_d("sigma_s_d", ps.local_cells);
-      Kokkos::deep_copy(sigma_t_d, (PetscScalar)max_exponent);
+      Kokkos::deep_copy(sigma_t_d, (PetscScalar)sigma_t);
       Kokkos::deep_copy(sigma_s_d, (PetscScalar)sigma_scatter);
 
       // ~~~~~~~~~~~~~
@@ -149,7 +149,7 @@ int main(int argc, char **args) {
       // so the exact discrete solution is the constant 1 / (sigma_t - sigma_s)
       // in every cell and angle - to solver tolerance, not discretisation error
       if (check_inf_medium) {
-         const PetscScalar expected = 1.0 / ((PetscScalar)max_exponent - (PetscScalar)sigma_scatter);
+         const PetscScalar expected = 1.0 / ((PetscScalar)sigma_t - (PetscScalar)sigma_scatter);
          PetscCall(VecShift(x, -expected));
          PetscCall(VecNorm(x, NORM_INFINITY, &inf_medium_err));
          PetscCall(VecShift(x, expected));
