@@ -1,0 +1,15 @@
+{
+ "_comment": "Single group, sigma_t 2 with scattering ratio 1; the 1D single-group baseline material (Source 2.0 = per-angle 1.0).",
+ "n_groups": 1,
+ "materials": [
+  {
+   "id": 0,
+   "name": "st2",
+   "Sigma_t": [2.0],
+   "Sigma_s": [
+    [2.0]
+   ],
+   "Source": [2.0]
+  }
+ ]
+}

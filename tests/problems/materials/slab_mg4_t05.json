@@ -1,0 +1,18 @@
+{
+ "_comment": "4 groups, sigma_t 2 with downscatter 0.5 into the next group down; the old -sigma_t 2 -sigma_transfer 0.5 recipe.",
+ "n_groups": 4,
+ "materials": [
+  {
+   "id": 0,
+   "name": "mg4_t05",
+   "Sigma_t": [2.5, 2.5, 2.5, 2.0],
+   "Sigma_s": [
+    [2.0, 0.5, 0.0, 0.0],
+    [0.0, 2.0, 0.5, 0.0],
+    [0.0, 0.0, 2.0, 0.5],
+    [0.0, 0.0, 0.0, 2.0]
+   ],
+   "Source": [1.0, 1.0, 1.0, 1.0]
+  }
+ ]
+}

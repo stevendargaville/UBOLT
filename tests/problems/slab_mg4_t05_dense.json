@@ -1,0 +1,46 @@
+{
+ "_comment": "4 groups with downscatter and a double-density region painted mid-slab: the background recipe scaled by 2 (sigma_t, sigma_s and the transfer together).",
+ "dimension": 1,
+ "mesh": {
+  "n_cells": [1000],
+  "lengths": [1.0]
+ },
+ "n_angles": 4,
+ "materials": {
+  "n_groups": 4,
+  "materials": [
+   {
+    "id": 0,
+    "name": "mg4_t05",
+    "Sigma_t": [2.5, 2.5, 2.5, 2.0],
+    "Sigma_s": [
+     [2.0, 0.5, 0.0, 0.0],
+     [0.0, 2.0, 0.5, 0.0],
+     [0.0, 0.0, 2.0, 0.5],
+     [0.0, 0.0, 0.0, 2.0]
+    ],
+    "Source": [1.0, 1.0, 1.0, 1.0]
+   },
+   {
+    "id": 1,
+    "name": "mg4_t05_dense",
+    "Sigma_t": [5.0, 5.0, 5.0, 4.0],
+    "Sigma_s": [
+     [4.0, 1.0, 0.0, 0.0],
+     [0.0, 4.0, 1.0, 0.0],
+     [0.0, 0.0, 4.0, 1.0],
+     [0.0, 0.0, 0.0, 4.0]
+    ],
+    "Source": [1.0, 1.0, 1.0, 1.0]
+   }
+  ]
+ },
+ "regions": {
+  "paint": [
+   {
+    "material": 1,
+    "interval": [0.4, 0.6]
+   }
+  ]
+ }
+}

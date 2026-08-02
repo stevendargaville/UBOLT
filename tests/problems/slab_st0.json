@@ -1,0 +1,23 @@
+{
+ "_comment": "1D slab, sigma_t 0: advection dominated (weak removal).",
+ "dimension": 1,
+ "mesh": {
+  "n_cells": [1000],
+  "lengths": [1.0]
+ },
+ "n_angles": 4,
+ "materials": {
+  "n_groups": 1,
+  "materials": [
+   {
+    "id": 0,
+    "name": "st0",
+    "Sigma_t": [0.0],
+    "Sigma_s": [
+     [0.0]
+    ],
+    "Source": [2.0]
+   }
+  ]
+ }
+}

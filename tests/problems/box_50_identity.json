@@ -1,0 +1,53 @@
+{
+ "_comment": "Painting identity: two painted regions whose materials carry exactly the background values, so the residual history must be bitwise identical to box_50_st2.json's - painting and expansion change nothing but which table entry a cell reads.",
+ "dimension": 2,
+ "mesh": {
+  "n_cells": [50, 50],
+  "lengths": [1.0, 1.0]
+ },
+ "n_angles": 4,
+ "materials": {
+  "n_groups": 1,
+  "materials": [
+   {
+    "id": 0,
+    "name": "st2",
+    "Sigma_t": [2.0],
+    "Sigma_s": [
+     [2.0]
+    ],
+    "Source": [1.0]
+   },
+   {
+    "id": 1,
+    "name": "st2_copy_a",
+    "Sigma_t": [2.0],
+    "Sigma_s": [
+     [2.0]
+    ],
+    "Source": [1.0]
+   },
+   {
+    "id": 2,
+    "name": "st2_copy_b",
+    "Sigma_t": [2.0],
+    "Sigma_s": [
+     [2.0]
+    ],
+    "Source": [1.0]
+   }
+  ]
+ },
+ "regions": {
+  "paint": [
+   {
+    "material": 1,
+    "box": [0.2, 0.4, 0.2, 0.4]
+   },
+   {
+    "material": 2,
+    "box": [0.5, 0.9, 0.1, 0.3]
+   }
+  ]
+ }
+}

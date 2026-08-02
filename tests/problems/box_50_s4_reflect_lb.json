@@ -1,0 +1,27 @@
+{
+ "_comment": "2D box, S4 with reflective left + bottom faces.",
+ "dimension": 2,
+ "mesh": {
+  "n_cells": [50, 50],
+  "lengths": [1.0, 1.0]
+ },
+ "n_angles": 12,
+ "materials": {
+  "n_groups": 1,
+  "materials": [
+   {
+    "id": 0,
+    "name": "st2_ss1",
+    "Sigma_t": [2.0],
+    "Sigma_s": [
+     [1.0]
+    ],
+    "Source": [1.0]
+   }
+  ]
+ },
+ "boundary_conditions": {
+  "left": "reflect",
+  "bottom": "reflect"
+ }
+}
