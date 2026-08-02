@@ -55,7 +55,10 @@ Codebase map
   source), `TransportOperator` (assembled terms in one matrix + matrix-free terms behind a
   MatShell), `TransportSolver` (KSP + the composite PC, plus `refresh()` for what the PC
   caches off the assembled matrix), `UboltWriteScalarFluxVTK` (the scalar flux of a
-  solution written through PETSc's VTK viewer onto a dof-1 twin of the backend's DMDA —
+  solution, plus any extra per-cell fields the caller hands over as `UboltCellField`s —
+  the driver passes the group's `sigma_t` and its `source`, the latter expanded onto the
+  cells by `UboltFillCellSource` — written through PETSc's VTK viewer onto a dof-1 twin
+  of the backend's DMDA —
   `.vts`/`.vtr` structured formats only; a problem file's `output.flux_vtk`, or
   `-flux_vtk` as the override). `types.hpp` owns every Kokkos view typedef, `ubolt.hpp`
   is the umbrella header. Every translation unit is a Kokkos one, named `Xk.kokkos.cxx`

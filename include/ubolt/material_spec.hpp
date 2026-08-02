@@ -68,4 +68,13 @@ PETSC_EXTERN PetscErrorCode UboltFillSource(const PhaseSpace &ps, const Boundary
    const AngularQuadrature &quad, const MaterialSpec &mats, const PetscIntKokkosView &mat_id_d, \
    PetscInt g, Vec b);
 
+// The same expansion onto one value per local cell rather than onto a rhs: each
+// cell's material's group-g source, as the isotropic strength the spec holds -
+// NOT divided by sum_weights, and with nothing special done to the BC cells.
+// This is the source as an output field, the sibling of the per-cell sigma_t
+// GroupXSections::set_from_materials writes, so it is what a diagnostic writes
+// to file, not what a solve consumes
+PETSC_EXTERN PetscErrorCode UboltFillCellSource(const PhaseSpace &ps, const MaterialSpec &mats, \
+   const PetscIntKokkosView &mat_id_d, PetscInt g, PetscScalarKokkosView cell_source_d);
+
 #endif

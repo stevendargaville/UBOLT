@@ -42,7 +42,7 @@ ignored everywhere (JSON has no comments), holding provenance prose.
 | `regions` | object | no | which cells are which material - see below; absent = uniform background |
 | `boundary_conditions` | object | no | per-face `"vacuum"` or `"reflect"`; unset faces are vacuum |
 | `inflow` | number | no, default 1.0 | the per-angle incoming flux prescribed on the Dirichlet (vacuum-face) rows of the rhs; 0.0 with a painted source region is a cold problem driven by that region alone |
-| `output.flux_vtk` | string | no | scalar flux output path, `.vts` or `.vtr`; `-flux_vtk` on the command line overrides it. A single-group problem writes the filename as given, multigroup writes one file per group (`flux.vts` becomes `flux_g0.vts`, ...) |
+| `output.flux_vtk` | string | no | output path, `.vts` or `.vtr`; `-flux_vtk` on the command line overrides it. A single-group problem writes the filename as given, multigroup writes one file per group (`flux.vts` becomes `flux_g0.vts`, ...). Each file carries three per-cell fields for its group: `scalar_flux`, `sigma_t` and `source` (the isotropic strength as written here, not the per-ordinate share) |
 
 ### Regions
 

@@ -258,20 +258,29 @@ int main(int argc, char **args) {
          }
       }
 
-      // Only a full sweep leaves every group's flux worth looking at. A
+      // Only a full sweep leaves every group's flux worth looking at. Each file
+      // carries that group's scalar flux plus the two group-dependent inputs
+      // that produced it - sigma_t and the external source - so the file says
+      // what was solved without going back to the problem definition. A
       // single-group problem writes the filename as given - the retired
       // single-group drivers' behaviour - multigroup suffixes _g<g>
       if (!flux_vtk.empty() && reason > 0) {
-         if (n_groups == 1) PetscCall(UboltWriteScalarFluxVTK(ps, *disc, *quad, psi[0], flux_vtk.c_str()));
-         else {
-            const char *dot = strrchr(flux_vtk.c_str(), '.');
-            const size_t base_len = dot ? (size_t)(dot - flux_vtk.c_str()) : flux_vtk.size();
-            for (PetscInt g = 0; g < n_groups; g++) {
-               char fname[PETSC_MAX_PATH_LEN];
-               PetscCall(PetscSNPrintf(fname, sizeof(fname), "%.*s_g%" PetscInt_FMT "%s", \
-                  (int)base_len, flux_vtk.c_str(), g, dot ? dot : ""));
-               PetscCall(UboltWriteScalarFluxVTK(ps, *disc, *quad, psi[g], fname));
-            }
+         const char *dot = strrchr(flux_vtk.c_str(), '.');
+         const size_t base_len = dot ? (size_t)(dot - flux_vtk.c_str()) : flux_vtk.size();
+         // The source is expanded onto the cells for output only, so one buffer
+         // refilled per group rather than a table kept over the sweep
+         PetscScalarKokkosView cell_source_d("cell_source_d", ps.local_cells);
+
+         for (PetscInt g = 0; g < n_groups; g++) {
+            char fname[PETSC_MAX_PATH_LEN];
+            if (n_groups == 1) PetscCall(PetscStrncpy(fname, flux_vtk.c_str(), sizeof(fname)));
+            else PetscCall(PetscSNPrintf(fname, sizeof(fname), "%.*s_g%" PetscInt_FMT "%s", \
+               (int)base_len, flux_vtk.c_str(), g, dot ? dot : ""));
+
+            PetscCall(UboltFillCellSource(ps, spec.materials, mat_id_d, g, cell_source_d));
+            const UboltCellField extra[] = {{"sigma_t", xs.sigma_t(g)}, {"source", cell_source_d}};
+            PetscCall(UboltWriteScalarFluxVTK(ps, *disc, *quad, psi[g], \
+               (PetscInt)(sizeof(extra) / sizeof(extra[0])), extra, fname));
          }
       }
 
