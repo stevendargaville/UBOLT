@@ -371,6 +371,37 @@ previous one's verification has passed and been reviewed.
       scattering ratio 1 is singular, hence `-sigma_scatter` on `slab_1dk` and the
       mg-keeps-a-vacuum-face rule.
 
+## Phase 4 postscript — per-region materials and sources (own commit, Aug 2026)
+- [x] `MaterialSpec` — BCSpec's sibling for cell data: per-material, per-group xsections
+      and an external source (the per-angle rhs value, no sum_weights normalisation).
+      The split mirrors BCSpec exactly: the spec says what a material MEANS, and which
+      cells are which material is geometry, so painting the per-local-cell material index
+      view lives on the concrete backends — `StructuredFD1D::paint_intervals` /
+      `StructuredFD2D::paint_boxes` (background + shapes in order, later wins, membership
+      by cell centre) — and the Phase 6 backends will read a DMPlex "Cell Sets" label
+      into the same view. Unlike BCSpec the tables have to reach device kernels, so
+      materials are DENSE indices 0..n-1, not arbitrary label ids: the unstructured
+      backend remaps its label values to indices at paint time, on the host, the same
+      place BCSpec is consulted at create.
+      - Expansion goes through the surfaces the terms already consume:
+        `GroupXSections::set_from_materials` fills the per-cell tables and
+        `UboltFillSource` writes the source into b's non-BC rows (Dirichlet rows keep
+        the driver's inflow, `UboltZeroReflectRows` still owns the reflect rows). The
+        terms never learn materials exist; both fills check the painted index range
+        out loud.
+      - Drivers: `box_2dk` takes `-n_regions` + `-region_<r>_box x0,x1,y0,y1` with
+        per-region `-region_<r>_sigma_t/_sigma_s/_source`; `slab_1d_mgk` takes
+        `-region_<r>_interval x0,x1` with a per-region `-region_<r>_density` scaling
+        the whole group recipe (one knob, physically a density change) and
+        `-region_<r>_source`. `-n_regions 0` is the uniform problem bit-for-bit.
+      Verified: all 24 baselines reproduce bitwise through the new fill path (the mg
+      driver now builds its xsections and rhs via MaterialSpec); the painting-identity
+      recipes (regions carrying the background values) land exactly on the uniform
+      counts, serial and on the -n 4 2D processor grid where the patch-lexicographic
+      cell-centre mapping is least like the natural one; and new heterogeneous pins —
+      a sourceless absorber in a scattering box (5 its, flux depression confirmed by
+      eye via -flux_vtk) and a double-density mid-slab multigroup region (6 per group).
+
 ## Research notes
 - **"Scattering ratio 1 in 2D degrades on non-square grids" — RESOLVED, it was the
   Dirichlet bug** (observed in Phase 4b, explained by the postscript fix above; recorded

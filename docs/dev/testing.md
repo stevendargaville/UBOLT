@@ -231,6 +231,29 @@ group always has ratio 1 (no downscatter out of it).
 | 2D 50x50 S4, left+bottom reflect, ratio 0.5 | 6 | — |
 | 2D all-reflect infinite medium (rtol 1e-12) | 10 | 10 |
 
+## Painted regions (MaterialSpec)
+Every solve driver takes `-n_regions` plus per-region painted shapes — boxes in 2D,
+intervals in 1D — over the background material (see `MaterialSpec`). `-n_regions 0` is
+the uniform problem bit-for-bit, which was verified the strong way when the plumbing
+landed: the multigroup driver builds its xsections and rhs through the MaterialSpec path
+now, and all 24 baselines reproduce bitwise.
+
+The sharp oracle is the **painting identity**: regions whose values equal the
+background's must land exactly on the uniform recipe's residual history, because
+painting and expansion change nothing but which table entry a cell reads. The recipe
+pins the count; the bitwise history match was checked at np=1 and np=4 when the pins
+were captured. It runs at `-n 4` in the parallel suite deliberately — painting maps
+cell centres through the patch-lexicographic local ordering, and the 2D processor grid
+is where that ordering is least like the natural one. The heterogeneous recipes are
+ordinary pins (and the absorbing block was eyeballed via `-flux_vtk`: a clear flux
+depression over the block, ~3.5 against ~11-12 in the surrounding medium).
+
+| painted config | np=1 | np=2 | np=4 |
+|---|---|---|---|
+| 2D 50x50 identity: 2 regions = background, me=2 | 6 | — | 6 |
+| 2D 50x50 absorbing sourceless block (sigma_t 10, sigma_s 1, q 0) over me=2 ratio 0.5 | 5 | 5 | — |
+| 1D multigroup 4 groups t05, double-density region 0.4-0.6 | 6, 6, 6, 6 | 6, 6, 6, 6 | — |
+
 ## Adding a test driver
 1. Add the executable name to `TEST_TARGETS` (and `CHECK_TARGETS` if it belongs in
    `make check`) in the top `Makefile`. The two lists are identical today; the split

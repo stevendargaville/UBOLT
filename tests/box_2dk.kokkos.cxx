@@ -12,6 +12,7 @@
 #include "ubolt/ubolt.hpp"
 #include <petscksp.h>
 #include "pflare.h"
+#include <vector>
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -52,6 +53,46 @@ int main(int argc, char **args) {
    // did and the real answer was a bug in the operator)
    PetscReal sigma_scatter = (PetscReal)max_exponent;
    PetscCall(PetscOptionsGetReal(NULL, NULL, "-sigma_scatter", &sigma_scatter, NULL));
+   // Heterogeneous regions: -n_regions N, then per region r (1-based) an
+   // axis-aligned box -region_<r>_box x0,x1,y0,y1 painted over the background
+   // in order, later regions winning, plus optional -region_<r>_sigma_t,
+   // -region_<r>_sigma_s and -region_<r>_source (defaulting to the background
+   // values above and a unit source). Region r is material index r; material 0
+   // is the background. The default -n_regions 0 is the uniform problem
+   PetscInt n_regions = 0;
+   PetscCall(PetscOptionsGetInt(NULL, NULL, "-n_regions", &n_regions, NULL));
+   PetscCheck(n_regions >= 0, PETSC_COMM_WORLD, PETSC_ERR_ARG_OUTOFRANGE, \
+      "-n_regions must not be negative, was given %" PetscInt_FMT, n_regions);
+
+   MaterialSpec mats;
+   PetscCall(mats.create(n_regions + 1, 1));
+   PetscCall(mats.set_sigma_t(0, 0, (PetscScalar)max_exponent));
+   PetscCall(mats.set_sigma_s(0, 0, 0, (PetscScalar)sigma_scatter));
+   PetscCall(mats.set_source(0, 0, 1.0));
+
+   std::vector<MaterialBox2D> boxes(n_regions);
+   for (PetscInt r = 1; r <= n_regions; r++) {
+      char opt[64];
+      PetscReal box[4];
+      PetscInt n_vals = 4;
+      PetscBool found = PETSC_FALSE;
+      PetscCall(PetscSNPrintf(opt, sizeof(opt), "-region_%" PetscInt_FMT "_box", r));
+      PetscCall(PetscOptionsGetRealArray(NULL, NULL, opt, box, &n_vals, &found));
+      PetscCheck(found && n_vals == 4, PETSC_COMM_WORLD, PETSC_ERR_ARG_WRONG, \
+         "%s must be given as x0,x1,y0,y1", opt);
+      boxes[r - 1] = {box[0], box[1], box[2], box[3], r};
+
+      PetscReal sigma_t_r = (PetscReal)max_exponent, sigma_s_r = sigma_scatter, source_r = 1.0;
+      PetscCall(PetscSNPrintf(opt, sizeof(opt), "-region_%" PetscInt_FMT "_sigma_t", r));
+      PetscCall(PetscOptionsGetReal(NULL, NULL, opt, &sigma_t_r, NULL));
+      PetscCall(PetscSNPrintf(opt, sizeof(opt), "-region_%" PetscInt_FMT "_sigma_s", r));
+      PetscCall(PetscOptionsGetReal(NULL, NULL, opt, &sigma_s_r, NULL));
+      PetscCall(PetscSNPrintf(opt, sizeof(opt), "-region_%" PetscInt_FMT "_source", r));
+      PetscCall(PetscOptionsGetReal(NULL, NULL, opt, &source_r, NULL));
+      PetscCall(mats.set_sigma_t(r, 0, (PetscScalar)sigma_t_r));
+      PetscCall(mats.set_sigma_s(r, 0, 0, (PetscScalar)sigma_s_r));
+      PetscCall(mats.set_source(r, 0, (PetscScalar)source_r));
+   }
    // The boundary condition on each face: vacuum (prescribed inflow, from the
    // rhs) or reflect
    const char *const bc_names[] = {"vacuum", "reflect"};
@@ -69,6 +110,8 @@ int main(int argc, char **args) {
       PETSC_COMM_WORLD, PETSC_ERR_ARG_INCOMP, "-check_inf_medium needs all four -bc_* reflect");
    PetscCheck(!check_inf_medium || sigma_scatter < (PetscReal)max_exponent, PETSC_COMM_WORLD, \
       PETSC_ERR_ARG_INCOMP, "-check_inf_medium needs absorption: -sigma_scatter below -max_exponent");
+   PetscCheck(!check_inf_medium || n_regions == 0, PETSC_COMM_WORLD, PETSC_ERR_ARG_INCOMP, \
+      "-check_inf_medium needs uniform xsections and source: -n_regions 0");
    // Write the scalar flux of the solution for inspection, e.g.
    // -flux_vtk flux.vts - the extension picks the format, .vts or .vtr
    char flux_vtk[PETSC_MAX_PATH_LEN];
@@ -94,12 +137,15 @@ int main(int argc, char **args) {
       PetscCall(disc.create(PETSC_COMM_WORLD, ps, n_cells_x, n_cells_y, length_x, length_y, quad, bcs));
 
       // ~~~~~~~~~~~~~
-      // Cross sections, one per local cell
+      // Cross sections, one per local cell: paint the material indices onto
+      // the cells (all background when there are no regions) and expand the
+      // material table through them
       // ~~~~~~~~~~~~~
-      PetscScalarKokkosView sigma_t_d("sigma_t_d", ps.local_cells);
-      PetscScalarKokkosView sigma_s_d("sigma_s_d", ps.local_cells);
-      Kokkos::deep_copy(sigma_t_d, (PetscScalar)max_exponent);
-      Kokkos::deep_copy(sigma_s_d, (PetscScalar)sigma_scatter);
+      PetscIntKokkosView mat_id_d;
+      PetscCall(disc.paint_boxes(0, boxes, mat_id_d));
+      GroupXSections xs;
+      PetscCall(xs.create(ps));
+      PetscCall(xs.set_from_materials(mats, mat_id_d));
 
       // ~~~~~~~~~~~~~
       // The operator: streaming + removal assembled, scattering matrix-free
@@ -107,9 +153,9 @@ int main(int argc, char **args) {
       StreamingTerm2D streaming;
       PetscCall(streaming.create(ps, disc, quad));
       RemovalTerm removal;
-      PetscCall(removal.create(ps, disc, sigma_t_d));
+      PetscCall(removal.create(ps, disc, xs.sigma_t(0)));
       ScatteringTerm scattering;
-      PetscCall(scattering.create(ps, disc, quad, sigma_s_d));
+      PetscCall(scattering.create(ps, disc, quad, xs.sigma_s(0, 0)));
 
       TransportOperator op;
       PetscCall(op.create(PETSC_COMM_WORLD, ps, disc));
@@ -123,8 +169,11 @@ int main(int argc, char **args) {
       // ~~~~~~~~~~~~~
       Vec x, b;
       PetscCall(MatCreateVecs(op.assembled_mat(), &x, &b));
+      // The inflow value everywhere first - the Dirichlet rows keep it - then
+      // the per-material source over the non-BC rows
       PetscCall(VecSet(b, 1.0));
-      // A reflective row's rhs is zero - psi_r = psi_partner - so the source
+      PetscCall(UboltFillSource(ps, disc.boundary_info(), mats, mat_id_d, 0, b));
+      // A reflective row's rhs is zero - psi_r = psi_partner - so the inflow
       // has to come off those rows again
       PetscCall(UboltZeroReflectRows(disc.boundary_info(), b));
 

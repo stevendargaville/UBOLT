@@ -5,6 +5,7 @@
 #include "ubolt/coo_pattern.hpp"
 #include "ubolt/phase_space.hpp"
 #include "ubolt/sn_quadrature.hpp"
+#include "ubolt/material_spec.hpp"
 #include <vector>
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -22,10 +23,16 @@ class PETSC_VISIBILITY_PUBLIC GroupXSections {
 public:
    PetscErrorCode create(const PhaseSpace &ps);
 
-   // Constant across the slab, which is all the current test problems need.
-   // Spatially varying data fills the views through the accessors below
+   // Constant across the slab, for problems with a single material.
+   // Spatially varying data comes in through set_from_materials, or fills the
+   // views through the accessors below
    PetscErrorCode set_sigma_t(PetscInt g, PetscScalar value);
    PetscErrorCode set_sigma_s(PetscInt g_from, PetscInt g_to, PetscScalar value);
+
+   // Expand a material table onto the cells: every group's sigma_t and every
+   // group pair's sigma_s, from each cell's painted material index (see
+   // MaterialSpec for where mat_id_d comes from)
+   PetscErrorCode set_from_materials(const MaterialSpec &mats, const PetscIntKokkosView &mat_id_d);
 
    // Total xsection for group g, indexed by local cell
    PetscScalarKokkosView sigma_t(PetscInt g) const;

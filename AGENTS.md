@@ -27,11 +27,18 @@ Codebase map
   `UboltAngularIntegral`, the shared angular integral; `BCSpec` (boundary label id →
   BC family {vacuum, reflect}, keyed the way DMPlex "Face Sets" ids are — the structured
   backends' `FACE_*` constants match PETSc's box-mesh convention, and each solve driver
-  exposes per-face `-bc_left`/`-bc_right`/... options); `Discretisation` (the backend
+  exposes per-face `-bc_left`/`-bc_right`/... options); `MaterialSpec` (BCSpec's sibling
+  for cell data: per-material, per-group xsections + external source, DENSE indices 0..n-1
+  because the tables reach device kernels — a DMPlex backend remaps "Cell Sets" labels to
+  indices at paint time; which cells are which material is geometry, painted per-backend
+  into a per-cell index view, then expanded through `GroupXSections::set_from_materials`
+  and `UboltFillSource`, so terms never learn materials exist; the solve drivers expose
+  `-n_regions` + `-region_<r>_*` options); `Discretisation` (the backend
   base: `create_matrix`, `coo_pattern`, `boundary_info`, `destroy`, `dm`, and
   `set_uniform_pattern` for a fixed-entries-per-row backend) with `StructuredFD1D` and
   `StructuredFD2D` under it (each owns a DMDA and through it the mesh, the cell-based
-  decomposition and the COO sparsity, and adds only its own geometry — `dx()`, `dy()`);
+  decomposition and the COO sparsity, and adds only its own geometry — `dx()`, `dy()`,
+  and the material painting, `paint_intervals` / `paint_boxes`);
   `OperatorTerm` and the `Streaming`/`Streaming2D`/`Removal`/`Scattering` terms,
   `GroupXSections` + `GroupTransfer` (multigroup xsection tables and the group-to-group
   source), `TransportOperator` (assembled terms in one matrix + matrix-free terms behind a

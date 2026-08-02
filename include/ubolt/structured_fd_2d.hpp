@@ -6,6 +6,13 @@
 #include "ubolt/phase_space.hpp"
 #include "ubolt/sn_quadrature.hpp"
 #include "ubolt/bc_spec.hpp"
+#include <vector>
+
+// An axis-aligned box of one material, for StructuredFD2D::paint_boxes
+struct PETSC_VISIBILITY_PUBLIC MaterialBox2D {
+   PetscScalar x0 = 0.0, x1 = 0.0, y0 = 0.0, y1 = 0.0;
+   PetscInt material = 0;
+};
 
 // Uniform-grid upwinded finite difference discretisation of a 2D (XY) box
 //
@@ -65,6 +72,15 @@ public:
    PetscInt cell_start_y() const { return cell_start_y_; }
    PetscInt local_cells_x() const { return local_cells_x_; }
    PetscInt local_cells_y() const { return local_cells_y_; }
+
+   // Paint material indices onto this rank's cells: the background everywhere,
+   // then the boxes in order with the later ones winning, membership decided by
+   // the cell CENTRE. Allocates mat_id_d sized local_cells - the per-cell
+   // material index view MaterialSpec's fill steps consume. The painting is
+   // the geometric half of the material split (see MaterialSpec), which is why
+   // it lives on the concrete backend
+   PetscErrorCode paint_boxes(PetscInt background_material, const std::vector<MaterialBox2D> &boxes, \
+      PetscIntKokkosView &mat_id_d) const;
 
 private:
    PetscScalar dx_ = 0.0;

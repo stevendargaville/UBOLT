@@ -100,6 +100,7 @@ OBJS := $(SRCDIR)/sn_quadraturek.o \
 		  $(SRCDIR)/discretisationk.o \
 		  $(SRCDIR)/structured_fd_1dk.o \
 		  $(SRCDIR)/structured_fd_2dk.o \
+		  $(SRCDIR)/material_speck.o \
 		  $(SRCDIR)/termsk.o \
 		  $(SRCDIR)/multigroupk.o \
 		  $(SRCDIR)/transport_operatork.o \

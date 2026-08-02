@@ -147,6 +147,8 @@ run_tests_short_serial:
 	./slab_1d_mgk -n_groups 4 -sigma_transfer 0.5 -max_exponent 2 -ksp_max_it 6 -ubolt_coo_two_call
 	@echo "Test 1D slab multigroup, reflective left face (right stays vacuum - the last group has ratio 1)"
 	./slab_1d_mgk -n_groups 4 -sigma_transfer 0.5 -max_exponent 2 -bc_left reflect -ksp_max_it 8
+	@echo "Test 1D slab multigroup, a double-density region painted mid-slab"
+	./slab_1d_mgk -n_groups 4 -sigma_transfer 0.5 -max_exponent 2 -n_regions 1 -region_1_interval 0.4,0.6 -region_1_density 2.0 -ksp_max_it 6
 #
 # 2D. verify_2dk is the discretisation check (closed form + reference matrix);
 # the box_2dk recipes pin iteration counts the same way the 1D ones do.
@@ -177,6 +179,15 @@ run_tests_short_serial:
 	./box_2dk -n_cells_x 50 -n_cells_y 50 -n_angles 12 -bc_left reflect -bc_bottom reflect -max_exponent 2 -sigma_scatter 1.0 -ksp_max_it 6
 	@echo "Test 2D box, all faces reflective against the infinite-medium solution"
 	./box_2dk -n_cells_x 50 -n_cells_y 50 -bc_left reflect -bc_right reflect -bc_bottom reflect -bc_top reflect -max_exponent 2 -sigma_scatter 1.0 -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 10
+#
+# Painted regions. The first recipe's regions carry the background values, so
+# it must land exactly where the uniform 50x50 recipe does - painting and
+# expansion change nothing but which table entry a cell reads. The second is a
+# genuinely heterogeneous pin: a sourceless absorber in a scattering box
+	@echo "Test 2D box, two regions equal to the background (painting identity)"
+	./box_2dk -n_cells_x 50 -n_cells_y 50 -max_exponent 2 -n_regions 2 -region_1_box 0.2,0.4,0.2,0.4 -region_2_box 0.5,0.9,0.1,0.3 -ksp_max_it 6
+	@echo "Test 2D box, an absorbing sourceless block painted mid-box"
+	./box_2dk -n_cells_x 50 -n_cells_y 50 -max_exponent 2 -sigma_scatter 1.0 -n_regions 1 -region_1_box 0.4,0.6,0.4,0.6 -region_1_sigma_t 10.0 -region_1_sigma_s 1.0 -region_1_source 0.0 -ksp_max_it 5
 
 # ~~~~~~~~~~~
 # ~~~~~~~~~~~
@@ -229,6 +240,16 @@ run_tests_short_parallel:
 	$(MPIEXEC) -n 2 ./box_2dk -n_cells_x 50 -n_cells_y 50 -bc_left reflect -bc_bottom reflect -max_exponent 2 -sigma_scatter 1.0 -ksp_max_it 6
 	@echo "Test 2D box, all faces reflective against the infinite-medium solution in parallel"
 	$(MPIEXEC) -n 2 ./box_2dk -n_cells_x 50 -n_cells_y 50 -bc_left reflect -bc_right reflect -bc_bottom reflect -bc_top reflect -max_exponent 2 -sigma_scatter 1.0 -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 10
+#
+# Painted regions in parallel. The identity runs at -n 4: painting maps cell
+# centres through the patch-lexicographic local ordering, and the 2D processor
+# grid is where that ordering is least like the natural one
+	@echo "Test 2D box, painting identity on a 2D processor grid"
+	$(MPIEXEC) -n 4 ./box_2dk -n_cells_x 50 -n_cells_y 50 -max_exponent 2 -n_regions 2 -region_1_box 0.2,0.4,0.2,0.4 -region_2_box 0.5,0.9,0.1,0.3 -ksp_max_it 6
+	@echo "Test 2D box, an absorbing sourceless block in parallel"
+	$(MPIEXEC) -n 2 ./box_2dk -n_cells_x 50 -n_cells_y 50 -max_exponent 2 -sigma_scatter 1.0 -n_regions 1 -region_1_box 0.4,0.6,0.4,0.6 -region_1_sigma_t 10.0 -region_1_sigma_s 1.0 -region_1_source 0.0 -ksp_max_it 5
+	@echo "Test 1D slab multigroup, a double-density region in parallel"
+	$(MPIEXEC) -n 2 ./slab_1d_mgk -n_groups 4 -sigma_transfer 0.5 -max_exponent 2 -n_regions 1 -region_1_interval 0.4,0.6 -region_1_density 2.0 -ksp_max_it 6
 
 # ~~~~~~~~~~~
 # ~~~~~~~~~~~

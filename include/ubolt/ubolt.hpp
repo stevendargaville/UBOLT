@@ -9,6 +9,7 @@
 #include "ubolt/phase_space.hpp"
 #include "ubolt/sn_quadrature.hpp"
 #include "ubolt/bc_spec.hpp"
+#include "ubolt/material_spec.hpp"
 #include "ubolt/coo_pattern.hpp"
 #include "ubolt/discretisation.hpp"
 #include "ubolt/structured_fd_1d.hpp"

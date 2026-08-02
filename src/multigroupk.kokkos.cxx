@@ -94,6 +94,80 @@ PetscErrorCode GroupXSections::set_sigma_s(PetscInt g_from, PetscInt g_to, Petsc
 }
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+// Free functions rather than local lambdas: an extended device lambda can't be
+// defined inside another lambda
+
+// Same range check as UboltFillSource's: a painted index outside the spec's
+// table would silently read garbage
+static void MaterialIdRange(const PetscIntKokkosView &mat_id_d, PetscInt local_cells, \
+   PetscInt *id_min, PetscInt *id_max)
+{
+   Kokkos::parallel_reduce(
+      Kokkos::RangePolicy<>(0, local_cells), KOKKOS_LAMBDA(PetscInt c, PetscInt &lmin, PetscInt &lmax) {
+
+         lmin = Kokkos::min(lmin, mat_id_d(c));
+         lmax = Kokkos::max(lmax, mat_id_d(c));
+      }, Kokkos::Min<PetscInt>(*id_min), Kokkos::Max<PetscInt>(*id_max));
+}
+
+// Cell is the parallel index and the fastest extent of both destinations, so
+// consecutive threads write consecutive cells; the group loops run inside
+static void FillFromMaterialsKernel(PetscScalar2DRightKokkosView sigma_t_d, \
+   PetscScalar3DRightKokkosView sigma_s_d, PetscScalarKokkosView sigma_t_tab_d, \
+   PetscScalarKokkosView sigma_s_tab_d, PetscIntKokkosView mat_id_d, PetscInt n_groups, \
+   PetscInt local_cells)
+{
+   Kokkos::parallel_for(
+      Kokkos::RangePolicy<>(0, local_cells), KOKKOS_LAMBDA(PetscInt c) {
+
+         const PetscInt m = mat_id_d(c);
+         for (PetscInt g = 0; g < n_groups; g++) {
+            sigma_t_d(g, c) = sigma_t_tab_d(m * n_groups + g);
+         }
+         for (PetscInt g_from = 0; g_from < n_groups; g_from++) {
+            for (PetscInt g_to = 0; g_to < n_groups; g_to++) {
+               sigma_s_d(g_from, g_to, c) = sigma_s_tab_d((m * n_groups + g_from) * n_groups + g_to);
+            }
+         }
+      });
+}
+
+PetscErrorCode GroupXSections::set_from_materials(const MaterialSpec &mats, const PetscIntKokkosView &mat_id_d)
+{
+   PetscInt id_min = 0, id_max = 0;
+
+   PetscFunctionBeginUser;
+
+   PetscCheck(mats.n_groups() == n_groups_, PETSC_COMM_SELF, PETSC_ERR_ARG_INCOMP, \
+      "the material spec has %" PetscInt_FMT " groups but the xsections have %" PetscInt_FMT, \
+      mats.n_groups(), n_groups_);
+   PetscCheck((PetscInt)mat_id_d.extent(0) == local_cells_, PETSC_COMM_SELF, PETSC_ERR_ARG_INCOMP, \
+      "material ids cover %" PetscInt_FMT " cells but there are %" PetscInt_FMT " local cells", \
+      (PetscInt)mat_id_d.extent(0), local_cells_);
+
+   MaterialIdRange(mat_id_d, local_cells_, &id_min, &id_max);
+   PetscCheck(id_min >= 0 && id_max < mats.n_materials(), PETSC_COMM_SELF, PETSC_ERR_ARG_OUTOFRANGE, \
+      "painted material indices span [%" PetscInt_FMT ", %" PetscInt_FMT "] but the spec has %" \
+      PetscInt_FMT " materials", id_min, id_max, mats.n_materials());
+
+   // The material tables are tiny, so upload them whole
+   PetscScalarKokkosView sigma_t_tab_d("sigma_t_tab_d", (PetscInt)mats.sigma_t_host().size());
+   PetscScalarKokkosView sigma_s_tab_d("sigma_s_tab_d", (PetscInt)mats.sigma_s_host().size());
+   PetscScalarKokkosViewHostUnmanaged sigma_t_tab_h( \
+      const_cast<PetscScalar *>(mats.sigma_t_host().data()), mats.sigma_t_host().size());
+   PetscScalarKokkosViewHostUnmanaged sigma_s_tab_h( \
+      const_cast<PetscScalar *>(mats.sigma_s_host().data()), mats.sigma_s_host().size());
+   Kokkos::deep_copy(sigma_t_tab_d, sigma_t_tab_h);
+   Kokkos::deep_copy(sigma_s_tab_d, sigma_s_tab_h);
+
+   FillFromMaterialsKernel(sigma_t_d_, sigma_s_d_, sigma_t_tab_d, sigma_s_tab_d, mat_id_d, \
+      n_groups_, local_cells_);
+
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 // GroupTransfer
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 

@@ -1,4 +1,5 @@
 #include "ubolt/structured_fd_1d.hpp"
+#include "petsc_kokkos.hpp"
 #include <petscdmda.h>
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -93,6 +94,7 @@ PetscErrorCode StructuredFD1D::create(MPI_Comm comm, PhaseSpace &ps, PetscReal l
    PetscCall(CreateDA(comm, ps, &dm_));
    // DMDAGetCorners divides the dof back out, so these come out in cells
    PetscCall(DMDAGetCorners(dm_, &cell_start, NULL, NULL, &local_cells, NULL, NULL));
+   cell_start_x_ = cell_start;
    ps.local_cells = local_cells;
    PetscCall(CheckDALayout(dm_, ps, cell_start));
 
@@ -211,6 +213,78 @@ PetscErrorCode StructuredFD1D::create(MPI_Comm comm, PhaseSpace &ps, PetscReal l
 
    // Slot maps - row r owns COO slots 2r (upwind neighbour) and 2r + 1 (diagonal)
    PetscCall(set_uniform_pattern(2, is_bc_row, reflect_slot));
+
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+// A free function rather than a local lambda: an extended device lambda can't
+// be defined inside another lambda. The interval list rides along as flat
+// views - coordinates as (x0, x1) pairs - because a view of structs is not
+// one of the typedefs types.hpp allows
+static void PaintIntervalsKernel(PetscIntKokkosView mat_id_d, PetscInt background_material, \
+   PetscScalarKokkosView interval_x_d, PetscIntKokkosView interval_material_d, PetscInt n_intervals, \
+   PetscInt cell_start_x, PetscScalar dx, PetscInt local_cells)
+{
+   Kokkos::parallel_for(
+      Kokkos::RangePolicy<>(0, local_cells), KOKKOS_LAMBDA(PetscInt c) {
+
+         // The centre of local cell c - node i sits at i dx
+         const PetscScalar xc = ((PetscScalar)(cell_start_x + c) + 0.5) * dx;
+
+         PetscInt m = background_material;
+         for (PetscInt s = 0; s < n_intervals; s++) {
+            if (xc >= interval_x_d(2 * s) && xc <= interval_x_d(2 * s + 1)) m = interval_material_d(s);
+         }
+         mat_id_d(c) = m;
+      });
+}
+
+// See the declaration for the painting rules (background, later intervals win,
+// membership by cell centre)
+PetscErrorCode StructuredFD1D::paint_intervals(PetscInt background_material, \
+   const std::vector<MaterialInterval1D> &intervals, PetscIntKokkosView &mat_id_d) const
+{
+   const PetscInt n_intervals = (PetscInt)intervals.size();
+
+   PetscFunctionBeginUser;
+
+   // We allocate device memory below, and PETSc brings Kokkos up lazily
+   PetscCall(PetscKokkosInitializeCheck());
+
+   PetscCall(ps_.check_decomposed());
+
+   PetscCheck(background_material >= 0, comm_, PETSC_ERR_ARG_OUTOFRANGE, \
+      "background material index %" PetscInt_FMT " is negative", background_material);
+   for (PetscInt s = 0; s < n_intervals; s++) {
+      PetscCheck(intervals[s].material >= 0, comm_, PETSC_ERR_ARG_OUTOFRANGE, \
+         "interval %" PetscInt_FMT "'s material index %" PetscInt_FMT " is negative", s, intervals[s].material);
+      PetscCheck(intervals[s].x0 <= intervals[s].x1, comm_, PETSC_ERR_ARG_OUTOFRANGE, \
+         "interval %" PetscInt_FMT " is inside out - give it as x0,x1 with x0 <= x1", s);
+   }
+
+   // Flatten the intervals for the device
+   std::vector<PetscScalar> interval_x(2 * n_intervals);
+   std::vector<PetscInt> interval_material(n_intervals);
+   for (PetscInt s = 0; s < n_intervals; s++) {
+      interval_x[2 * s]     = intervals[s].x0;
+      interval_x[2 * s + 1] = intervals[s].x1;
+      interval_material[s] = intervals[s].material;
+   }
+
+   PetscScalarKokkosView interval_x_d("interval_x_d", 2 * n_intervals);
+   PetscIntKokkosView interval_material_d("interval_material_d", n_intervals);
+   if (n_intervals > 0) {
+      PetscScalarKokkosViewHostUnmanaged interval_x_h(interval_x.data(), 2 * n_intervals);
+      PetscIntKokkosViewHostUnmanaged interval_material_h(interval_material.data(), n_intervals);
+      Kokkos::deep_copy(interval_x_d, interval_x_h);
+      Kokkos::deep_copy(interval_material_d, interval_material_h);
+   }
+
+   mat_id_d = PetscIntKokkosView("mat_id_d", ps_.local_cells);
+   PaintIntervalsKernel(mat_id_d, background_material, interval_x_d, interval_material_d, \
+      n_intervals, cell_start_x_, dx_, ps_.local_cells);
 
    PetscFunctionReturn(PETSC_SUCCESS);
 }
