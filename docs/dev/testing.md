@@ -427,6 +427,27 @@ Keep new recipes cheap by default. A 3D recipe wants a reason to be bigger than 
 the discretisation checks (`verify_2dk`/`verify_3dk`) make their point on 4x3x2 grids —
 resolution is not what a pinned iteration count or an operator comparison is testing.
 
+### The OpenMP job and rank/thread oversubscription
+The runners have 2 vCPUs and the OpenMP job sets `OMP_NUM_THREADS=2`, which is right for
+a serial recipe and wrong for every `mpiexec -n 2` one: 2 ranks x 2 threads is 4 threads
+on 2 cores, and the four `-n 4` recipes make it 8. Left alone that cost the job **862 s
+of test time against the opt job's 53 s** — the same build, the same problems, a 16x
+gap that lived entirely in the parallel recipes (the serial ones were, if anything,
+faster than opt).
+
+Two defaults compounded to produce it. OpenMPI confines each rank to a single core at
+small rank counts, so a rank's two threads shared one core; and libgomp spins at
+parallel-region barriers, so the descheduled thread burned that core rather than
+yielding. The result is a per-kernel-launch penalty, not a per-element one, which is why
+a 1D slab converging in one iteration took 36 s there against 0.2 s under opt, and why
+shrinking meshes barely moved that job while it cut the debug job nearly in half.
+
+`dockerfiles/Dockerfile_kokkos` now sets `OMPI_MCA_hwloc_base_binding_policy=none`,
+`OMP_PROC_BIND=false` and `OMP_WAIT_POLICY=PASSIVE`. The job still runs 2 threads per
+rank, so it still tests threaded execution under MPI; it just no longer pins them onto
+one core or spins while waiting. If a future recipe set makes that job the long pole
+again, the next lever is `OMP_NUM_THREADS=1`, which trades the threading coverage away.
+
 ## Adding a test problem
 1. Write a problem file in `tests/problems/` (schema: `docs/problem_files.md`,
    walkthrough: `docs/problem_setup.md`), with a `"_comment"` saying what it pins.
