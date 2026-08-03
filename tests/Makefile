@@ -132,6 +132,22 @@ run_tests_short_serial:
 	@echo "Test 1D slab, reflective face with one MatSetValuesCOO per term"
 	./transportk -problem problems/slab_st2_reflect_left.json -ksp_max_it 8 -ubolt_coo_two_call
 #
+# DSA. slab_diffusive.json is ten mean free paths per cell at a scattering
+# ratio of 0.99 - the regime nothing in the composite preconditioner addressed
+# before, so it is run BOTH ways and the pair is the demonstration. The
+# infinite-medium file is the correctness oracle (all-reflect, so every face is
+# a zero-Neumann one, and the solution is still checked against the exact
+# constant), and slab_st2 says DSA does not break an easy problem. Counts and
+# the pins' slack: ../docs/dev/testing.md
+	@echo "Test 1D slab, diffusive regime WITHOUT the DSA correction (the reference)"
+	./transportk -problem problems/slab_diffusive.json -ksp_max_it 21
+	@echo "Test 1D slab, diffusive regime with the DSA correction"
+	./transportk -problem problems/slab_diffusive.json -precon_dsa -ksp_max_it 12
+	@echo "Test 1D slab, DSA against the infinite-medium solution (all faces reflective)"
+	./transportk -problem problems/slab_inf_medium.json -precon_dsa -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 11
+	@echo "Test 1D slab, DSA on a problem that never needed it"
+	./transportk -problem problems/slab_st2.json -precon_dsa -ksp_max_it 6
+#
 # Multigroup. -ksp_max_it is a single pin for the whole sweep, so it is the MAX
 # over the groups - see ../docs/dev/testing.md. The uncoupled t0 file carries
 # Source 2.0, so each group's solve is byte-identical to slab_st2.json's
@@ -184,6 +200,29 @@ run_tests_short_serial:
 	@echo "Test 2D box, all faces reflective against the infinite-medium solution"
 	./transportk -problem problems/box_50_inf_medium.json -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 10
 #
+# DSA in 2D. box_diffusive.json is slab_diffusive.json's twin - the same ten
+# mean free paths per cell at a scattering ratio of 0.99, on a 50x50 box - so
+# it is run BOTH ways here too and the pair is the demonstration. The
+# infinite-medium file is the correctness oracle (all-reflect, so every face of
+# the diffusion operator is a zero-Neumann one, and the solution is still
+# checked against the exact constant) and st2 says DSA does not break an easy
+# problem. The last two pin the CLI generality rather than a regime: the
+# paper's additive combination is reachable because the shell goes in before
+# KSPSetFromOptions, and the inner solve is reachable under its own prefix.
+# Counts and the pins' slack: ../docs/dev/testing.md
+	@echo "Test 2D box, diffusive regime WITHOUT the DSA correction (the reference)"
+	./transportk -problem problems/box_diffusive.json -ksp_max_it 30
+	@echo "Test 2D box, diffusive regime with the DSA correction"
+	./transportk -problem problems/box_diffusive.json -precon_dsa -ksp_max_it 12
+	@echo "Test 2D box, DSA against the infinite-medium solution (all faces reflective)"
+	./transportk -problem problems/box_50_inf_medium.json -precon_dsa -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 11
+	@echo "Test 2D box, DSA on a problem that never needed it"
+	./transportk -problem problems/box_50_st2.json -precon_dsa -ksp_max_it 6
+	@echo "Test 2D box, DSA combined additively instead of multiplicatively (the paper's form)"
+	./transportk -problem problems/box_diffusive.json -precon_dsa -pc_composite_type additive -ksp_max_it 24
+	@echo "Test 2D box, option prefix reaches the DSA inner solve"
+	./transportk -problem problems/box_diffusive.json -precon_dsa -dsa_ksp_type cg -dsa_ksp_max_it 5 -ksp_max_it 12
+#
 # Painted regions. The identity file's regions carry the background values, so
 # it must land exactly where the uniform 50x50 recipe does - painting and
 # expansion change nothing but which table entry a cell reads. The overlap file
@@ -223,6 +262,26 @@ run_tests_short_serial:
 	./transportk -problem problems/cube_10_reflect_3faces.json -ksp_max_it 5
 	@echo "Test 3D cube, all faces reflective against the infinite-medium solution"
 	./transportk -problem problems/cube_10_inf_medium.json -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 10
+#
+# DSA in 3D. cube_diffusive.json is the third twin of slab_diffusive.json -
+# the same ten mean free paths per cell at a scattering ratio of 0.99 - so it
+# is run BOTH ways here too and the pair is the demonstration. The
+# infinite-medium file is the correctness oracle and st2 says DSA does not
+# break an easy problem, the same two roles they play in 1D and 2D. The
+# yreflect file is the FACE CONVENTION pin, and the only recipe that can catch
+# a y/z mix-up: reflective Y faces on an anisotropic box, where swapping the
+# axes in the diffusion operator costs three iterations. Counts and the pins'
+# slack: ../docs/dev/testing.md
+	@echo "Test 3D cube, diffusive regime WITHOUT the DSA correction (the reference)"
+	./transportk -problem problems/cube_diffusive.json -ksp_max_it 22
+	@echo "Test 3D cube, diffusive regime with the DSA correction"
+	./transportk -problem problems/cube_diffusive.json -precon_dsa -ksp_max_it 11
+	@echo "Test 3D cube, DSA against the infinite-medium solution (all faces reflective)"
+	./transportk -problem problems/cube_10_inf_medium.json -precon_dsa -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 10
+	@echo "Test 3D cube, DSA on a problem that never needed it"
+	./transportk -problem problems/cube_10_st2.json -precon_dsa -ksp_max_it 5
+	@echo "Test 3D cube, DSA with reflective Y faces on an anisotropic box (the face convention)"
+	./transportk -problem problems/cube_diffusive_yreflect.json -precon_dsa -ksp_max_it 11
 	@echo "Test 3D cube, two regions equal to the background (painting identity)"
 	./transportk -problem problems/cube_10_identity.json -ksp_max_it 5
 	@echo "Test 3D cube, overlapping paint boxes (later paint wins)"
@@ -251,6 +310,12 @@ run_tests_short_parallel:
 	$(MPIEXEC) -n 2 ./transportk -problem problems/slab_st2.json -ksp_max_it 6 -ubolt_coo_two_call
 	@echo "Test 1D slab, all faces reflective against the infinite-medium solution in parallel"
 	$(MPIEXEC) -n 2 ./transportk -problem problems/slab_inf_medium.json -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 11
+	@echo "Test 1D slab, diffusive regime without the DSA correction in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/slab_diffusive.json -ksp_max_it 21
+	@echo "Test 1D slab, diffusive regime with the DSA correction in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/slab_diffusive.json -precon_dsa -ksp_max_it 11
+	@echo "Test 1D slab, DSA against the infinite-medium solution in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/slab_inf_medium.json -precon_dsa -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 11
 	@echo "Test 1D slab multigroup, 4 groups with downscatter in parallel"
 	$(MPIEXEC) -n 2 ./transportk -problem problems/slab_mg4_t05.json -ksp_max_it 6
 	@echo "Test 1D slab multigroup, streaming-only pmat in parallel"
@@ -285,6 +350,12 @@ run_tests_short_parallel:
 	$(MPIEXEC) -n 2 ./transportk -problem problems/box_50_reflect_lb.json -ksp_max_it 6
 	@echo "Test 2D box, all faces reflective against the infinite-medium solution in parallel"
 	$(MPIEXEC) -n 2 ./transportk -problem problems/box_50_inf_medium.json -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 10
+	@echo "Test 2D box, diffusive regime without the DSA correction in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/box_diffusive.json -ksp_max_it 30
+	@echo "Test 2D box, diffusive regime with the DSA correction in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/box_diffusive.json -precon_dsa -ksp_max_it 12
+	@echo "Test 2D box, DSA against the infinite-medium solution in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/box_50_inf_medium.json -precon_dsa -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 11
 #
 # Painted regions in parallel. The identity runs at -n 4: painting maps cell
 # centres through the patch-lexicographic local ordering, and the 2D processor
@@ -324,6 +395,12 @@ run_tests_short_parallel:
 	$(MPIEXEC) -n 2 ./transportk -problem problems/cube_10_reflect_3faces.json -ksp_max_it 5
 	@echo "Test 3D cube, all faces reflective against the infinite-medium solution in parallel"
 	$(MPIEXEC) -n 2 ./transportk -problem problems/cube_10_inf_medium.json -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 10
+	@echo "Test 3D cube, diffusive regime without the DSA correction in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/cube_diffusive.json -ksp_max_it 22
+	@echo "Test 3D cube, diffusive regime with the DSA correction in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/cube_diffusive.json -precon_dsa -ksp_max_it 11
+	@echo "Test 3D cube, DSA against the infinite-medium solution in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/cube_10_inf_medium.json -precon_dsa -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 10
 	@echo "Test 3D cube, painting identity on a 2D processor grid"
 	$(MPIEXEC) -n 4 ./transportk -problem problems/cube_10_identity.json -ksp_max_it 5
 	@echo "Test 3D cube, an absorbing sourceless block in parallel"

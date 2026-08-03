@@ -1,0 +1,29 @@
+{
+ "_comment": "2D box in the DIFFUSIVE regime, the 2D twin of slab_diffusive.json: Sigma_t 100 over cells of width 0.1, so ten mean free paths per cell, with a scattering ratio of 0.99. This is the regime the removal + AIR composite has nothing to say about and the DSA diffusion correction does - it is the problem the 2D -precon_dsa pins are measured on. 50x50 keeps it CI-sized. All four faces vacuum, so the diffusion operator is nonsingular whatever the ratio.",
+ "dimension": 2,
+ "mesh": {
+  "n_cells": [50, 50],
+  "lengths": [5.0, 5.0]
+ },
+ "sn_order": 4,
+ "materials": {
+  "n_groups": 1,
+  "materials": [
+   {
+    "id": 0,
+    "name": "diffusive",
+    "Sigma_t": [100.0],
+    "Sigma_s": [
+     [99.0]
+    ],
+    "Source": [1.0]
+   }
+  ]
+ },
+ "boundary_conditions": {
+  "left": "vacuum",
+  "right": "vacuum",
+  "bottom": "vacuum",
+  "top": "vacuum"
+ }
+}

@@ -13,7 +13,7 @@ Codebase map
   `tests/transportk.kokkos.cxx`: THE solve driver, any dimension and group count — all
   physics comes from `-problem <file.json>` (schema: `docs/problem_files.md`), the CLI
   keeps only PETSc options and the strategy/verification knobs (`-precon_stream`,
-  `-diag_scale`, `-check_inf_medium`, `-flux_vtk` override). It is also where the group
+  `-precon_dsa`, `-diag_scale`, `-check_inf_medium`, `-flux_vtk` override). It is also where the group
   Gauss-Seidel sweep lives, until a second sweep strategy justifies promoting it into
   the library. It replaced the per-problem drivers (`slab_1dk`, `slab_1d_mgk`,
   `box_2dk`) in Aug 2026, verified byte-for-byte against all 24 baselines first.
@@ -61,7 +61,14 @@ Codebase map
   `GroupXSections` + `GroupTransfer` (multigroup xsection tables and the group-to-group
   source), `TransportOperator` (assembled terms in one matrix + matrix-free terms behind a
   MatShell), `TransportSolver` (KSP + the composite PC, plus `refresh()` for what the PC
-  caches off the assembled matrix), `UboltWriteScalarFluxVTK` (the scalar flux of a
+  caches off the assembled matrix), `DSAPrecon` (the OPTIONAL diffusion-synthetic
+  acceleration stage of that composite, index 2 behind `-precon_dsa` — a cell-centred
+  diffusion operator on the same grid, restricted from and prolonged back onto the
+  ordinates, inverted inexactly under the `dsa_` prefix; NOT an `OperatorTerm`, it
+  preconditions rather than contributes, and it is caller-owned with a per-group
+  `set_group()` the driver makes because the solver has no group context. Geometry, so
+  per-dimension `create` overloads like the streaming term),
+  `UboltWriteScalarFluxVTK` (the scalar flux of a
   solution, plus any extra per-cell fields the caller hands over as `UboltCellField`s —
   the driver passes the group's `sigma_t` and its `source`, the latter expanded onto the
   cells by `UboltFillCellSource` — written through PETSc's VTK viewer onto a dof-1 twin
