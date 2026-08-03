@@ -223,6 +223,30 @@ run_tests_short_serial:
 	@echo "Test 2D box, option prefix reaches the DSA inner solve"
 	./transportk -problem problems/box_diffusive.json -precon_dsa -dsa_ksp_type cg -dsa_ksp_max_it 5 -ksp_max_it 12
 #
+# DSA literature benchmarks - heterogeneous regimes none of the pins above
+# reach. The crooked pipe is a strongly discontinuous diffusion coefficient
+# through the harmonic face mean (Southworth et al. Table I set 2), the layers
+# alternate thick/thin (the Warsa mixed regime), the lattice is ratio exactly
+# 1 with painted pure absorbers, and random8 is a fixed-seed blockwise random
+# mix. Each runs both ways and the pair is the demonstration, like the
+# diffusive pair above. Counts and provenance: ../docs/dev/testing.md
+	@echo "Test 2D crooked pipe benchmark WITHOUT the DSA correction (the reference)"
+	./transportk -problem problems/box_crooked_pipe.json -ksp_max_it 118
+	@echo "Test 2D crooked pipe benchmark with the DSA correction"
+	./transportk -problem problems/box_crooked_pipe.json -precon_dsa -ksp_max_it 72
+	@echo "Test 2D layered thick/thin benchmark WITHOUT the DSA correction (the reference)"
+	./transportk -problem problems/box_layers.json -ksp_max_it 26
+	@echo "Test 2D layered thick/thin benchmark with the DSA correction"
+	./transportk -problem problems/box_layers.json -precon_dsa -ksp_max_it 14
+	@echo "Test 2D lattice benchmark WITHOUT the DSA correction (the reference)"
+	./transportk -problem problems/box_lattice.json -ksp_max_it 10
+	@echo "Test 2D lattice benchmark with the DSA correction"
+	./transportk -problem problems/box_lattice.json -precon_dsa -ksp_max_it 6
+	@echo "Test 2D random-media benchmark WITHOUT the DSA correction (the reference)"
+	./transportk -problem problems/box_random8.json -ksp_max_it 28
+	@echo "Test 2D random-media benchmark with the DSA correction"
+	./transportk -problem problems/box_random8.json -precon_dsa -ksp_max_it 12
+#
 # Painted regions. The identity file's regions carry the background values, so
 # it must land exactly where the uniform 50x50 recipe does - painting and
 # expansion change nothing but which table entry a cell reads. The overlap file
@@ -356,6 +380,22 @@ run_tests_short_parallel:
 	$(MPIEXEC) -n 2 ./transportk -problem problems/box_diffusive.json -precon_dsa -ksp_max_it 12
 	@echo "Test 2D box, DSA against the infinite-medium solution in parallel"
 	$(MPIEXEC) -n 2 ./transportk -problem problems/box_50_inf_medium.json -precon_dsa -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 11
+	@echo "Test 2D crooked pipe benchmark without the DSA correction in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/box_crooked_pipe.json -ksp_max_it 91
+	@echo "Test 2D crooked pipe benchmark with the DSA correction in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/box_crooked_pipe.json -precon_dsa -ksp_max_it 70
+	@echo "Test 2D layered thick/thin benchmark without the DSA correction in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/box_layers.json -ksp_max_it 26
+	@echo "Test 2D layered thick/thin benchmark with the DSA correction in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/box_layers.json -precon_dsa -ksp_max_it 13
+	@echo "Test 2D lattice benchmark without the DSA correction in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/box_lattice.json -ksp_max_it 10
+	@echo "Test 2D lattice benchmark with the DSA correction in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/box_lattice.json -precon_dsa -ksp_max_it 6
+	@echo "Test 2D random-media benchmark without the DSA correction in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/box_random8.json -ksp_max_it 28
+	@echo "Test 2D random-media benchmark with the DSA correction in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/box_random8.json -precon_dsa -ksp_max_it 12
 #
 # Painted regions in parallel. The identity runs at -n 4: painting maps cell
 # centres through the patch-lexicographic local ordering, and the 2D processor

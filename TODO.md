@@ -582,6 +582,34 @@ previous one's verification has passed and been reviewed.
     is exactly the streaming-only-pmat direction, so the two land on each other.
   - Also open: region masking for voids (`sigma_t <= 0` is a hard error today, as in the
     paper's future work), and per-group cached Mat/KSP instead of one refilled pair.
+  - **Literature benchmark study run (Aug 2026)** — six studies (crooked pipe per
+    Southworth/Holec/Haut NSE 195, Warsa-style periodic horizontal interface, Brunner-style
+    lattice, per-realization random media, Larsen diffusion-limit epsilon sweep, and the
+    well-behaved classics: Adams-Larsen homogeneous ratio sweep + Castrianni-Adams
+    iron-water), ~230 serial runs, report + reproduce harness at
+    `~/postdoc/documents/transport dsa paper/dsa_benchmarks_report.pdf` /
+    `reproduce_dsa_benchmarks.py`. Headlines: the multiplicative composite beats the
+    classic sweep+DSA yardstick (rho = 0.2247c) by ~1.6x on the classics and is flat
+    across eight decades of crooked-pipe heterogeneity with NO robustness cliff anywhere;
+    where the no-DSA composite fails outright (diffusion limit below eps 1e-2, crooked
+    pipe at cdt >= 1e3, 100-mfp interface layers) the DSA stage is what makes the problem
+    solvable; random media are a strength (2.5x flat reduction, seed-to-seed spread
+    compressed from ~20% to <= 2 iterations). The additive composite lost every one of
+    100+ paired comparisons — settled as non-viable here.
+  - **The discretisation-consistent D is now the top open item, with targets in three
+    regimes**: the epsilon sweep doubles per decade below 1e-2 (67 at eps 1e-4, 64^2)
+    where Haut et al.'s O(eps) theory says flat; the crooked-pipe level is ~80 vs the
+    paper's ~30; and the E4 exact-LU cross-check is a null result in the worst corner
+    (222 -> 225 on set 5, sigma_a = 0), so the bottleneck is the correction's fidelity,
+    NOT GAMG-on-the-diffusion-matrix — the paper's central AMG-failure mode does not
+    reproduce on the cell-centred operator. If consistent-D does not close the gap, a
+    heterogeneous-DSA-style variant (precondition only the thick region) is the fallback.
+  - Four benchmark problems promoted to pinned recipes (`box_crooked_pipe`, `box_layers`,
+    `box_lattice`, `box_random8`, serial + np2 in `tests_short`, measured on the local
+    opt arch, +1 slack) — **CI-arch sweep pending**, same flag as the DSA pins above.
+    These files plus the external sweep set are the fixed benchmark suite for the Phase-5
+    streaming/removal-separation comparison, the Phase-6 unstructured backends, and
+    future parallel/GPU (LUMI) runs.
 - **Single assembled streaming matrix across all groups** (Phase 5 direction): apply
   removal + scatter matrix-free so only one assembled matrix is stored for all energy
   groups. Open question: an effective preconditioner for streaming-only pmat when removal

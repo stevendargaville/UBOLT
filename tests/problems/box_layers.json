@@ -1,0 +1,107 @@
+{
+ "_comment": "Periodic-horizontal-interface literature benchmark (2D FD analog of Warsa/Wareing/Morel NSE 147 (2004)): ten 0.1-layers alternating thick sigma_t=100 c=0.99 and thin sigma_t=0.01 c=0.99, uniform source. Pins the mixed thick/thin regime where DSA classically degrades.",
+ "dimension": 2,
+ "mesh": {
+  "n_cells": [
+   40,
+   40
+  ],
+  "lengths": [
+   1.0,
+   1.0
+  ]
+ },
+ "sn_order": 4,
+ "materials": {
+  "n_groups": 1,
+  "materials": [
+   {
+    "id": 0,
+    "name": "thick",
+    "Sigma_t": [
+     100.0
+    ],
+    "Sigma_s": [
+     [
+      99.0
+     ]
+    ],
+    "Source": [
+     1.0
+    ]
+   },
+   {
+    "id": 1,
+    "name": "thin",
+    "Sigma_t": [
+     0.01
+    ],
+    "Sigma_s": [
+     [
+      0.0099
+     ]
+    ],
+    "Source": [
+     1.0
+    ]
+   }
+  ]
+ },
+ "regions": {
+  "background": 0,
+  "paint": [
+   {
+    "material": "thin",
+    "box": [
+     0.0,
+     1.0,
+     0.1,
+     0.2
+    ]
+   },
+   {
+    "material": "thin",
+    "box": [
+     0.0,
+     1.0,
+     0.3,
+     0.4
+    ]
+   },
+   {
+    "material": "thin",
+    "box": [
+     0.0,
+     1.0,
+     0.5,
+     0.6
+    ]
+   },
+   {
+    "material": "thin",
+    "box": [
+     0.0,
+     1.0,
+     0.7,
+     0.8
+    ]
+   },
+   {
+    "material": "thin",
+    "box": [
+     0.0,
+     1.0,
+     0.9,
+     1.0
+    ]
+   }
+  ]
+ },
+ "boundary_conditions": {
+  "left": "vacuum",
+  "right": "vacuum",
+  "bottom": "vacuum",
+  "top": "vacuum"
+ },
+ "inflow": 0.0
+}

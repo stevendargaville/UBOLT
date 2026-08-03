@@ -495,6 +495,31 @@ when, it is given a DSA, before `KSPSetFromOptions` so `-pc_use_amat false`
 still wins. Without a DSA nothing changes, which is why all 24 baselines still
 reproduce byte-for-byte.
 
+### Literature benchmark pins
+
+Four 2D problems replicate configurations from the DSA literature and pin the
+heterogeneous regimes nothing above reaches. Full parameter sweeps, the source
+papers' own numbers and the deviations from them live in the external report
+(`dsa_benchmarks_report.pdf` + `reproduce_dsa_benchmarks.py` in the transport
+dsa paper directory, which also generated `box_random8.json` — its `_comment`
+records the seed and draw order, so the file is reproducible from the harness
+alone). Each runs both ways, reference and `-precon_dsa`, serial and `-n 2`,
+in `run_tests_short_*`; all four cost ~1 s serial.
+
+| problem | regime pinned | np=1 | np=2 |
+|---|---|---|---|
+| `box_crooked_pipe.json` (28x20) | discontinuous D through the harmonic face mean (Southworth et al. crooked pipe, Table I set 2) | 117 / 71 | 90 / 69 |
+| `box_layers.json` (40x40) | alternating thick/thin layers (the Warsa mixed regime) | 25 / 13 | 25 / 12 |
+| `box_lattice.json` (56x56) | scattering ratio exactly 1 with painted pure absorbers | 9 / 5 | 9 / 5 |
+| `box_random8.json` (32x32) | fixed-seed blockwise random thick/thin/absorber mix | 27 / 11 | 27 / 11 |
+
+Counts are reference / `-precon_dsa`; the pins sit at measured + 1 like the
+other DSA pins (PCGAMG/PCAIR slack). The crooked pipe is the one file whose
+reference count moves with the rank count (117 vs 90 — PCAIR on a strongly
+heterogeneous operator), so its serial and parallel pins differ. These were
+measured on the local **opt** arch only and have **not been swept over the CI
+arches** — same pending flag as the DSA pins above.
+
 ### Checks that are not recipes
 A recipe passes on exit 0, so the two guards are checked BY HAND:
 
