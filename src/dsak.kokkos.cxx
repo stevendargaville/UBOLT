@@ -81,6 +81,29 @@ PetscErrorCode DSAPrecon::create(MPI_Comm comm, const PhaseSpace &ps, const Stru
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
+// 2D: two axes of geometry, and the four faces of the box. CAREFUL with the
+// face names - in 2D bottom/top are the Y faces, where in 3D they are the Z
+// ones (PETSc's box-mesh convention)
+PetscErrorCode DSAPrecon::create(MPI_Comm comm, const PhaseSpace &ps, const StructuredFD2D &disc, \
+   const AngularQuadrature &quad, const BCSpec &bcs)
+{
+   PetscFunctionBeginUser;
+
+   dim_ = 2;
+   h_[0] = disc.dx();
+   h_[1] = disc.dy();
+   vacuum_lo_[0] = (PetscBool)(bcs.type(StructuredFD2D::FACE_LEFT) == BCType::VACUUM);
+   vacuum_hi_[0] = (PetscBool)(bcs.type(StructuredFD2D::FACE_RIGHT) == BCType::VACUUM);
+   vacuum_lo_[1] = (PetscBool)(bcs.type(StructuredFD2D::FACE_BOTTOM) == BCType::VACUUM);
+   vacuum_hi_[1] = (PetscBool)(bcs.type(StructuredFD2D::FACE_TOP) == BCType::VACUUM);
+
+   PetscCall(create_common(comm, ps, disc, quad));
+
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
 PetscErrorCode DSAPrecon::create_common(MPI_Comm comm, const PhaseSpace &ps, \
    const Discretisation &disc, const AngularQuadrature &quad)
 {

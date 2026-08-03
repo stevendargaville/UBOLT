@@ -6,7 +6,7 @@
 // single-group problem, so there is no separate driver for it
 //
 // Strategy knobs: -precon_stream (precondition with a streaming-only pmat),
-// -precon_dsa (add the DSA diffusion correction to the composite, 1D only so
+// -precon_dsa (add the DSA diffusion correction to the composite, 1D and 2D so
 // far - its inner solve takes the -dsa_ prefix), -diag_scale, and the
 // verification ones, -check_inf_medium and the -flux_vtk output override
 //
@@ -176,7 +176,7 @@ int main(int argc, char **args) {
       // The DSA diffusion correction, if it was asked for. Per-dimension, like
       // the streaming term and for the same reason - it is built from the
       // geometry - so it goes here while the concrete backend is still in
-      // scope. Only 1D is wired today
+      // scope. 1D and 2D are wired today
       //
       // CAREFUL with -diag_scale: the two are mechanically compatible, but
       // scaling the assembled operator breaks the R A P consistency the
@@ -186,6 +186,8 @@ int main(int argc, char **args) {
       DSAPrecon dsa;
       if (precon_dsa) {
          if (spec.dimension == 1) PetscCall(dsa.create(PETSC_COMM_WORLD, ps, disc_1d, \
+            *quad, spec.bcs));
+         else if (spec.dimension == 2) PetscCall(dsa.create(PETSC_COMM_WORLD, ps, disc_2d, \
             *quad, spec.bcs));
          else SETERRQ(PETSC_COMM_WORLD, PETSC_ERR_SUP, \
             "-precon_dsa has no backend for dimension %" PetscInt_FMT " yet", spec.dimension);

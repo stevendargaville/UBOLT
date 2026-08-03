@@ -200,6 +200,29 @@ run_tests_short_serial:
 	@echo "Test 2D box, all faces reflective against the infinite-medium solution"
 	./transportk -problem problems/box_50_inf_medium.json -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 10
 #
+# DSA in 2D. box_diffusive.json is slab_diffusive.json's twin - the same ten
+# mean free paths per cell at a scattering ratio of 0.99, on a 50x50 box - so
+# it is run BOTH ways here too and the pair is the demonstration. The
+# infinite-medium file is the correctness oracle (all-reflect, so every face of
+# the diffusion operator is a zero-Neumann one, and the solution is still
+# checked against the exact constant) and st2 says DSA does not break an easy
+# problem. The last two pin the CLI generality rather than a regime: the
+# paper's additive combination is reachable because the shell goes in before
+# KSPSetFromOptions, and the inner solve is reachable under its own prefix.
+# Counts and the pins' slack: ../docs/dev/testing.md
+	@echo "Test 2D box, diffusive regime WITHOUT the DSA correction (the reference)"
+	./transportk -problem problems/box_diffusive.json -ksp_max_it 30
+	@echo "Test 2D box, diffusive regime with the DSA correction"
+	./transportk -problem problems/box_diffusive.json -precon_dsa -ksp_max_it 12
+	@echo "Test 2D box, DSA against the infinite-medium solution (all faces reflective)"
+	./transportk -problem problems/box_50_inf_medium.json -precon_dsa -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 11
+	@echo "Test 2D box, DSA on a problem that never needed it"
+	./transportk -problem problems/box_50_st2.json -precon_dsa -ksp_max_it 6
+	@echo "Test 2D box, DSA combined additively instead of multiplicatively (the paper's form)"
+	./transportk -problem problems/box_diffusive.json -precon_dsa -pc_composite_type additive -ksp_max_it 24
+	@echo "Test 2D box, option prefix reaches the DSA inner solve"
+	./transportk -problem problems/box_diffusive.json -precon_dsa -dsa_ksp_type cg -dsa_ksp_max_it 5 -ksp_max_it 12
+#
 # Painted regions. The identity file's regions carry the background values, so
 # it must land exactly where the uniform 50x50 recipe does - painting and
 # expansion change nothing but which table entry a cell reads. The overlap file
@@ -307,6 +330,12 @@ run_tests_short_parallel:
 	$(MPIEXEC) -n 2 ./transportk -problem problems/box_50_reflect_lb.json -ksp_max_it 6
 	@echo "Test 2D box, all faces reflective against the infinite-medium solution in parallel"
 	$(MPIEXEC) -n 2 ./transportk -problem problems/box_50_inf_medium.json -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 10
+	@echo "Test 2D box, diffusive regime without the DSA correction in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/box_diffusive.json -ksp_max_it 30
+	@echo "Test 2D box, diffusive regime with the DSA correction in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/box_diffusive.json -precon_dsa -ksp_max_it 12
+	@echo "Test 2D box, DSA against the infinite-medium solution in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/box_50_inf_medium.json -precon_dsa -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 11
 #
 # Painted regions in parallel. The identity runs at -n 4: painting maps cell
 # centres through the patch-lexicographic local ordering, and the 2D processor

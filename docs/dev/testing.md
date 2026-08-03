@@ -386,13 +386,16 @@ before the 2026-08-02 resize, and have not been re-measured at 10^3.
 diffusion operator on the same grid, restricted from and prolonged back onto the
 ordinates (`include/ubolt/dsa.hpp`). It is off by default, so every recipe,
 count and baseline above is untouched — the DSA recipes below are NEW pins.
-**1D only so far**; the 2D and 3D `create` overloads land with their own stages.
+**1D and 2D so far**; the 3D `create` overload lands with its own stage.
 
 The regime it exists for is the one nothing else in the preconditioner
-addresses, and which no test problem demonstrated until now:
-`slab_diffusive.json` is 100 cells over a length of 10 with `Sigma_t 100` — ten
-mean free paths per cell — at a scattering ratio of 0.99. Both faces vacuum, so
-the diffusion operator is nonsingular whatever the ratio.
+addresses, and which no test problem demonstrated until now. The diffusive
+problem files are deliberately the same physics in every dimension — `Sigma_t
+100` over cells of width 0.1, so ten mean free paths per cell, at a scattering
+ratio of 0.99, every face vacuum so the diffusion operator is nonsingular
+whatever the ratio: `slab_diffusive.json` is 100 cells over a length of 10,
+`box_diffusive.json` 50x50 over 5x5 (S4, so 12 ordinates). Only the dimension
+changes between them, which is what makes the counts comparable.
 
 | config | np=1 | np=2 |
 |---|---|---|
@@ -400,14 +403,36 @@ the diffusion operator is nonsingular whatever the ratio.
 | 1D diffusive slab, `-precon_dsa` | 11 | 10 |
 | 1D all-reflect infinite medium, `-precon_dsa` (rtol 1e-12) | 10 | 10 |
 | 1D slab st=2, `-precon_dsa` | 5 | 5 |
+| 2D diffusive box, no DSA (the reference) | 29 | 29 |
+| 2D diffusive box, `-precon_dsa` | 11 | 11 |
+| 2D diffusive box, `-precon_dsa -pc_composite_type additive` | 23 | 23 |
+| 2D diffusive box, `-precon_dsa -dsa_ksp_type cg -dsa_ksp_max_it 5` | 11 | 11 |
+| 2D all-reflect infinite medium, `-precon_dsa` (rtol 1e-12) | 10 | 10 |
+| 2D box st=2, `-precon_dsa` | 5 | 5 |
 
-Read the first two rows together: that pair IS the test, and roughly halving the
-count is what the correction buys. The last two rows say DSA does not break what
-already worked — st=2 goes 6 to 5, and the infinite medium goes 10/11 to 10/10
-while still landing on the exact constant (2.3e-13 serial, 7.1e-12 at np=2,
-against the 1e-9 tolerance). That run is also the reflective-branch check: every
-face reflective means every face is a zero-Neumann one in the diffusion
-operator, and the singularity guard is satisfied by the file's absorption.
+Read each dimension's first two rows together: that pair IS the test, and
+halving the count (20 to 11 in 1D, 29 to 11 in 2D) is what the correction buys.
+The 2D reference count is the higher of the two and the corrected count is the
+same, so what the correction removes is exactly the part that got worse with
+dimension — which is the claim DSA makes.
+
+The remaining rows say DSA does not break what already worked — 1D st=2 goes
+6 to 5 and 2D st=2 7 to 5, and the infinite media still land on the exact
+constant (1D 2.3e-13 serial and 7.1e-12 at np=2, 2D 3.4e-14 and 8.3e-14,
+against the 1e-9 tolerance). Those runs are also the reflective-branch check:
+every face reflective means every face is a zero-Neumann one in the diffusion
+operator, and the singularity guard is satisfied by the files' absorption. The
+2D solution is unchanged by the correction, as it must be — `box_50_st2.json`
+at rtol 1e-12 agrees to 1.3e-12 relative with and without `-precon_dsa`.
+
+The two 2D generality rows pin the CLI rather than a regime. The shell is added
+to the composite BEFORE `KSPSetFromOptions`, so the paper's additive
+combination is just `-pc_composite_type additive` (slower here — 23 against 11
+— which is why multiplicative is the default order, but it must keep working),
+and the inner diffusion solve is reachable under its own prefix, so
+`-dsa_ksp_type cg -dsa_ksp_max_it 5` replaces the single PCGAMG application
+with five CG iterations. That buys nothing on this problem (11 either way), and
+that is the point: the default inexact solve is already enough.
 
 **These pins have not been swept over the CI arches yet**, and unlike the 3D
 pins they carry one iteration of deliberate slack (measured count + 1) rather
@@ -415,8 +440,9 @@ than sitting on the measured number: PCGAMG is new to this test matrix and its
 aggregation is the most arch-sensitive thing in the suite. The table above is
 the reference measurement, so a later sweep can tighten the pins onto it.
 
-`-precon_stream` + `-precon_dsa` on the diffusive slab does not converge in 300
-iterations — but neither does `-precon_stream` alone there. A streaming-only
+`-precon_stream` + `-precon_dsa` on the diffusive problems does not converge in
+300 iterations — but neither does `-precon_stream` alone there, in 1D or 2D. A
+streaming-only
 pmat against `Sigma_t 100` is the pre-existing strong-removal problem (the
 Phase 5 open question in `TODO.md`), not something DSA made worse or was
 expected to fix; the correction is added to a preconditioner that is already
