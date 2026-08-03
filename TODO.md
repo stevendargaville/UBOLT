@@ -528,13 +528,42 @@ previous one's verification has passed and been reviewed.
   proportional to `sigma_s`, which is why the ratio looked like the variable, and it broke
   the boundary rows, which is why the shape of the boundary mattered. With the fix every
   one of those shapes converges in 5 to 7 iterations, mesh independently: 60x30 -> 6 and
-  120x60 -> 7; 200x50 in a 1x0.25 box -> 5; S4 at 100x100 -> 6, down from 87. There is
-  still no DSA and a genuinely diffusive problem will still want one, but nothing in the
-  current test set demonstrates that — the lesson is to suspect the operator before the
-  preconditioner when a count depends on something the operator should not care about.
+  120x60 -> 7; 200x50 in a 1x0.25 box -> 5; S4 at 100x100 -> 6, down from 87. The lesson
+  is to suspect the operator before the preconditioner when a count depends on something
+  the operator should not care about. (The "there is still no DSA, and nothing in the
+  test set demonstrates the regime that wants one" half of this note is now closed —
+  see the DSA note below.)
   `-sigma_scatter`, added to `box_2dk` to investigate this, survives the driver
   unification as a problem file's independent `Sigma_s`: varying the ratio
   independently of `Sigma_t` is worth having.
+- **DSA, the diffusion half of the preconditioner** (Dargaville et al., JCP 518 (2024)
+  113342, Section 3) — LANDED for 1D as `DSAPrecon` behind `-precon_dsa`, off by default;
+  2D and 3D are the following stages. `G^-1 = P . D_diff^-1 . R`: masked 0th-moment
+  restriction, a cell-centred `-div(D grad phi) + sigma_a phi` on the same grid (harmonic
+  face D, Marshak on vacuum faces, zero Neumann on reflective ones), isotropic
+  prolongation scaled by `1/sum_weights`. Inverted inexactly, KSPPREONLY + PCGAMG under
+  the `dsa_` prefix (the paper's single BoomerAMG V-cycle is `-dsa_pc_type hypre` where
+  hypre exists; the CI images have none). Sits at composite index 2, so the paper's
+  additive combination is `-pc_composite_type additive` on the CLI.
+  Findings so far, the baseline for the Phase-5-adjacent strategy work:
+  - `slab_diffusive.json` (ten mean free paths per cell, ratio 0.99, the first problem in
+    the test set that is genuinely diffusive) goes **20 -> 11 iterations serial and
+    20 -> 10 at np=2**. Easy problems are not hurt: 1D st=2 goes 6 -> 5, and the
+    all-reflect infinite medium 10/11 -> 10/10 while still landing on the exact constant.
+  - The finding that cost the most to see: a multiplicative `PCComposite` builds the
+    residual it hands later stages from **pmat**, which has no scattering in it, so the
+    DSA shell was being handed a residual with its own target already removed — the
+    moment reaching the diffusion solve was ~1e-6 of the residual and the count did not
+    move at all. `PCSetUseAmat` when (and only when) a DSA is present is the fix. Any
+    future preconditioner stage aimed at a matrix-free term inherits this problem.
+  - Open: the streaming part of `R A P` is not the diffusion operator being built.
+    First-order upwinding adds numerical diffusion of order `mean|mu| dx`, which at ten
+    mean free paths per cell is several times the physical `D = 1/(3 sigma_t)`, so the
+    correction is consistent with the PDE and not with the discretisation. A
+    discretisation-consistent D (or a `D + c dx` fudge) is the obvious next experiment,
+    and the 20 -> 11 above is what to beat.
+  - Also open: region masking for voids (`sigma_t <= 0` is a hard error today, as in the
+    paper's future work), and per-group cached Mat/KSP instead of one refilled pair.
 - **Single assembled streaming matrix across all groups** (Phase 5 direction): apply
   removal + scatter matrix-free so only one assembled matrix is stored for all energy
   groups. Open question: an effective preconditioner for streaming-only pmat when removal

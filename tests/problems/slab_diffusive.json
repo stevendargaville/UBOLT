@@ -1,0 +1,27 @@
+{
+ "_comment": "1D slab in the DIFFUSIVE regime: Sigma_t 100 over cells of width 0.1, so ten mean free paths per cell, with a scattering ratio of 0.99. This is the regime the removal + AIR composite has nothing to say about and the DSA diffusion correction does - it is the problem the -precon_dsa pins are measured on. Both faces vacuum, so the diffusion operator is nonsingular whatever the ratio.",
+ "dimension": 1,
+ "mesh": {
+  "n_cells": [100],
+  "lengths": [10.0]
+ },
+ "sn_order": 4,
+ "materials": {
+  "n_groups": 1,
+  "materials": [
+   {
+    "id": 0,
+    "name": "diffusive",
+    "Sigma_t": [100.0],
+    "Sigma_s": [
+     [99.0]
+    ],
+    "Source": [1.0]
+   }
+  ]
+ },
+ "boundary_conditions": {
+  "left": "vacuum",
+  "right": "vacuum"
+ }
+}

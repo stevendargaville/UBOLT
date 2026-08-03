@@ -20,6 +20,7 @@
 #include "ubolt/terms.hpp"
 #include "ubolt/multigroup.hpp"
 #include "ubolt/transport_operator.hpp"
+#include "ubolt/dsa.hpp"
 #include "ubolt/transport_solver.hpp"
 #include "ubolt/flux_output.hpp"
 

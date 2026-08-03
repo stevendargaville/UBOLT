@@ -107,6 +107,7 @@ OBJS := $(SRCDIR)/sn_quadraturek.o \
 		  $(SRCDIR)/multigroupk.o \
 		  $(SRCDIR)/transport_operatork.o \
 		  $(SRCDIR)/transport_solverk.o \
+		  $(SRCDIR)/dsak.o \
 		  $(SRCDIR)/flux_outputk.o
 
 # PETSc's rules generate no .d files, so nothing knows that an object depends on

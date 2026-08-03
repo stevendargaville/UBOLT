@@ -380,6 +380,79 @@ block was eyeballed via `-flux_vtk` (sigma_t 10 painted mid-cube, flux ~3.3 over
 block against ~10 in the surrounding medium) — those numbers are from the 20^3 file,
 before the 2026-08-02 resize, and have not been re-measured at 10^3.
 
+## DSA (the diffusion correction, `-precon_dsa`)
+
+`DSAPrecon` adds a third stage to the composite preconditioner: a cell-centred
+diffusion operator on the same grid, restricted from and prolonged back onto the
+ordinates (`include/ubolt/dsa.hpp`). It is off by default, so every recipe,
+count and baseline above is untouched — the DSA recipes below are NEW pins.
+**1D only so far**; the 2D and 3D `create` overloads land with their own stages.
+
+The regime it exists for is the one nothing else in the preconditioner
+addresses, and which no test problem demonstrated until now:
+`slab_diffusive.json` is 100 cells over a length of 10 with `Sigma_t 100` — ten
+mean free paths per cell — at a scattering ratio of 0.99. Both faces vacuum, so
+the diffusion operator is nonsingular whatever the ratio.
+
+| config | np=1 | np=2 |
+|---|---|---|
+| 1D diffusive slab, no DSA (the reference) | 20 | 20 |
+| 1D diffusive slab, `-precon_dsa` | 11 | 10 |
+| 1D all-reflect infinite medium, `-precon_dsa` (rtol 1e-12) | 10 | 10 |
+| 1D slab st=2, `-precon_dsa` | 5 | 5 |
+
+Read the first two rows together: that pair IS the test, and roughly halving the
+count is what the correction buys. The last two rows say DSA does not break what
+already worked — st=2 goes 6 to 5, and the infinite medium goes 10/11 to 10/10
+while still landing on the exact constant (2.3e-13 serial, 7.1e-12 at np=2,
+against the 1e-9 tolerance). That run is also the reflective-branch check: every
+face reflective means every face is a zero-Neumann one in the diffusion
+operator, and the singularity guard is satisfied by the file's absorption.
+
+**These pins have not been swept over the CI arches yet**, and unlike the 3D
+pins they carry one iteration of deliberate slack (measured count + 1) rather
+than sitting on the measured number: PCGAMG is new to this test matrix and its
+aggregation is the most arch-sensitive thing in the suite. The table above is
+the reference measurement, so a later sweep can tighten the pins onto it.
+
+`-precon_stream` + `-precon_dsa` on the diffusive slab does not converge in 300
+iterations — but neither does `-precon_stream` alone there. A streaming-only
+pmat against `Sigma_t 100` is the pre-existing strong-removal problem (the
+Phase 5 open question in `TODO.md`), not something DSA made worse or was
+expected to fix; the correction is added to a preconditioner that is already
+failing on the hyperbolic part. No recipe combines them.
+
+**`-diag_scale` + `-precon_dsa` is not special-cased and not recommended.** The
+two are mechanically compatible — nothing errors — but scaling the assembled
+operator breaks the `R A P` consistency the `/sum_weights` prolongation scaling
+relies on, so the diffusion operator is no longer the right coarse model for
+the system being solved. No recipe combines them.
+
+**Composite residual updates come from the AMAT when a DSA is present.** A
+multiplicative `PCComposite` forms the residual it hands each later stage from
+*pmat* by default, and pmat carries no scattering (it is the assembled
+streaming/removal matrix, or a streaming-only one). So once PCAIR has inverted
+it, the residual reaching the DSA shell is both tiny and free of the one thing
+DSA corrects — measured on `slab_diffusive.json`, the moment reaching the
+diffusion solve is ~1e-6 of the residual and the iteration count does not move
+at all. `TransportSolver::create` therefore calls `PCSetUseAmat` when, and only
+when, it is given a DSA, before `KSPSetFromOptions` so `-pc_use_amat false`
+still wins. Without a DSA nothing changes, which is why all 24 baselines still
+reproduce byte-for-byte.
+
+### Checks that are not recipes
+A recipe passes on exit 0, so the two guards are checked BY HAND:
+
+- **Void guard**: `./transportk -problem problems/slab_st0.json -precon_dsa`
+  must fail with the `Sigma_t > 0 in every cell` message —
+  `D = 1/(3 Sigma_t)` is undefined in a void, and the fix is a region-masked
+  diffusion operator (future work, as in the paper) rather than a fudged
+  coefficient.
+- **Singularity guard**: an all-reflective problem whose within-group `Sigma_s`
+  equals its `Sigma_t` must fail with the pure-Neumann message. This is the same
+  constraint the transport operator carries (see the reflective section above),
+  which is why no shipped problem file is in that state.
+
 ## Source and inflow conventions
 A material's `Source` array is an **isotropic, angle-integrated strength**:
 `UboltFillSource` writes `source / sum_weights` on each ordinate — `/2` in 1D, `/4 pi`

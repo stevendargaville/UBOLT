@@ -5,6 +5,11 @@
 // groups: the file picks the backend, and a single-group file IS the
 // single-group problem, so there is no separate driver for it
 //
+// Strategy knobs: -precon_stream (precondition with a streaming-only pmat),
+// -precon_dsa (add the DSA diffusion correction to the composite, 1D only so
+// far - its inner solve takes the -dsa_ prefix), -diag_scale, and the
+// verification ones, -check_inf_medium and the -flux_vtk output override
+//
 // Group Gauss-Seidel with downscatter only: groups are ordered high energy to
 // low, the within-group scatter stays on the lhs (matrix-free) and everything
 // scattering out of an already-solved group goes to the rhs. With no upscatter
@@ -47,6 +52,12 @@ int main(int argc, char **args) {
    // Do we precondition with streaming or streaming/removal
    PetscBool precon_stream = PETSC_FALSE;
    PetscCall(PetscOptionsGetBool(NULL, NULL, "-precon_stream", &precon_stream, NULL));
+   // Do we add the DSA diffusion correction to the composite preconditioner
+   // (index 2, its inner solve under the -dsa_ prefix - see DSAPrecon). Off by
+   // default: nothing preconditions the scattering without it, which is what
+   // an optically thick, high scattering ratio problem needs
+   PetscBool precon_dsa = PETSC_FALSE;
+   PetscCall(PetscOptionsGetBool(NULL, NULL, "-precon_dsa", &precon_dsa, NULL));
    // Diagonally scale the assembled operator and the rhs
    PetscBool diag_scale = PETSC_FALSE;
    PetscCall(PetscOptionsGetBool(NULL, NULL, "-diag_scale", &diag_scale, NULL));
@@ -162,6 +173,25 @@ int main(int argc, char **args) {
       PetscCall(xs.set_from_materials(spec.materials, mat_id_d));
 
       // ~~~~~~~~~~~~~
+      // The DSA diffusion correction, if it was asked for. Per-dimension, like
+      // the streaming term and for the same reason - it is built from the
+      // geometry - so it goes here while the concrete backend is still in
+      // scope. Only 1D is wired today
+      //
+      // CAREFUL with -diag_scale: the two are mechanically compatible, but
+      // scaling the assembled operator breaks the R A P consistency the
+      // /sum_weights scaling relies on, so the correction is no longer the
+      // right one for the system being solved. Not special-cased, just said
+      // ~~~~~~~~~~~~~
+      DSAPrecon dsa;
+      if (precon_dsa) {
+         if (spec.dimension == 1) PetscCall(dsa.create(PETSC_COMM_WORLD, ps, disc_1d, \
+            *quad, spec.bcs));
+         else SETERRQ(PETSC_COMM_WORLD, PETSC_ERR_SUP, \
+            "-precon_dsa has no backend for dimension %" PetscInt_FMT " yet", spec.dimension);
+      }
+
+      // ~~~~~~~~~~~~~
       // The operator: streaming + removal assembled, scattering matrix-free.
       // Built once for group 0 and re-pointed at each group's xsections below
       // ~~~~~~~~~~~~~
@@ -211,6 +241,10 @@ int main(int argc, char **args) {
          removal.set_sigma_t(xs.sigma_t(g));
          scattering.set_sigma_s(xs.sigma_s(g, g));
          PetscCall(op.assemble());
+         // The diffusion operator is built from the same two xsections, so it
+         // is refilled here rather than in TransportSolver::refresh() - the
+         // solver has no idea which group is being solved
+         if (precon_dsa) PetscCall(dsa.set_group(xs.sigma_t(g), xs.sigma_s(g, g)));
 
          // Rhs: the incoming flux everywhere first (the Dirichlet rows keep
          // it), the per-material external source over the non-BC rows, and
@@ -237,7 +271,7 @@ int main(int argc, char **args) {
 
          // The shell only exists once something has been assembled
          if (g == 0) PetscCall(solver.create(PETSC_COMM_WORLD, op, \
-            precon_stream ? streaming_mat : op.assembled_mat()));
+            precon_stream ? streaming_mat : op.assembled_mat(), precon_dsa ? &dsa : nullptr));
          // sigma_t changed under the removal preconditioner
          else PetscCall(solver.refresh());
 
@@ -306,6 +340,8 @@ int main(int argc, char **args) {
       }
 
       PetscCall(solver.destroy());
+      // After the solver: the shell at composite index 2 pointed at it
+      PetscCall(dsa.destroy());
       PetscCall(op.destroy());
       PetscCall(disc->destroy());
       PetscCall(MatDestroy(&streaming_mat));
