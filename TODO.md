@@ -537,19 +537,29 @@ previous one's verification has passed and been reviewed.
   unification as a problem file's independent `Sigma_s`: varying the ratio
   independently of `Sigma_t` is worth having.
 - **DSA, the diffusion half of the preconditioner** (Dargaville et al., JCP 518 (2024)
-  113342, Section 3) — LANDED for 1D as `DSAPrecon` behind `-precon_dsa`, off by default;
-  2D and 3D are the following stages. `G^-1 = P . D_diff^-1 . R`: masked 0th-moment
+  113342, Section 3) — LANDED in 1D, 2D and 3D as `DSAPrecon` behind `-precon_dsa`, off by
+  default. `G^-1 = P . D_diff^-1 . R`: masked 0th-moment
   restriction, a cell-centred `-div(D grad phi) + sigma_a phi` on the same grid (harmonic
   face D, Marshak on vacuum faces, zero Neumann on reflective ones), isotropic
   prolongation scaled by `1/sum_weights`. Inverted inexactly, KSPPREONLY + PCGAMG under
   the `dsa_` prefix (the paper's single BoomerAMG V-cycle is `-dsa_pc_type hypre` where
   hypre exists; the CI images have none). Sits at composite index 2, so the paper's
   additive combination is `-pc_composite_type additive` on the CLI.
-  Findings so far, the baseline for the Phase-5-adjacent strategy work:
-  - `slab_diffusive.json` (ten mean free paths per cell, ratio 0.99, the first problem in
-    the test set that is genuinely diffusive) goes **20 -> 11 iterations serial and
-    20 -> 10 at np=2**. Easy problems are not hurt: 1D st=2 goes 6 -> 5, and the
-    all-reflect infinite medium 10/11 -> 10/10 while still landing on the exact constant.
+  Findings so far, the baseline for the Phase-5-adjacent strategy work. The three
+  diffusive files are deliberately the same physics — ten mean free paths per cell at a
+  ratio of 0.99, S4, every face vacuum — so only the dimension changes between them:
+
+  | serial / np=2 | no DSA | `-precon_dsa` |
+  |---|---|---|
+  | `slab_diffusive.json`, 1D, 100 cells | 20 / 20 | 11 / 10 |
+  | `box_diffusive.json`, 2D, 50x50 | 29 / 29 | 11 / 11 |
+  | `cube_diffusive.json`, 3D, 10^3 | 21 / 21 | 10 / 10 |
+
+  - **The corrected count is 10 or 11 in every dimension and the uncorrected one is not**
+    (20, 29, 21). What the correction removes is the part that varies with dimension,
+    which is the claim DSA makes; that is the number anything later has to beat.
+  - Easy problems are not hurt: st=2 goes 6 -> 5 in 1D, 7 -> 5 in 2D and 5 -> 4 in 3D, and
+    the all-reflect infinite media still land on the exact constant (~1e-13) in all three.
   - The finding that cost the most to see: a multiplicative `PCComposite` builds the
     residual it hands later stages from **pmat**, which has no scattering in it, so the
     DSA shell was being handed a residual with its own target already removed — the
@@ -561,7 +571,15 @@ previous one's verification has passed and been reviewed.
     mean free paths per cell is several times the physical `D = 1/(3 sigma_t)`, so the
     correction is consistent with the PDE and not with the discretisation. A
     discretisation-consistent D (or a `D + c dx` fudge) is the obvious next experiment,
-    and the 20 -> 11 above is what to beat.
+    and the table above is what to beat.
+  - Open: `-precon_stream` + `-precon_dsa` does not converge, and 3D says that is a real
+    interaction rather than an inherited failure. In 1D and 2D neither the combination nor
+    `-precon_stream` alone converges on the diffusive files, so nothing could be concluded
+    there; on `cube_diffusive.json` `-precon_stream` alone converges in 47 and adding
+    `-precon_dsa` diverges in 300. The obvious suspect is that a DSA switches the
+    composite's residual updates onto the amat (the fix in the bullet above) while PCAIR
+    is still set up on a streaming-only pmat — unestablished. This matters because Phase 5
+    is exactly the streaming-only-pmat direction, so the two land on each other.
   - Also open: region masking for voids (`sigma_t <= 0` is a hard error today, as in the
     paper's future work), and per-group cached Mat/KSP instead of one refilled pair.
 - **Single assembled streaming matrix across all groups** (Phase 5 direction): apply

@@ -1,0 +1,27 @@
+{
+ "_comment": "3D diffusive cube (Sigma_t 100 over cells of width 0.1, scattering ratio 0.99) on a deliberately anisotropic 20x10x5 box - 2 x 1 x 0.5 - with the two Y faces reflective and the other four vacuum. This is the face-convention pin: in 3D bottom/top are the Z faces and the Y ones are front/back, so a DSA operator that mixed the two axes up would put a Marshak condition where the transport has reflection and a zero-Neumann one where it has vacuum. The box being anisotropic is what makes that visible - it costs three extra iterations, measured, where a cubic box would hide it behind the symmetry.",
+ "dimension": 3,
+ "mesh": {
+  "n_cells": [20, 10, 5],
+  "lengths": [2.0, 1.0, 0.5]
+ },
+ "sn_order": 4,
+ "materials": {
+  "n_groups": 1,
+  "materials": [
+   {
+    "id": 0,
+    "name": "diffusive",
+    "Sigma_t": [100.0],
+    "Sigma_s": [
+     [99.0]
+    ],
+    "Source": [1.0]
+   }
+  ]
+ },
+ "boundary_conditions": {
+  "front": "reflect",
+  "back": "reflect"
+ }
+}

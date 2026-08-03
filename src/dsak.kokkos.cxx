@@ -104,6 +104,32 @@ PetscErrorCode DSAPrecon::create(MPI_Comm comm, const PhaseSpace &ps, const Stru
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
+// 3D: three axes of geometry, and the six faces of the box. CAREFUL with the
+// face names - PETSc's box convention puts bottom/top on Z here, so the Y faces
+// are front (y-min) and back (y-max), which is NOT what 2D calls them
+PetscErrorCode DSAPrecon::create(MPI_Comm comm, const PhaseSpace &ps, const StructuredFD3D &disc, \
+   const AngularQuadrature &quad, const BCSpec &bcs)
+{
+   PetscFunctionBeginUser;
+
+   dim_ = 3;
+   h_[0] = disc.dx();
+   h_[1] = disc.dy();
+   h_[2] = disc.dz();
+   vacuum_lo_[0] = (PetscBool)(bcs.type(StructuredFD3D::FACE_LEFT) == BCType::VACUUM);
+   vacuum_hi_[0] = (PetscBool)(bcs.type(StructuredFD3D::FACE_RIGHT) == BCType::VACUUM);
+   vacuum_lo_[1] = (PetscBool)(bcs.type(StructuredFD3D::FACE_FRONT) == BCType::VACUUM);
+   vacuum_hi_[1] = (PetscBool)(bcs.type(StructuredFD3D::FACE_BACK) == BCType::VACUUM);
+   vacuum_lo_[2] = (PetscBool)(bcs.type(StructuredFD3D::FACE_BOTTOM) == BCType::VACUUM);
+   vacuum_hi_[2] = (PetscBool)(bcs.type(StructuredFD3D::FACE_TOP) == BCType::VACUUM);
+
+   PetscCall(create_common(comm, ps, disc, quad));
+
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
 PetscErrorCode DSAPrecon::create_common(MPI_Comm comm, const PhaseSpace &ps, \
    const Discretisation &disc, const AngularQuadrature &quad)
 {

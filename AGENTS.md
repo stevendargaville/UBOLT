@@ -67,7 +67,7 @@ Codebase map
   ordinates, inverted inexactly under the `dsa_` prefix; NOT an `OperatorTerm`, it
   preconditions rather than contributes, and it is caller-owned with a per-group
   `set_group()` the driver makes because the solver has no group context. Geometry, so
-  per-dimension `create` overloads like the streaming term — 1D and 2D today),
+  per-dimension `create` overloads like the streaming term),
   `UboltWriteScalarFluxVTK` (the scalar flux of a
   solution, plus any extra per-cell fields the caller hands over as `UboltCellField`s —
   the driver passes the group's `sigma_t` and its `source`, the latter expanded onto the

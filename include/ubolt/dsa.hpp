@@ -8,6 +8,7 @@
 #include "ubolt/discretisation.hpp"
 #include "ubolt/structured_fd_1d.hpp"
 #include "ubolt/structured_fd_2d.hpp"
+#include "ubolt/structured_fd_3d.hpp"
 #include <petscksp.h>
 
 // Diffusion synthetic acceleration, the second half of the preconditioner in
@@ -44,8 +45,7 @@
 // term makes: each one pulls the spacings and the per-axis BC families off the
 // concrete backend and its BCSpec and hands them to a dimension-generic
 // create_common. Everything after that - the assembly loop included - is
-// written for 1/2/3D with the unused axes degenerate. 1D and 2D exist today;
-// the 3D sibling lands with its own stage
+// written for 1/2/3D with the unused axes degenerate
 //
 // Single Mat + single inner KSP, values-refilled per group by set_group().
 // Deliberately not folded into TransportSolver::refresh(): the solver has no
@@ -65,6 +65,11 @@ public:
    // 2D. CAREFUL with the face names: in 2D bottom/top are the Y faces (in 3D
    // they are the Z ones - PETSc's box-mesh convention, see StructuredFD3D)
    PetscErrorCode create(MPI_Comm comm, const PhaseSpace &ps, const StructuredFD2D &disc, \
+      const AngularQuadrature &quad, const BCSpec &bcs);
+
+   // 3D. PETSc's box convention, so bottom/top are the Z faces here and the Y
+   // ones are front (y-min) and back (y-max) - NOT what 2D calls them
+   PetscErrorCode create(MPI_Comm comm, const PhaseSpace &ps, const StructuredFD3D &disc, \
       const AngularQuadrature &quad, const BCSpec &bcs);
 
    // Point at this group's cross sections and refill the diffusion matrix

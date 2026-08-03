@@ -386,16 +386,16 @@ before the 2026-08-02 resize, and have not been re-measured at 10^3.
 diffusion operator on the same grid, restricted from and prolonged back onto the
 ordinates (`include/ubolt/dsa.hpp`). It is off by default, so every recipe,
 count and baseline above is untouched — the DSA recipes below are NEW pins.
-**1D and 2D so far**; the 3D `create` overload lands with its own stage.
 
 The regime it exists for is the one nothing else in the preconditioner
 addresses, and which no test problem demonstrated until now. The diffusive
 problem files are deliberately the same physics in every dimension — `Sigma_t
 100` over cells of width 0.1, so ten mean free paths per cell, at a scattering
 ratio of 0.99, every face vacuum so the diffusion operator is nonsingular
-whatever the ratio: `slab_diffusive.json` is 100 cells over a length of 10,
-`box_diffusive.json` 50x50 over 5x5 (S4, so 12 ordinates). Only the dimension
-changes between them, which is what makes the counts comparable.
+whatever the ratio, all at S4: `slab_diffusive.json` is 100 cells over a length
+of 10, `box_diffusive.json` 50x50 over 5x5 and `cube_diffusive.json` 10^3 over
+1^3. Only the dimension changes between them, which is what makes the counts
+comparable.
 
 | config | np=1 | np=2 |
 |---|---|---|
@@ -409,21 +409,41 @@ changes between them, which is what makes the counts comparable.
 | 2D diffusive box, `-precon_dsa -dsa_ksp_type cg -dsa_ksp_max_it 5` | 11 | 11 |
 | 2D all-reflect infinite medium, `-precon_dsa` (rtol 1e-12) | 10 | 10 |
 | 2D box st=2, `-precon_dsa` | 5 | 5 |
+| 3D diffusive cube, no DSA (the reference) | 21 | 21 |
+| 3D diffusive cube, `-precon_dsa` | 10 | 10 |
+| 3D diffusive cube, Y faces reflective, anisotropic box, `-precon_dsa` | 10 | 11 |
+| 3D all-reflect infinite medium, `-precon_dsa` (rtol 1e-12) | 9 | 9 |
+| 3D cube st=2, `-precon_dsa` | 4 | 4 |
 
 Read each dimension's first two rows together: that pair IS the test, and
-halving the count (20 to 11 in 1D, 29 to 11 in 2D) is what the correction buys.
-The 2D reference count is the higher of the two and the corrected count is the
-same, so what the correction removes is exactly the part that got worse with
-dimension — which is the claim DSA makes.
+halving the count is what the correction buys — 20 to 11 in 1D, 29 to 11 in 2D,
+21 to 10 in 3D. **The corrected count is 10 or 11 in every dimension** while
+the uncorrected one is not, so what the correction removes is exactly the part
+that varies with dimension. That is the claim DSA makes, and it is the number
+to beat for anything that comes after (see the numerical-diffusion note in
+`TODO.md`).
 
-The remaining rows say DSA does not break what already worked — 1D st=2 goes
-6 to 5 and 2D st=2 7 to 5, and the infinite media still land on the exact
-constant (1D 2.3e-13 serial and 7.1e-12 at np=2, 2D 3.4e-14 and 8.3e-14,
-against the 1e-9 tolerance). Those runs are also the reflective-branch check:
-every face reflective means every face is a zero-Neumann one in the diffusion
-operator, and the singularity guard is satisfied by the files' absorption. The
-2D solution is unchanged by the correction, as it must be — `box_50_st2.json`
-at rtol 1e-12 agrees to 1.3e-12 relative with and without `-precon_dsa`.
+The remaining rows say DSA does not break what already worked — st=2 goes 6 to
+5 in 1D, 7 to 5 in 2D and 5 to 4 in 3D, and the infinite media still land on
+the exact constant (1D 2.3e-13 serial and 7.1e-12 at np=2, 2D 3.4e-14 and
+8.3e-14, 3D 6.9e-14 and 1.1e-13, against the 1e-9 tolerance). Those runs are
+also the reflective-branch check: every face reflective means every face is a
+zero-Neumann one in the diffusion operator, and the singularity guard is
+satisfied by the files' absorption. The solution is unchanged by the
+correction, as it must be — `box_50_st2.json` at rtol 1e-12 agrees to 1.3e-12
+relative with and without `-precon_dsa`.
+
+**The 3D `yreflect` row is the face-convention pin**, and the only recipe that
+can catch a y/z mix-up. In 3D `bottom`/`top` are the **Z** faces and the Y ones
+are `front`/`back` (PETSc's box convention — 2D calls the Y faces bottom/top,
+which is the trap). A DSA operator that swapped those two axes would put a
+Marshak condition where the transport has reflection and a zero-Neumann one
+where it has vacuum. `cube_diffusive_yreflect.json` is deliberately
+anisotropic, 20x10x5 over 2 x 1 x 0.5 with the Y faces reflective, because a
+cubic box hides the swap behind its symmetry: measured by swapping the two
+axes in `DSAPrecon::create` by hand, it costs 10 -> 13 iterations there (and
+12 -> 15 on the Z-reflective mirror of the same file), so the pin at 11 fails
+on it.
 
 The two 2D generality rows pin the CLI rather than a regime. The shell is added
 to the composite BEFORE `KSPSetFromOptions`, so the paper's additive
@@ -434,19 +454,28 @@ and the inner diffusion solve is reachable under its own prefix, so
 with five CG iterations. That buys nothing on this problem (11 either way), and
 that is the point: the default inexact solve is already enough.
 
-**These pins have not been swept over the CI arches yet**, and unlike the 3D
-pins they carry one iteration of deliberate slack (measured count + 1) rather
-than sitting on the measured number: PCGAMG is new to this test matrix and its
-aggregation is the most arch-sensitive thing in the suite. The table above is
-the reference measurement, so a later sweep can tighten the pins onto it.
+**These pins have not been swept over the CI arches yet**, and unlike the rest
+of the 3D pins they carry one iteration of deliberate slack (measured count + 1)
+rather than sitting on the measured number: PCGAMG is new to this test matrix
+and its aggregation is the most arch-sensitive thing in the suite. The table
+above is the reference measurement, so a later sweep can tighten the pins onto
+it.
 
-`-precon_stream` + `-precon_dsa` on the diffusive problems does not converge in
-300 iterations — but neither does `-precon_stream` alone there, in 1D or 2D. A
-streaming-only
-pmat against `Sigma_t 100` is the pre-existing strong-removal problem (the
-Phase 5 open question in `TODO.md`), not something DSA made worse or was
-expected to fix; the correction is added to a preconditioner that is already
-failing on the hyperbolic part. No recipe combines them.
+**`-precon_stream` + `-precon_dsa` is not supported and no recipe combines
+them.** In 1D and 2D the combination does not converge in 300 iterations — but
+neither does `-precon_stream` alone on those files. A streaming-only pmat
+against `Sigma_t 100` is the pre-existing strong-removal problem (the Phase 5
+open question in `TODO.md`), not something DSA made worse or was expected to
+fix; the correction is being added to a preconditioner that is already failing
+on the hyperbolic part. 3D is the one case where the two can be told apart, and
+it is worth knowing about: `cube_diffusive.json` with `-precon_stream` alone
+converges in 47, and adding `-precon_dsa` to it does **not** converge in 300.
+That is a genuine interaction rather than an inherited failure. The obvious
+suspect is that a DSA present switches the composite's residual updates onto
+the amat (see below), so the stages after index 0 are handed a residual built
+with the full operator while PCAIR is still set up on a streaming-only pmat —
+but that has not been established, and the combination is unsupported either
+way. Open, and recorded in `TODO.md`.
 
 **`-diag_scale` + `-precon_dsa` is not special-cased and not recommended.** The
 two are mechanically compatible — nothing errors — but scaling the assembled
