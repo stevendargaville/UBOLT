@@ -553,6 +553,72 @@ previous one's verification has passed and been reviewed.
       on the local opt arch only; they still owe the CI-arch sweep, like the other DSA
       pins.
 
+## Phase 4 postscript 5 — generalised quadratures at full precision (Aug 2026)
+- [x] The quadratures were S2/S4 only, and their cosines were literals truncated to 7-10
+      significant digits in a double code (`0.5773502692` for `1/sqrt(3)` is a relative
+      error of 1.8e-10, `0.3500212` for the S4 level cosine 6e-8). Both are gone: the
+      constants are now GENERATED, and the orders are no longer a pair.
+- [x] **1D: any even order.** `SNQuadrature::create` builds the N point Gauss-Legendre
+      rule by Newton on the Legendre recurrence, from the standard asymptotic seed —
+      nothing tabulated, no upper bound. Only the N/2 positive roots are computed and the
+      negative half is their exact NEGATION with a copy of the weight, which is what keeps
+      the two `==` comparisons the reflection map rests on exact (`FindOrdinate`'s search
+      and the weight-symmetry check) rather than nearly exact.
+- [x] **2D/3D: the level-symmetric (LQn) sets, even 2 to 18**, from a generated table:
+      `src/sn_lqn_table.py` (mpmath, 60 digits, checked in) emits `src/sn_lqn_table.hpp`,
+      included ONLY from `src/sn_quadraturek.kokkos.cxx` — the vendored-json rule. The
+      script's docstring has the derivation; the short version is that the defining axis
+      moments collapse to a generalised Vandermonde system whose solution (the per-level
+      weight sums) is unique for any mu_1, and the single leftover consistency condition,
+      `sum_l (3 l - (n + 2)) y_l = 0`, is what fixes mu_1 — one scalar root-find at every
+      order, landing on the published Lewis & Miller Table 4-1 value to its last tabulated
+      digit at every order it reaches. The published values are seeds and a cross-check,
+      nothing more.
+- [x] **The weights are no longer equal within a set** above S4 — they are constant on the
+      permutation classes of the level-index triple, 3 distinct values at S8 and 10 at S18.
+      No consumer had to change: the backends read only the SIGN of a cosine, `w_d()` is
+      always consumed through `UboltAngularIntegral`'s gemm, and DSA's `/sum_weights`
+      prolongation is the isotropic projection rather than an equal-weight assumption. The
+      public API of the three classes is unchanged.
+- [x] **Where the table stops is computed, not chosen.** From S14 up the axis moments do
+      not determine the weights uniquely (a family of dimension 1 at S14 and S16, 2 at
+      S18, 3 at S20), and the script picks the member minimising the error in the MIXED
+      even moments — one least-squares problem, unique, and the whole rule. It then walks
+      the orders upwards and stops at the FIRST one whose member has a weight that is not
+      strictly positive. That is S20, at -1.8e-5, so the table runs to S18 and the
+      generated header prints that number as the reason. A negative weight is the
+      level-symmetric family running out, which is the well-known reason SN codes cap LQn
+      around here — a higher order wants a DIFFERENT family (product, Gauss-Chebyshev),
+      which would be its own piece of work, not a different choice within this one.
+- [x] `AngularQuadrature::set_weights` now CHECKS that the weights sum to the angular
+      measure it is handed. That assumption was load-bearing and silent — the
+      `-check_inf_medium` oracle rests on it — and a set that did not cover the domain it
+      claimed would have surfaced as a wrong answer under an isotropic source.
+- Verify: `tests/verify_quadraturek.kokkos.cxx`, in `make check` and `make tests_short`,
+  serial and at `-n 2`. 1D Gauss exactness to degree 2N-1 at seven orders up to S32; the
+  even axis moments at EVERY table order in 2D and 3D (~1e-15 against 1e-12, the real test
+  of the table); counts, unit vectors, positivity, the reflection maps as
+  weight-preserving involutions, 3D invariance under all six axis permutations, the 2D set
+  being exactly the folded 3D one, the two closed-form cosines, and the error paths. Plus
+  `box_s8_reflect_coarse.json`, the one recipe that puts unequal weights through a solve.
+  Details in `docs/dev/testing.md`.
+- All 24 baselines re-captured, on the same debug arch every previous capture used so the
+  diff is like for like. Over the 20 non-pathological logs no iteration count moved, and
+  the INITIAL residual — the fingerprint of the constants with no solver amplification in
+  it — drifts by at most 2.2e-10, the size of the perturbation. Later iterations amplify
+  it (under 1e-10 everywhere but the multigroup streaming-pmat pair, which reaches 2.2e-4
+  by its eleventh); a converged run's final residual is at the rtol floor and not worth
+  comparing relatively. The two pathological `diag_scale` logs moved where they break
+  down, which nothing pins. Across the whole recipe suite exactly one count moved locally:
+  2D 80x40 streaming-only pmat, 10 -> 9 on both local arches.
+- [x] The streaming-only pmat recipes are the arch-fragile ones and now all carry a pin of
+      10 against a reference count of 9. Tightening 80x40 onto its new local 9 was a
+      mistake: CI then failed on its 50x50 SIBLING, which measures 9 locally both before
+      and after the change but needs 10 on all three opt images. These three recipes clear
+      rtol on their last iteration by a percent or two, so a perturbation far too small to
+      be a regression decides whether that iteration counts — see the note in
+      docs/dev/testing.md. Do not tighten them onto a local measurement.
+
 - **"Scattering ratio 1 in 2D degrades on non-square grids" — RESOLVED, it was the
   Dirichlet bug** (observed in Phase 4b, explained by the postscript fix above; recorded
   because the wrong conclusion is an easy one to reach again). The observation was real:

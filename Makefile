@@ -123,11 +123,15 @@ $(OBJS): $(UBOLT_HEADERS)
 # can never enter the public include tree) - the one TU that includes it
 # declares the dependency by hand
 $(SRCDIR)/problem_speck.o: $(SRCDIR)/external/nlohmann/json.hpp
+# Same for the generated level-symmetric quadrature table: it lives under src/
+# so it can never enter the public include tree, so the one TU that includes it
+# declares the dependency by hand
+$(SRCDIR)/sn_quadraturek.o: $(SRCDIR)/sn_lqn_table.hpp
 
 # Define a variable containing all the tests
-export TEST_TARGETS = transportk verify_2dk verify_3dk
+export TEST_TARGETS = transportk verify_2dk verify_3dk verify_quadraturek
 # Define a variable containing all the tests that the make check runs
-export CHECK_TARGETS = transportk verify_2dk verify_3dk
+export CHECK_TARGETS = transportk verify_2dk verify_3dk verify_quadraturek
 
 # Output the library - either static or dynamic
 ifeq ($(PETSC_USE_SHARED_LIBRARIES),0)

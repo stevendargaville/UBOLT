@@ -44,7 +44,8 @@ public:
    PetscReal length_x = 0.0, length_y = 0.0, length_z = 0.0;
    // The SN order, NOT the ordinate count: how many ordinates an order is, is
    // the quadrature's business and differs by dimension (S4 is 4 ordinates in
-   // 1D, 12 in 2D, 24 in 3D)
+   // 1D, 12 in 2D, 24 in 3D). So is WHICH orders exist - any even one in 1D,
+   // the even 2 to 18 in 2D and 3D - so only positive-and-even is checked here
    PetscInt sn_order = 0;
    // From the materials schema - the phase space takes it from here
    PetscInt n_groups = 0;
