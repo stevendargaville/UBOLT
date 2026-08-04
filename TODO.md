@@ -517,6 +517,42 @@ previous one's verification has passed and been reviewed.
       reflective, no paint, absorption in every group. The recipe pins carry the
       re-swept CI slack unchanged (same histories by construction, same maxes).
 
+## Phase 4 postscript 4 — per-face inflow with an optional window (Aug 2026)
+- [x] Inflow moved from ONE global per-angle value on the rhs to a per-face property of
+      the boundary condition. A `boundary_conditions` entry is still the bare
+      `"vacuum"`/`"reflect"` string, or now an object
+      `{"type", "inflow", "window"}`; the top-level `"inflow"` key is gone and a file
+      carrying it errors with a migration message rather than being reinterpreted.
+      `BCSpec` holds a `BCFace` per label id; `BoundaryInfo` gained
+      `dirichlet_value_d`, the per-row rhs value each backend computes ON THE HOST at
+      create time (it already classifies every row with the geometry in hand), and
+      `UboltFillInflow` lays it onto a zeroed b before `UboltFillSource`. Nothing about
+      the matrix changed — a Dirichlet row is still the identity — so no `OperatorTerm`,
+      `TransportOperator` or `DSAPrecon` code moved.
+- [x] `inflow` is now an isotropic ANGLE-INTEGRATED strength, `inflow / sum_weights` per
+      ordinate, the convention `Source` took in postscript 2; the "deliberately still
+      per-angle" stance in docs/dev/testing.md fell with it (a per-face knob next to a
+      per-face `Source` with the opposite scaling is not carryable, and the benchmark
+      papers prescribe isotropic incident sources). The `window` restricts where on a
+      face the inflow enters: one `[lo, hi]` pair per tangential axis, ascending
+      global-axis order, membership by boundary-cell centre inclusive both ends — the
+      same rule the paint lists follow. A row incoming through several vacuum faces
+      takes the first in axis order x, y, z, which is the order `ClassifyRow` already
+      checks.
+- [x] Migration verified byte-for-byte: every previously-default file got the exact
+      double of its quadrature measure (`2.0` in 1D, `12.566370614359172` in 2D/3D), so
+      the division returns exactly 1.0 and the rhs is bitwise what it was; cold files
+      just dropped the key, 0 being the new default. `-ksp_monitor` logs for all 49
+      problem files before and after are identical except `box_crooked_pipe.json`.
+- [x] `box_crooked_pipe.json` is the one deliberate physics change, and the point of the
+      exercise: the paper drives it with an inward isotropic source at the pipe mouth,
+      which UBOLT could not express, so the file faked it with a painted unit-`Source`
+      strip (`pipe_src`, retired here with its paint box). It now carries
+      `"left": {"type": "vacuum", "inflow": 1.0, "window": [2.0, 3.0]}` — the same four
+      boundary cells the strip covered. Pins re-measured (123/72 serial, 94/69 at np=2)
+      on the local opt arch only; they still owe the CI-arch sweep, like the other DSA
+      pins.
+
 - **"Scattering ratio 1 in 2D degrades on non-square grids" — RESOLVED, it was the
   Dirichlet bug** (observed in Phase 4b, explained by the postscript fix above; recorded
   because the wrong conclusion is an easy one to reach again). The observation was real:

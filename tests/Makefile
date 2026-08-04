@@ -231,9 +231,9 @@ run_tests_short_serial:
 # mix. Each runs both ways and the pair is the demonstration, like the
 # diffusive pair above. Counts and provenance: ../docs/dev/testing.md
 	@echo "Test 2D crooked pipe benchmark WITHOUT the DSA correction (the reference)"
-	./transportk -problem problems/box_crooked_pipe.json -ksp_max_it 118
+	./transportk -problem problems/box_crooked_pipe.json -ksp_max_it 124
 	@echo "Test 2D crooked pipe benchmark with the DSA correction"
-	./transportk -problem problems/box_crooked_pipe.json -precon_dsa -ksp_max_it 72
+	./transportk -problem problems/box_crooked_pipe.json -precon_dsa -ksp_max_it 73
 	@echo "Test 2D layered thick/thin benchmark WITHOUT the DSA correction (the reference)"
 	./transportk -problem problems/box_layers.json -ksp_max_it 26
 	@echo "Test 2D layered thick/thin benchmark with the DSA correction"
@@ -381,7 +381,7 @@ run_tests_short_parallel:
 	@echo "Test 2D box, DSA against the infinite-medium solution in parallel"
 	$(MPIEXEC) -n 2 ./transportk -problem problems/box_50_inf_medium.json -precon_dsa -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 11
 	@echo "Test 2D crooked pipe benchmark without the DSA correction in parallel"
-	$(MPIEXEC) -n 2 ./transportk -problem problems/box_crooked_pipe.json -ksp_max_it 91
+	$(MPIEXEC) -n 2 ./transportk -problem problems/box_crooked_pipe.json -ksp_max_it 95
 	@echo "Test 2D crooked pipe benchmark with the DSA correction in parallel"
 	$(MPIEXEC) -n 2 ./transportk -problem problems/box_crooked_pipe.json -precon_dsa -ksp_max_it 70
 	@echo "Test 2D layered thick/thin benchmark without the DSA correction in parallel"

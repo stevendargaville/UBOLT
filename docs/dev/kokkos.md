@@ -112,8 +112,10 @@ fill runs on device (MATAIJKOKKOS dispatches `MatSetValuesCOO` to the GPU):
   still reads every angle when it integrates the scalar flux, BC rows included — for
   reflective rows that read is REQUIRED, since the reflected outgoing flux is a real part
   of the flux in the cell (it is what makes the infinite-medium check land at machine
-  precision). The rhs owes the same rows the boundary value: the incoming flux on
-  Dirichlet rows, zero on reflective ones (`UboltZeroReflectRows`).
+  precision). The rhs owes the same rows the boundary value: the per-row incoming flux
+  on Dirichlet rows (`UboltFillInflow` — the winning face's angle-integrated inflow
+  divided by `sum_weights`, zeroed outside its window, computed on the host at create
+  time), zero on reflective ones (`UboltZeroReflectRows`).
 - All the assembled terms add into ONE shared values array and go in with a single
   `MatSetValuesCOO(INSERT_VALUES)`. `-ubolt_coo_two_call` is the debug fallback: one call
   per term, the first INSERTing and the rest ADDing. Same per-entry arithmetic in the same

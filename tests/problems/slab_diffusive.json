@@ -21,7 +21,7 @@
   ]
  },
  "boundary_conditions": {
-  "left": "vacuum",
-  "right": "vacuum"
+  "left": {"type": "vacuum", "inflow": 2.0},
+  "right": {"type": "vacuum", "inflow": 2.0}
  }
 }

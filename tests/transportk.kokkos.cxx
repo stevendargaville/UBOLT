@@ -250,12 +250,15 @@ int main(int argc, char **args) {
          // solver has no idea which group is being solved
          if (precon_dsa) PetscCall(dsa.set_group(xs.sigma_t(g), xs.sigma_s(g, g)));
 
-         // Rhs: the incoming flux everywhere first (the Dirichlet rows keep
-         // it), the per-material external source over the non-BC rows, and
-         // everything downscattered out of the groups already solved. A
-         // reflective row's rhs is zero, so the inflow comes off those rows
+         // Rhs: zero, then the per-face inflow onto the Dirichlet rows (the
+         // per-row value the backend computed at create - the winning face's
+         // inflow, windowed), the per-material external source over the non-BC
+         // rows, and everything downscattered out of the groups already
+         // solved. A reflective row's rhs is zero - UboltZeroReflectRows
+         // enforces that contract regardless of what the fills above wrote
          // (add_source skips every BC row on its own)
-         PetscCall(VecSet(b, (PetscScalar)spec.inflow));
+         PetscCall(VecSet(b, 0.0));
+         PetscCall(UboltFillInflow(disc->boundary_info(), b));
          PetscCall(UboltFillSource(ps, disc->boundary_info(), *quad, spec.materials, mat_id_d, g, b));
          PetscCall(UboltZeroReflectRows(disc->boundary_info(), b));
          for (PetscInt g_from = 0; g_from < g; g_from++) {

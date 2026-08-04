@@ -21,7 +21,11 @@
   ]
  },
  "boundary_conditions": {
+  "left": {"type": "vacuum", "inflow": 12.566370614359172},
+  "right": {"type": "vacuum", "inflow": 12.566370614359172},
   "front": "reflect",
-  "back": "reflect"
+  "back": "reflect",
+  "bottom": {"type": "vacuum", "inflow": 12.566370614359172},
+  "top": {"type": "vacuum", "inflow": 12.566370614359172}
  }
 }

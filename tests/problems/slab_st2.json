@@ -6,5 +6,9 @@
   "lengths": [1.0]
  },
  "sn_order": 4,
- "materials": "materials/slab_st2.json"
+ "materials": "materials/slab_st2.json",
+ "boundary_conditions": {
+  "left": {"type": "vacuum", "inflow": 2.0},
+  "right": {"type": "vacuum", "inflow": 2.0}
+ }
 }

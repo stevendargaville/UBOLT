@@ -18,8 +18,10 @@ struct PETSC_VISIBILITY_PUBLIC MaterialInterval1D {
 //
 // Owns the mesh and the COO sparsity: two entries per row (the upwind neighbour
 // and the diagonal, in that order). A BC row loses its upwind entry - a
-// Dirichlet row keeps only the diagonal, a reflective row repurposes the slot
-// for the -1 coupling to the mirrored angle in the same cell. Everything it
+// Dirichlet row keeps only the diagonal and its rhs carries the incoming flux
+// (that face's angle-integrated inflow shared over the ordinates; a 1D face is
+// a point, so there is no window to restrict it), a reflective row repurposes
+// the slot for the -1 coupling to the mirrored angle in the same cell. Everything it
 // hands terms - the CooPattern, the BoundaryInfo, the preallocated matrices -
 // is on the Discretisation base; what is 1D about it is the mesh it builds and
 // its geometry - dx(), and the painting below

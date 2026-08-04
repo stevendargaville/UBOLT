@@ -296,10 +296,18 @@ PetscErrorCode ProblemSpec::create(MPI_Comm comm, const char *problem_path)
    PetscCheck(!root.is_discarded(), PETSC_COMM_SELF, PETSC_ERR_FILE_UNEXPECTED, \
       "%s: not valid JSON after resolution", problem_path);
 
+   // A file from before inflow went per face would parse into different
+   // physics rather than failing, so name it rather than letting the strict
+   // key check call it a typo
+   PetscCheck(!root.contains("inflow"), PETSC_COMM_SELF, PETSC_ERR_ARG_WRONG, \
+      "%s: the global \"inflow\" key was removed - inflow is per face now, and " \
+      "angle-integrated like \"Source\" (the old key was per-angle): " \
+      "\"boundary_conditions\": {\"left\": {\"type\": \"vacuum\", \"inflow\": 1.0}, ...}", problem_path);
+
    // The problem file is strict - an unknown key is a typo, not an extension
    PetscCall(JsonCheckKeys(root, "the problem file", problem_path, \
       {"dimension", "mesh", "sn_order", "materials", "regions", "boundary_conditions", \
-       "inflow", "output"}));
+       "output"}));
 
    PetscCall(JsonGetInt(root, "dimension", problem_path, &dimension));
    PetscCheck(dimension >= 1 && dimension <= 3, PETSC_COMM_SELF, PETSC_ERR_ARG_OUTOFRANGE, \
@@ -444,24 +452,76 @@ PetscErrorCode ProblemSpec::create(MPI_Comm comm, const char *problem_path)
       else PetscCall(JsonCheckKeys(bcj, "\"boundary_conditions\"", problem_path, \
          {"left", "right", "front", "back", "bottom", "top"}));
 
+      // A face is either the bare family string - "vacuum" meaning a cold
+      // vacuum face, inflow 0 - or an object carrying that family plus what a
+      // vacuum face lets in
       for (size_t f = 0; f < n_faces; f++) {
          if (!bcj.contains(faces[f].name)) continue;
          const json &v = bcj.at(faces[f].name);
-         PetscCheck(v.is_string(), PETSC_COMM_SELF, PETSC_ERR_ARG_WRONG, \
-            "%s: boundary condition \"%s\" must be \"vacuum\" or \"reflect\"", \
-            problem_path, faces[f].name);
-         const std::string kind = v.get<std::string>();
+
+         std::string kind;
+         if (v.is_string()) kind = v.get<std::string>();
+         else {
+            PetscCheck(v.is_object(), PETSC_COMM_SELF, PETSC_ERR_ARG_WRONG, \
+               "%s: boundary condition \"%s\" must be \"vacuum\", \"reflect\" or an object", \
+               problem_path, faces[f].name);
+            PetscCall(JsonCheckKeys(v, "a boundary condition", problem_path, \
+               {"type", "inflow", "window"}));
+            PetscCheck(v.contains("type") && v.at("type").is_string(), PETSC_COMM_SELF, \
+               PETSC_ERR_ARG_WRONG, "%s: boundary condition \"%s\" is missing a string \"type\"", \
+               problem_path, faces[f].name);
+            kind = v.at("type").get<std::string>();
+         }
+
+         PetscCheck(kind == "vacuum" || kind == "reflect", PETSC_COMM_SELF, PETSC_ERR_ARG_WRONG, \
+            "%s: boundary condition \"%s\" must be \"vacuum\", \"reflect\" or an object, was " \
+            "given \"%s\"", problem_path, faces[f].name, kind.c_str());
+
          if (kind == "reflect") {
+            PetscCheck(v.is_string() || (!v.contains("inflow") && !v.contains("window")), \
+               PETSC_COMM_SELF, PETSC_ERR_ARG_WRONG, "%s: boundary condition \"%s\" is " \
+               "reflective - a \"reflect\" face takes no \"inflow\" or \"window\"", \
+               problem_path, faces[f].name);
             bcs.set(faces[f].id, BCType::REFLECT);
             n_reflect_faces++;
+            continue;
          }
-         else PetscCheck(kind == "vacuum", PETSC_COMM_SELF, PETSC_ERR_ARG_WRONG, \
-            "%s: boundary condition \"%s\" must be \"vacuum\" or \"reflect\", was given \"%s\"", \
-            problem_path, faces[f].name, kind.c_str());
+
+         // Vacuum. The bare string form and an object with no "inflow" are the
+         // same thing: a cold face, the BCSpec default
+         if (v.is_string()) continue;
+
+         if (v.contains("inflow")) {
+            PetscReal value = 0.0;
+            PetscCall(JsonGetReal(v, "inflow", problem_path, &value));
+            bcs.set_inflow(faces[f].id, value);
+         }
+
+         if (v.contains("window")) {
+            PetscCheck(v.contains("inflow"), PETSC_COMM_SELF, PETSC_ERR_ARG_WRONG, \
+               "%s: boundary condition \"%s\" has a \"window\" without an \"inflow\" - a window " \
+               "without an inflow restricts nothing", problem_path, faces[f].name);
+            PetscCheck(dimension >= 2, PETSC_COMM_SELF, PETSC_ERR_ARG_WRONG, \
+               "%s: boundary condition \"%s\" has a \"window\" - a 1D face is a point and takes " \
+               "no \"window\"", problem_path, faces[f].name);
+            // One [lo, hi] pair per tangential axis, in ascending global-axis
+            // order: 2 numbers on a 2D face, 4 on a 3D one
+            std::vector<PetscScalar> lo_hi;
+            PetscCall(JsonGetRealArray(v.at("window"), "window", problem_path, \
+               2 * (size_t)(dimension - 1), lo_hi));
+            std::vector<PetscReal> window(lo_hi.size());
+            for (size_t p = 0; p < lo_hi.size(); p += 2) {
+               window[p]     = PetscRealPart(lo_hi[p]);
+               window[p + 1] = PetscRealPart(lo_hi[p + 1]);
+               PetscCheck(window[p] <= window[p + 1], PETSC_COMM_SELF, PETSC_ERR_ARG_OUTOFRANGE, \
+                  "%s: boundary condition \"%s\" has an inside-out \"window\" - give it as " \
+                  "[lo, hi] per tangential axis, ascending axis order, with lo <= hi", \
+                  problem_path, faces[f].name);
+            }
+            bcs.set_window(faces[f].id, dimension - 1, window.data());
+         }
       }
    }
-
-   if (root.contains("inflow")) PetscCall(JsonGetReal(root, "inflow", problem_path, &inflow));
 
    // ~~~~~~~~~~~~~
    // Output

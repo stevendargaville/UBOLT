@@ -51,7 +51,7 @@ PetscErrorCode Discretisation::destroy()
 // coordinates out this way never has to hand a term a raw index. Building them
 // here rather than per backend also keeps "the diagonal is last" stated once
 PetscErrorCode Discretisation::set_uniform_pattern(PetscInt slots_per_row, const std::vector<PetscInt> &is_bc_row, \
-   const std::vector<PetscInt> &reflect_slot)
+   const std::vector<PetscInt> &reflect_slot, const std::vector<PetscScalar> &dirichlet_value)
 {
    PetscFunctionBeginUser;
 
@@ -64,6 +64,9 @@ PetscErrorCode Discretisation::set_uniform_pattern(PetscInt slots_per_row, const
    PetscCheck((PetscInt)reflect_slot.size() == local_rows, comm_, PETSC_ERR_ARG_INCOMP, \
       "reflect slots have %" PetscInt_FMT " entries but there are %" PetscInt_FMT " local rows", \
       (PetscInt)reflect_slot.size(), local_rows);
+   PetscCheck((PetscInt)dirichlet_value.size() == local_rows, comm_, PETSC_ERR_ARG_INCOMP, \
+      "Dirichlet values have %" PetscInt_FMT " entries but there are %" PetscInt_FMT " local rows", \
+      (PetscInt)dirichlet_value.size(), local_rows);
    PetscCheck((PetscInt)oor_.size() == slots_per_row * local_rows && oor_.size() == ooc_.size(), \
       comm_, PETSC_ERR_ARG_INCOMP, "COO coordinates are %" PetscInt_FMT " long, not %" PetscInt_FMT \
       " slots x %" PetscInt_FMT " local rows", (PetscInt)oor_.size(), slots_per_row, local_rows);
@@ -82,6 +85,7 @@ PetscErrorCode Discretisation::set_uniform_pattern(PetscInt slots_per_row, const
    pattern_.diag_slot_d = PetscIntKokkosView("diag_slot_d", local_rows);
    boundary_.is_bc_row_d = PetscIntKokkosView("is_bc_row_d", local_rows);
    boundary_.reflect_slot_d = PetscIntKokkosView("reflect_slot_d", local_rows);
+   boundary_.dirichlet_value_d = PetscScalarKokkosView("dirichlet_value_d", local_rows);
 
    PetscIntKokkosViewHostUnmanaged row_slot_offset_h(row_slot_offset.data(), local_rows + 1);
    PetscIntKokkosViewHostUnmanaged diag_slot_h(diag_slot.data(), local_rows);
@@ -89,10 +93,51 @@ PetscErrorCode Discretisation::set_uniform_pattern(PetscInt slots_per_row, const
    // deep_copy below reads it
    PetscIntKokkosViewHostUnmanaged is_bc_row_h(const_cast<PetscInt *>(is_bc_row.data()), local_rows);
    PetscIntKokkosViewHostUnmanaged reflect_slot_h(const_cast<PetscInt *>(reflect_slot.data()), local_rows);
+   PetscScalarKokkosViewHostUnmanaged dirichlet_value_h(const_cast<PetscScalar *>(dirichlet_value.data()), local_rows);
    Kokkos::deep_copy(pattern_.row_slot_offset_d, row_slot_offset_h);
    Kokkos::deep_copy(pattern_.diag_slot_d, diag_slot_h);
    Kokkos::deep_copy(boundary_.is_bc_row_d, is_bc_row_h);
    Kokkos::deep_copy(boundary_.reflect_slot_d, reflect_slot_h);
+   Kokkos::deep_copy(boundary_.dirichlet_value_d, dirichlet_value_h);
+
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+// A free function rather than a local lambda: an extended device lambda can't
+// be defined inside another lambda
+static void FillInflowKernel(PetscScalarKokkosView b_d, PetscIntKokkosView is_bc_row_d, \
+   PetscIntKokkosView reflect_slot_d, PetscScalarKokkosView dirichlet_value_d, PetscInt local_rows)
+{
+   Kokkos::parallel_for(
+      Kokkos::RangePolicy<>(0, local_rows), KOKKOS_LAMBDA(PetscInt r) {
+
+         // Dirichlet = a BC row that is not reflective, the existing idiom
+         if (is_bc_row_d(r) && reflect_slot_d(r) < 0) b_d(r) = dirichlet_value_d(r);
+      });
+}
+
+// The rhs of a Dirichlet row IS the boundary value: the per-angle inflow the
+// backend computed at create time - the winning face's angle-integrated
+// strength divided by the quadrature's measure, zeroed outside that face's
+// window. Every other row is left alone, so this goes onto a zeroed b before
+// the external source is filled in
+PetscErrorCode UboltFillInflow(const BoundaryInfo &boundary, Vec b)
+{
+   PetscFunctionBeginUser;
+
+   PetscInt local_rows;
+   PetscCall(VecGetLocalSize(b, &local_rows));
+   PetscCheck(local_rows == (PetscInt)boundary.dirichlet_value_d.extent(0), PETSC_COMM_SELF, \
+      PETSC_ERR_ARG_INCOMP, "b has %" PetscInt_FMT " local rows but the boundary info covers %" \
+      PetscInt_FMT, local_rows, (PetscInt)boundary.dirichlet_value_d.extent(0));
+
+   PetscScalarKokkosView b_d;
+   PetscCall(VecGetKokkosView(b, &b_d));
+   FillInflowKernel(b_d, boundary.is_bc_row_d, boundary.reflect_slot_d, boundary.dirichlet_value_d, \
+      local_rows);
+   PetscCall(VecRestoreKokkosView(b, &b_d));
 
    PetscFunctionReturn(PETSC_SUCCESS);
 }

@@ -19,5 +19,9 @@
     "Source": [2.0]
    }
   ]
+ },
+ "boundary_conditions": {
+  "left": {"type": "vacuum", "inflow": 2.0},
+  "right": {"type": "vacuum", "inflow": 2.0}
  }
 }

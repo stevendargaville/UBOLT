@@ -648,6 +648,5 @@
   "right": "vacuum",
   "bottom": "vacuum",
   "top": "vacuum"
- },
- "inflow": 0.0
+ }
 }

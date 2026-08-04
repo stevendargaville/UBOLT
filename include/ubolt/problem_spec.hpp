@@ -11,10 +11,10 @@
 #include <vector>
 
 // A complete problem definition read from a JSON file: everything physical -
-// dimension, mesh, SN order, materials, painted regions, boundary conditions,
-// inflow and the flux output - so a solve driver needs no problem options of
-// its own. What stays OFF the file is everything about how the problem is
-// solved: PETSc options (-ksp_*, -pc_*) and driver strategy knobs remain
+// dimension, mesh, SN order, materials, painted regions, boundary conditions
+// (with per-face inflow) and the flux output - so a solve driver needs no
+// problem options of its own. What stays OFF the file is everything about how
+// the problem is solved: PETSc options (-ksp_*, -pc_*) and driver strategy knobs remain
 // command-line, so the same file can be solved many ways
 //
 // The materials entry is either a path to a standalone materials file
@@ -68,9 +68,6 @@ public:
    // infinite-medium check) without re-walking the spec
    BCSpec bcs;
    PetscInt n_reflect_faces = 0;
-
-   // The per-angle incoming flux on the Dirichlet rows of the rhs
-   PetscReal inflow = 1.0;
 
    // Scalar flux output path (.vts/.vtr), empty = no output
    std::string flux_vtk;

@@ -154,14 +154,26 @@ PetscErrorCode StructuredFD1D::create(MPI_Comm comm, PhaseSpace &ps, PetscReal l
    // row is psi(cell, a) - psi(cell, a') = 0 with a' the mirrored angle, so
    // the upwind slot is repurposed to point at the partner - same cell, so the
    // column is always rank-local - and the assembly writes the -1.0 there
+   // A vacuum row's rhs value is the face's angle-integrated inflow shared out
+   // over the ordinates, exactly as UboltFillSource shares a material's
+   // Source - so the same number means the same physics in any dimension. A 1D
+   // face is a point, so no window can restrict it
    std::vector<PetscInt> is_bc_row(local_rows, 0);
    std::vector<PetscInt> reflect_slot(local_rows, -1);
+   std::vector<PetscScalar> dirichlet_value(local_rows, 0.0);
    const PetscInt *reflect_mu = quad.reflect_mu_host();
+
+   const BCFace left_face = bcs.face(FACE_LEFT);
+   const BCFace right_face = bcs.face(FACE_RIGHT);
+   PetscCheck(left_face.n_window_pairs == 0 && right_face.n_window_pairs == 0, comm_, \
+      PETSC_ERR_ARG_WRONG, "a 1D face is a point and takes no inflow window");
+   const PetscScalar left_value = (PetscScalar)left_face.inflow / quad.sum_weights();
+   const PetscScalar right_value = (PetscScalar)right_face.inflow / quad.sum_weights();
 
    // All positive angles are incoming on the left boundary
    if (on_left_boundary)
    {
-      const BCType left_bc = bcs.type(FACE_LEFT);
+      const BCType left_bc = left_face.type;
       for (PetscInt a = 0; a < n_angles; a++) {
          if (mu[a] > 0)
          {
@@ -181,6 +193,7 @@ PetscErrorCode StructuredFD1D::create(MPI_Comm comm, PhaseSpace &ps, PetscReal l
             {
                oor_[a * 2] = -1;
                ooc_[a * 2] = -1;
+               dirichlet_value[a] = left_value;
             }
          }
       }
@@ -188,7 +201,7 @@ PetscErrorCode StructuredFD1D::create(MPI_Comm comm, PhaseSpace &ps, PetscReal l
    // All negative angles are incoming on the right boundary
    if (on_right_boundary)
    {
-      const BCType right_bc = bcs.type(FACE_RIGHT);
+      const BCType right_bc = right_face.type;
       for (PetscInt a = 0; a < n_angles; a++) {
          if (mu[a] < 0)
          {
@@ -206,13 +219,14 @@ PetscErrorCode StructuredFD1D::create(MPI_Comm comm, PhaseSpace &ps, PetscReal l
             {
                oor_[r * 2] = -1;
                ooc_[r * 2] = -1;
+               dirichlet_value[r] = right_value;
             }
          }
       }
    }
 
    // Slot maps - row r owns COO slots 2r (upwind neighbour) and 2r + 1 (diagonal)
-   PetscCall(set_uniform_pattern(2, is_bc_row, reflect_slot));
+   PetscCall(set_uniform_pattern(2, is_bc_row, reflect_slot, dirichlet_value));
 
    PetscFunctionReturn(PETSC_SUCCESS);
 }

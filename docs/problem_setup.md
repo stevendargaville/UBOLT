@@ -7,7 +7,8 @@ decisions and the pitfalls, in the order you meet them.
 
 ## Quick start
 
-The smallest valid problem — a uniform 1D slab, one group, unit inflow:
+The smallest valid problem — a uniform 1D slab, one group, driven by its own
+source with cold vacuum faces:
 
 ```json
 {
@@ -28,7 +29,7 @@ make build_tests
 cd tests && ./transportk -problem my_problem.json -ksp_monitor -ksp_converged_reason
 ```
 
-Everything omitted has a sane default: all faces vacuum, `inflow` 1.0, no
+Everything omitted has a sane default: all faces vacuum with no inflow, no
 painted regions, no output. Start from the nearest file in `tests/problems/`
 rather than from scratch — the table at the bottom maps features to exemplars.
 
@@ -61,7 +62,7 @@ Three ways to fill `"materials"`:
   fields and bookkeeping are ignored (see the reference for the exact list).
   Add a `Source` array per material if you need an external source — a
   k-eigenvalue code's format typically has none, so such a file is sourceless
-  and the problem is driven by `inflow` alone.
+  and the problem has to be driven by a face's `inflow` instead.
 
 Rules the loader enforces: ids dense `0..n-1` (they ARE the device-table
 indices), every array sized by `n_groups`. Conventions it cannot check for
@@ -100,10 +101,38 @@ paint over everywhere — the background is whatever `regions.background` names,
 material 0 by default.
 
 ### 5. Boundary conditions and inflow
-Unset faces are vacuum: the rhs carries `inflow` on their incoming
-directions. `reflect` mirrors the outgoing flux back in. Mind the face names
-in 3D: `bottom`/`top` are the **z** faces there (PETSc's box convention), not
-y as in 2D — the y faces are `front`/`back`.
+Unset faces are vacuum and COLD: nothing comes in, so a problem with no
+`boundary_conditions` block is driven by its source regions alone — that is
+the cold-problem pattern, and it needs no knob. `reflect` mirrors the outgoing
+flux back in. Mind the face names in 3D: `bottom`/`top` are the **z** faces
+there (PETSc's box convention), not y as in 2D — the y faces are
+`front`/`back`.
+
+To drive a problem through a face instead, give that face the object form:
+
+```json
+"boundary_conditions": {"left": {"type": "vacuum", "inflow": 1.0}}
+```
+
+`inflow` is per face, and it is an **isotropic angle-integrated strength**,
+the same convention a material's `Source` uses — the backend divides by the
+quadrature's measure, so `1.0` means the same physics in 1D, 2D and 3D. A bare
+`"vacuum"` string is shorthand for inflow 0.
+
+Add a `window` to drive only part of a face. `box_crooked_pipe.json` is the
+worked example: the benchmark's pipe mouth is the strip of the left boundary
+with `2 <= y <= 3`, and driving the whole face instead would push radiation
+into the wall material (nearly pure scattering) and change what the benchmark
+measures.
+
+```json
+"left": {"type": "vacuum", "inflow": 1.0, "window": [2.0, 3.0]}
+```
+
+The window is one `[lo, hi]` pair per tangential axis of the face, ascending
+global-axis order, membership by boundary-cell centre and inclusive at both
+ends — the same rule `regions.paint` follows, so a window and a paint box
+agree about which cells they cover. A 1D face is a point and takes no window.
 
 The one trap: **all faces reflective + scattering ratio 1 anywhere is
 singular** (the constants are in the operator's kernel). Keep a vacuum face,
@@ -111,9 +140,6 @@ or give every group absorption. The multigroup corollary: the LAST group
 always has ratio 1 in a pure-downscatter recipe with `Sigma_s[g][g] =
 Sigma_t[g]`, so keep a vacuum face in that case regardless of the other
 groups.
-
-`inflow: 0.0` plus a painted source region is the cold-problem pattern —
-everything is driven by the region.
 
 ### 6. Output
 `output.flux_vtk` writes the scalar flux (`.vts`/`.vtr`) when the solve
