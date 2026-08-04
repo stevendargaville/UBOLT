@@ -1,0 +1,185 @@
+{
+ "_comment": "Lattice literature benchmark (steady fixed-source analog of the Brunner RT lattice): c=1 scatterer background, 11 unit pure absorbers, central unit source. Pins scattering ratio exactly 1 with painted pure absorbers; the base case to carry into the unstructured phase.",
+ "dimension": 2,
+ "mesh": {
+  "n_cells": [
+   56,
+   56
+  ],
+  "lengths": [
+   7.0,
+   7.0
+  ]
+ },
+ "sn_order": 4,
+ "materials": {
+  "n_groups": 1,
+  "materials": [
+   {
+    "id": 0,
+    "name": "scatterer",
+    "Sigma_t": [
+     1.0
+    ],
+    "Sigma_s": [
+     [
+      1.0
+     ]
+    ],
+    "Source": [
+     0.0
+    ]
+   },
+   {
+    "id": 1,
+    "name": "absorber",
+    "Sigma_t": [
+     10.0
+    ],
+    "Sigma_s": [
+     [
+      0.0
+     ]
+    ],
+    "Source": [
+     0.0
+    ]
+   },
+   {
+    "id": 2,
+    "name": "source_unit",
+    "Sigma_t": [
+     1.0
+    ],
+    "Sigma_s": [
+     [
+      1.0
+     ]
+    ],
+    "Source": [
+     1.0
+    ]
+   }
+  ]
+ },
+ "regions": {
+  "background": 0,
+  "paint": [
+   {
+    "material": "absorber",
+    "box": [
+     1.0,
+     2.0,
+     1.0,
+     2.0
+    ]
+   },
+   {
+    "material": "absorber",
+    "box": [
+     3.0,
+     4.0,
+     1.0,
+     2.0
+    ]
+   },
+   {
+    "material": "absorber",
+    "box": [
+     5.0,
+     6.0,
+     1.0,
+     2.0
+    ]
+   },
+   {
+    "material": "absorber",
+    "box": [
+     2.0,
+     3.0,
+     2.0,
+     3.0
+    ]
+   },
+   {
+    "material": "absorber",
+    "box": [
+     4.0,
+     5.0,
+     2.0,
+     3.0
+    ]
+   },
+   {
+    "material": "absorber",
+    "box": [
+     1.0,
+     2.0,
+     3.0,
+     4.0
+    ]
+   },
+   {
+    "material": "absorber",
+    "box": [
+     5.0,
+     6.0,
+     3.0,
+     4.0
+    ]
+   },
+   {
+    "material": "absorber",
+    "box": [
+     2.0,
+     3.0,
+     4.0,
+     5.0
+    ]
+   },
+   {
+    "material": "absorber",
+    "box": [
+     4.0,
+     5.0,
+     4.0,
+     5.0
+    ]
+   },
+   {
+    "material": "absorber",
+    "box": [
+     1.0,
+     2.0,
+     5.0,
+     6.0
+    ]
+   },
+   {
+    "material": "absorber",
+    "box": [
+     5.0,
+     6.0,
+     5.0,
+     6.0
+    ]
+   },
+   {
+    "material": "source_unit",
+    "box": [
+     3.0,
+     4.0,
+     3.0,
+     4.0
+    ]
+   }
+  ]
+ },
+ "boundary_conditions": {
+  "left": "vacuum",
+  "right": "vacuum",
+  "bottom": "vacuum",
+  "top": "vacuum"
+ },
+ "inflow": 0.0
+}
