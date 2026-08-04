@@ -32,11 +32,14 @@ struct PETSC_VISIBILITY_PUBLIC MaterialBox3D {
 // direction points in through - any node with an upwind neighbour outside the
 // box on any axis, edges and corners included. What the row then holds depends
 // on the face's BC family: vacuum makes it a Dirichlet row (every upwind slot
-// nulled, the rhs carries the incoming flux), reflective repurposes the first
-// slot for the -1 coupling to the mirrored angle in the same cell. A direction
-// incoming through several faces of an edge or corner reflects in every
-// reflective axis - up to a triple flip where three reflective faces meet -
-// and is Dirichlet if any of those faces is vacuum: vacuum wins
+// nulled, the rhs carries the incoming flux - that face's angle-integrated
+// inflow shared over the ordinates, zero outside its window), reflective
+// repurposes the first slot for the -1 coupling to the mirrored angle in the
+// same cell. A direction incoming through several faces of an edge or corner
+// reflects in every reflective axis - up to a triple flip where three
+// reflective faces meet - and is Dirichlet if any of those faces is vacuum:
+// vacuum wins, and the inflow value and window such a row takes are the first
+// vacuum incoming face's in axis order x, y, z
 class PETSC_VISIBILITY_PUBLIC StructuredFD3D : public Discretisation {
 public:
    // The boundary label ids this backend hands to the BCSpec - the ids

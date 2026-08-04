@@ -31,7 +31,8 @@ Codebase map
   weight matrix) with `SNQuadrature` / `SNQuadrature2D` / `SNQuadrature3D` under it
   (the 3D set folds nothing so it has twice the ordinates of the same-order 2D set), plus
   `UboltAngularIntegral`, the shared angular integral; `BCSpec` (boundary label id →
-  BC family {vacuum, reflect}, keyed the way DMPlex "Face Sets" ids are — the structured
+  BC family {vacuum, reflect}, plus the vacuum face's prescribed inflow and optional
+  tangential window, keyed the way DMPlex "Face Sets" ids are — the structured
   backends' `FACE_*` constants match PETSc's box-mesh convention, and a problem file's
   `boundary_conditions` names faces onto them); `MaterialSpec` (BCSpec's sibling
   for cell data: per-material, per-group xsections + external source — an isotropic
@@ -104,8 +105,8 @@ Codebase map
   already written them — the identity on a Dirichlet (vacuum) row, identity minus the
   mirrored angle on a reflective one. Anything that builds a right hand side rather than
   acting on the unknowns being solved for is NOT an `OperatorTerm` — see `GroupTransfer`
-  — but it owes the mask the same thing; the rhs itself owes the reflect rows a zero,
-  which is what `UboltZeroReflectRows` is for.
+  — but it owes the mask the same thing; the rhs itself owes Dirichlet rows the per-row
+  inflow — `UboltFillInflow` — and reflect rows a zero — `UboltZeroReflectRows`.
 - PETSc source is at `$PETSC_DIR/$PETSC_ARCH`. Both env variables must be set.
   PFLARE is at `$PFLARE_DIR` (defaults to `/home/sdargavi/projects/PFLARE` in the Makefile).
 

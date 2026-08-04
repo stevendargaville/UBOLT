@@ -6,5 +6,13 @@
   "lengths": [1.0, 1.0, 1.0]
  },
  "sn_order": 2,
- "materials": "materials/slab_mg4_t05.json"
+ "materials": "materials/slab_mg4_t05.json",
+ "boundary_conditions": {
+  "left": {"type": "vacuum", "inflow": 12.566370614359172},
+  "right": {"type": "vacuum", "inflow": 12.566370614359172},
+  "front": {"type": "vacuum", "inflow": 12.566370614359172},
+  "back": {"type": "vacuum", "inflow": 12.566370614359172},
+  "bottom": {"type": "vacuum", "inflow": 12.566370614359172},
+  "top": {"type": "vacuum", "inflow": 12.566370614359172}
+ }
 }

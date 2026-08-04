@@ -305,7 +305,7 @@ domain on purpose: a whole-domain cover would leave the background material unus
 | 2D 50x50 identity: 2 regions = background, st=2 | 6 | — | 7 |
 | 2D 30x30 overlap: masked box covered by a background copy, st=2 ratio 0.5 | 5 | — | — |
 | 2D 50x50 absorbing sourceless block (sigma_t 10, sigma_s 1, q 0) over st=2 ratio 0.5 | 5 | 5 | — |
-| 2D 60x60 cold box: `inflow 0.0`, zero source outside a central 0.1x0.1 region | 5 | 5 | — |
+| 2D 60x60 cold box: no face inflow, zero source outside a central 0.1x0.1 region | 5 | 5 | — |
 | 1D multigroup 4 groups t05, double-density region 0.4-0.6 | 6, 6, 6, 6 | 6, 6, 6, 6 | — |
 
 The cold box could not move: zero inflow leaves the painted source as the only rhs, so
@@ -358,7 +358,7 @@ carrying slack (see the 2D section for the precedent).
 | 10^3 identity: 2 regions = background, st=2 | 5 | 5 (np=4) |
 | 10^3 overlap: masked box covered by a background copy, st=2 ratio 0.5 | 4 | — |
 | 10^3 absorbing sourceless block over ratio 0.5 | 4 | 4 |
-| 10^3 cold cube: `inflow 0.0`, zero source outside a central 0.2^3 region | 4 | 4 |
+| 10^3 cold cube: no face inflow, zero source outside a central 0.2^3 region | 4 | 4 |
 | 10^3 multigroup 4 groups t05 | 5, 5, 5, 5 | 5, 5, 5, 5 |
 
 Every cube dropped from 20^3 to 10^3 on 2026-08-02 to bring CI down (see "Recipe cost"
@@ -508,17 +508,28 @@ in `run_tests_short_*`; all four cost ~1 s serial.
 
 | problem | regime pinned | np=1 | np=2 |
 |---|---|---|---|
-| `box_crooked_pipe.json` (28x20) | discontinuous D through the harmonic face mean (Southworth et al. crooked pipe, Table I set 2) | 117 / 71 | 90 / 69 |
+| `box_crooked_pipe.json` (28x20) | discontinuous D through the harmonic face mean (Southworth et al. crooked pipe, Table I set 2) | 123 / 72 | 94 / 69 |
 | `box_layers.json` (40x40) | alternating thick/thin layers (the Warsa mixed regime) | 25 / 13 | 25 / 12 |
 | `box_lattice.json` (56x56) | scattering ratio exactly 1 with painted pure absorbers | 9 / 5 | 9 / 5 |
 | `box_random8.json` (32x32) | fixed-seed blockwise random thick/thin/absorber mix | 27 / 11 | 27 / 11 |
 
 Counts are reference / `-precon_dsa`; the pins sit at measured + 1 like the
 other DSA pins (PCGAMG/PCAIR slack). The crooked pipe is the one file whose
-reference count moves with the rank count (117 vs 90 — PCAIR on a strongly
+reference count moves with the rank count (123 vs 94 — PCAIR on a strongly
 heterogeneous operator), so its serial and parallel pins differ. These were
 measured on the local **opt** arch only and have **not been swept over the CI
 arches** — same pending flag as the DSA pins above.
+
+The crooked pipe's counts were re-measured on 2026-08-04 when inflow went per
+face: the file used to be driven by a painted unit-`Source` strip in the first
+pipe column (a material `pipe_src`, retired with its paint box), because UBOLT
+had only one global inflow value and could not drive one face. It is now driven
+the way the paper does it — an inward isotropic source at the inlet, here
+`"left": {"type": "vacuum", "inflow": 1.0, "window": [2.0, 3.0]}`, the pipe
+mouth only. `dy = 5/20 = 0.25`, so the window covers exactly the four boundary
+cells `j = 8..11` (centres 2.125–2.875) the strip covered. The magnitude is
+only relative in a linear fixed-source solve, so `1.0` angle-integrated is the
+faithful replacement for the retired unit angle-integrated `Source` strip.
 
 ### Checks that are not recipes
 A recipe passes on exit 0, so the two guards are checked BY HAND:
@@ -534,21 +545,41 @@ A recipe passes on exit 0, so the two guards are checked BY HAND:
   which is why no shipped problem file is in that state.
 
 ## Source and inflow conventions
-A material's `Source` array is an **isotropic, angle-integrated strength**:
-`UboltFillSource` writes `source / sum_weights` on each ordinate — `/2` in 1D, `/4 pi`
-in 2D and 3D — so the same value means the same physics in every dimension. Until Aug
-2026 the value was
-the literal per-angle rhs entry; the 2026-08-02 baseline re-capture (the six mg
-t05/stream logs) and the pin re-measure above are that change landing.
+Both rhs knobs are **isotropic, angle-integrated strengths**, divided by the
+quadrature's `sum_weights` on their way onto the ordinates — `/2` in 1D, `/4 pi` in 2D
+and 3D — so the same number means the same physics in every dimension. A material's
+`Source` is written that way by `UboltFillSource`; a vacuum face's `inflow` is written
+that way by the backend, into the per-row Dirichlet values `UboltFillInflow` lays onto
+b. Until Aug 2026 `Source` was the literal per-angle rhs entry; the 2026-08-02 baseline
+re-capture (the six mg t05/stream logs) and the pin re-measure above are that change
+landing.
 
-A problem file's `inflow` prescribes the vacuum faces' incoming flux — the value the
-Dirichlet rows of b carry, historically hard-coded at 1.0, which stays the default so
-every single-group recipe and baseline above is untouched. It is deliberately still
-per-angle: it prescribes the incoming ANGULAR flux, which is per-ordinate by nature.
+`inflow` followed a month later. It was one GLOBAL, PER-ANGLE value (a `VecSet` over
+the whole rhs, default 1.0), and testing.md used to record that as deliberate — the
+incoming ANGULAR flux is per-ordinate by nature. That stance fell when inflow went per
+face (2026-08-04): a per-face knob sitting next to a per-face `Source` with the
+opposite scaling is an inconsistency nobody can carry in their head, and the papers the
+DSA benchmarks reproduce all prescribe an isotropic incident source, which is the
+angle-integrated quantity. The top-level `"inflow"` key is gone; a file carrying it
+errors with a migration message.
+
+The migration was byte-for-byte. `sum_weights` is the quadrature's exact analytic
+measure, not a floating sum (`set_weights(w_h, 2.0)` in 1D, `set_weights(w_h,
+4.0 * PETSC_PI)` in 2D and 3D), so writing the exact double of that measure into every
+previously-default file makes `inflow / sum_weights` come back to exactly 1.0 — the old
+per-angle default — and the rhs is bitwise what it was. Every file that had relied on
+the default got `{"type": "vacuum", "inflow": 2.0}` (1D) or `{"type": "vacuum",
+"inflow": 12.566370614359172}` (2D and 3D, the round-trip decimal of `4.0 * PETSC_PI`)
+on every vacuum face; the cold files (`inflow: 0.0`) simply dropped the key, since 0 is
+the new default. Verified by re-running every problem file's `-ksp_monitor` log before
+and after and diffing: identical everywhere except `box_crooked_pipe.json`, the one
+deliberate physics change (below).
+
 The retired `slab_1dk` had neither knob — its source and inflow were one per-angle
 `VecSet(b, 1.0)` by design — and its baselines survive it because `Source 2.0` with
-`inflow 1.0` rebuilds that rhs exactly (the 1D single-group problem files all carry
-that pair), which was verified byte-for-byte on the unification.
+`inflow 2.0` rebuilds that rhs exactly (the 1D single-group problem files all carry
+that pair), which was verified byte-for-byte on the unification and again on this
+migration.
 
 Two old recipes died with the option surface, both strictly subsumed: the "runtime
 phase space sizes" slab run (every size is runtime-from-file on every run now) and the

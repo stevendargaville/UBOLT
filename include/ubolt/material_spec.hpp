@@ -62,8 +62,9 @@ private:
 // EXCEPT the BC rows: the rhs there belongs to the boundary condition - the
 // incoming flux on a Dirichlet row, zero on a reflective one - the same
 // contract the terms and GroupTransfer::add_source have with the BC row mask.
-// So fill b with the inflow value first (VecSet), call this, and let
-// UboltZeroReflectRows take the inflow back off the reflective rows as usual
+// So zero b and write the per-face inflow onto the Dirichlet rows first
+// (VecSet(b, 0.0) + UboltFillInflow), call this, and let UboltZeroReflectRows
+// hold the reflective rows at zero as usual
 PETSC_EXTERN PetscErrorCode UboltFillSource(const PhaseSpace &ps, const BoundaryInfo &boundary, \
    const AngularQuadrature &quad, const MaterialSpec &mats, const PetscIntKokkosView &mat_id_d, \
    PetscInt g, Vec b);

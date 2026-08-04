@@ -53,14 +53,16 @@ protected:
 
    // Build the slot maps for a backend whose rows all carry the same number of
    // COO entries, with the diagonal LAST (1D: upwind, diagonal; 2D: upwind-x,
-   // upwind-y, diagonal). Uploads the BC row mask and the reflect slots at the
-   // same time (reflect_slot is per row: the COO slot carrying the -1.0
-   // reflection coupling, -1 on every row that is not reflective)
+   // upwind-y, diagonal). Uploads the BC row mask, the reflect slots and the
+   // Dirichlet rhs values at the same time (reflect_slot is per row: the COO
+   // slot carrying the -1.0 reflection coupling, -1 on every row that is not
+   // reflective; dirichlet_value is the per-angle inflow each Dirichlet row's
+   // rhs carries, 0.0 on every other row)
    //
    // ps_ must already carry the decomposition, and oor_/ooc_ must already be
    // filled - this only turns them into the device-side maps terms read
    PetscErrorCode set_uniform_pattern(PetscInt slots_per_row, const std::vector<PetscInt> &is_bc_row, \
-      const std::vector<PetscInt> &reflect_slot);
+      const std::vector<PetscInt> &reflect_slot, const std::vector<PetscScalar> &dirichlet_value);
 
    MPI_Comm comm_ = MPI_COMM_NULL;
    // Taken once the DM has said what the decomposition is

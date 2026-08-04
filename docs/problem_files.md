@@ -9,7 +9,7 @@ solved. `transportk` is the driver that reads them:
 ```
 
 The split is deliberate. The file carries the problem - dimension, mesh,
-angles, materials, painted regions, boundary conditions, inflow, output - so
+angles, materials, painted regions, boundary conditions, output - so
 the same file solves identically under any solver configuration, and the
 solver is configured the way PETSc always is: `-ksp_*`, `-pc_*`,
 `-sub_1_pc_air_*` and friends on the command line, plus the driver's own
@@ -40,8 +40,7 @@ ignored everywhere (JSON has no comments), holding provenance prose.
 | `sn_order` | int, positive and even | yes | the SN order N, NOT the ordinate count - how many ordinates that is, is the quadrature's business and differs by dimension (N in 1D, N(N+2)/2 in 2D, N(N+2) in 3D, so S4 is 4, 12 and 24 ordinates; a 3D set has twice the ordinates of the same-order 2D set, because there is no xi > 0 half to fold over). Orders 2 and 4 are implemented today |
 | `materials` | string or object | yes | a path to a materials file, resolved relative to the problem file's own directory, or the same schema inline |
 | `regions` | object | no | which cells are which material - see below; absent = uniform background |
-| `boundary_conditions` | object | no | per-face `"vacuum"` or `"reflect"`; unset faces are vacuum |
-| `inflow` | number | no, default 1.0 | the per-angle incoming flux prescribed on the Dirichlet (vacuum-face) rows of the rhs; 0.0 with a painted source region is a cold problem driven by that region alone |
+| `boundary_conditions` | object | no | per-face `"vacuum"`/`"reflect"`, or an object `{"type", "inflow", "window"}` - see below; unset faces are vacuum with inflow 0 |
 | `output.flux_vtk` | string | no | output path, `.vts` or `.vtr`; `-flux_vtk` on the command line overrides it. A single-group problem writes the filename as given, multigroup writes one file per group (`flux.vts` becomes `flux_g0.vts`, ...). Each file carries three per-cell fields for its group: `scalar_flux`, `sigma_t` and `source` (the isotropic strength as written here, not the per-ordinate share) |
 
 ### Regions
@@ -76,9 +75,53 @@ everywhere. Keep at least one face vacuum when the scattering ratio is
 exactly 1 anywhere: an all-reflective group with no absorption is singular
 (see `docs/dev/testing.md`).
 
+A face is either the bare family string or an object:
+
+| key | type | required | meaning |
+|---|---|---|---|
+| `type` | `"vacuum"` or `"reflect"` | yes | the BC family - the same thing the bare string says |
+| `inflow` | number | no, default 0 | vacuum faces only: the incoming flux prescribed on that face's Dirichlet rows |
+| `window` | number[2*(dimension-1)] | no, default the whole face | vacuum-with-`inflow` faces only: where on the face the inflow enters |
+
+`inflow` is an **isotropic, angle-integrated strength**, exactly like a
+material's `Source`: the backend shares it over the ordinates as
+`inflow / sum_weights` (`/2` in 1D, `/4 pi` in 2D and 3D), so the same value
+means the same physics in every dimension. A bare `"vacuum"` string is a cold
+face, inflow 0, and so is an unlisted face - a problem with no
+`boundary_conditions` block at all is a cold box driven by its source regions
+alone.
+
+`window` is one `[lo, hi]` pair per TANGENTIAL axis of the face, in ascending
+global-axis order: 2 numbers on a 2D face, 4 on a 3D one (`[lo1, hi1, lo2,
+hi2]`). A 1D face is a point and takes no window. A boundary cell is inside
+the window when its CENTRE is, inclusive at both ends - the same membership
+test `regions.paint` uses - and the rest of the face is cold. So the tangents
+are y for a 2D `left`/`right` face and x for `bottom`/`top`; in 3D they are
+(y, z) for `left`/`right`, (x, z) for `front`/`back` and (x, y) for
+`bottom`/`top`.
+
+A direction incoming through more than one vacuum face (a corner or an edge)
+takes the **first vacuum incoming face in axis order x, y, z** - its inflow,
+and its window test.
+
 ```json
-"boundary_conditions": {"left": "reflect", "bottom": "reflect"}
+"boundary_conditions": {
+ "left": {"type": "vacuum", "inflow": 1.0, "window": [2.0, 3.0]},
+ "right": "vacuum",
+ "bottom": "vacuum",
+ "top": "reflect"
+}
 ```
+
+That is `box_crooked_pipe.json`'s left face: unit isotropic inflow driven
+through the pipe mouth only, the strip of the left boundary with `2 <= y <= 3`.
+
+Errors: an `inflow` or a `window` on a `"reflect"` face, a `window` on a 1D
+face, a `window` of the wrong length or with `lo > hi`, a `window` without an
+`inflow` (it would restrict nothing), and an unknown key inside the face
+object. The **top-level** `"inflow"` key of older files was removed in Aug 2026
+- it was one global per-angle value - and a file still carrying it errors with
+a migration message rather than being silently reinterpreted.
 
 ## The materials schema
 

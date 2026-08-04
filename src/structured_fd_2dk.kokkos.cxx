@@ -114,7 +114,8 @@ struct Upwind {
 
 // Classify one (node, angle) row - filling in its upwind neighbours as the
 // side product, so the sign convention above is stated once - and for a
-// reflective row say which angle it couples to
+// reflective row say which angle it couples to, for a Dirichlet one which face
+// it came in through
 //
 // The label decides only which BC family each face belongs to; whether a row
 // is a boundary row at all is the physics - the existing upwind test, which is
@@ -123,10 +124,15 @@ struct Upwind {
 // Dirichlet - vacuum wins at mixed corners - else the direction reflects in
 // every incoming axis: a corner between two reflective faces flips both
 // cosines, which is still one partner angle and so one column
+//
+// At a corner incoming through TWO vacuum faces the winning face - the one
+// whose inflow and window the rhs takes - is the x face, the first vacuum
+// incoming face in the axis order this function already checks
 static RowKind ClassifyRow(PetscInt i, PetscInt j, PetscInt a, \
    const PetscScalar *mu, const PetscScalar *eta, PetscInt n_cells_x, PetscInt n_cells_y, \
    BCType left, BCType right, BCType bottom, BCType top, \
-   const PetscInt *reflect_mu, const PetscInt *reflect_eta, Upwind *upwind, PetscInt *partner)
+   const PetscInt *reflect_mu, const PetscInt *reflect_eta, Upwind *upwind, PetscInt *partner, \
+   PetscInt *dirichlet_face)
 {
    upwind->upwind_i = (mu[a] > 0) ? i - 1 : ((mu[a] < 0) ? i + 1 : i);
    upwind->upwind_j = (eta[a] > 0) ? j - 1 : ((eta[a] < 0) ? j + 1 : j);
@@ -138,19 +144,37 @@ static RowKind ClassifyRow(PetscInt i, PetscInt j, PetscInt a, \
       (upwind->upwind_j < 0 || upwind->upwind_j >= n_cells_y));
 
    *partner = -1;
+   *dirichlet_face = -1;
    if (!x_outside && !y_outside) return RowKind::INTERIOR;
 
    // Which face the direction comes in through on each outside axis
    const BCType x_bc = (mu[a] > 0) ? left : right;
    const BCType y_bc = (eta[a] > 0) ? bottom : top;
-   if ((x_outside && x_bc == BCType::VACUUM) || (y_outside && y_bc == BCType::VACUUM)) \
+   if (x_outside && x_bc == BCType::VACUUM) {
+      *dirichlet_face = (mu[a] > 0) ? StructuredFD2D::FACE_LEFT : StructuredFD2D::FACE_RIGHT;
       return RowKind::DIRICHLET;
+   }
+   if (y_outside && y_bc == BCType::VACUUM) {
+      *dirichlet_face = (eta[a] > 0) ? StructuredFD2D::FACE_BOTTOM : StructuredFD2D::FACE_TOP;
+      return RowKind::DIRICHLET;
+   }
 
    PetscInt ap = a;
    if (x_outside) ap = reflect_mu[ap];
    if (y_outside) ap = reflect_eta[ap];
    *partner = ap;
    return RowKind::REFLECT;
+}
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+// Does a boundary cell whose centre sits at tangential coordinate t let this
+// face's inflow in? An unwindowed face lets it in everywhere; a windowed one
+// is inclusive at both ends, the same membership test PaintBoxesKernel uses
+static inline bool InWindow(const BCFace &face, PetscScalar t)
+{
+   return face.n_window_pairs == 0 || \
+      (PetscRealPart(t) >= face.window[0] && PetscRealPart(t) <= face.window[1]);
 }
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -236,11 +260,27 @@ PetscErrorCode StructuredFD2D::create(MPI_Comm comm, PhaseSpace &ps, PetscInt n_
    ooc_.assign(3 * local_rows, 0);
    std::vector<PetscInt> is_bc_row(local_rows, 0);
    std::vector<PetscInt> reflect_slot(local_rows, -1);
+   std::vector<PetscScalar> dirichlet_value(local_rows, 0.0);
 
-   const BCType left   = bcs.type(FACE_LEFT);
-   const BCType right  = bcs.type(FACE_RIGHT);
-   const BCType bottom = bcs.type(FACE_BOTTOM);
-   const BCType top    = bcs.type(FACE_TOP);
+   // A 2D face is a line, so it takes one tangential [lo, hi] pair. The
+   // per-angle rhs value is the face's angle-integrated inflow shared out over
+   // the ordinates, exactly as UboltFillSource shares a material's Source, so
+   // the same number means the same physics in any dimension
+   const BCFace face_of[4] = {bcs.face(FACE_LEFT), bcs.face(FACE_RIGHT), \
+                              bcs.face(FACE_BOTTOM), bcs.face(FACE_TOP)};
+   const PetscInt face_id[4] = {FACE_LEFT, FACE_RIGHT, FACE_BOTTOM, FACE_TOP};
+   PetscScalar face_value[4];
+   for (PetscInt f = 0; f < 4; f++) {
+      PetscCheck(face_of[f].n_window_pairs == 0 || face_of[f].n_window_pairs == 1, comm_, \
+         PETSC_ERR_ARG_WRONG, "a 2D face takes one tangential [lo, hi] window pair, face %" \
+         PetscInt_FMT " was given %" PetscInt_FMT, face_id[f], face_of[f].n_window_pairs);
+      face_value[f] = (PetscScalar)face_of[f].inflow / quad.sum_weights();
+   }
+
+   const BCType left   = face_of[0].type;
+   const BCType right  = face_of[1].type;
+   const BCType bottom = face_of[2].type;
+   const BCType top    = face_of[3].type;
    const PetscInt *reflect_mu = quad.reflect_mu_host();
    const PetscInt *reflect_eta = quad.reflect_eta_host();
 
@@ -260,10 +300,24 @@ PetscErrorCode StructuredFD2D::create(MPI_Comm comm, PhaseSpace &ps, PetscInt n_
             // reflection condition psi(a) - psi(partner) = 0 on a reflective
             // one. Corner nodes classify through either axis
             Upwind upwind;
-            PetscInt partner = -1;
+            PetscInt partner = -1, dirichlet_face = -1;
             const RowKind kind = ClassifyRow(i, j, a, mu, eta, n_cells_x, n_cells_y, \
-               left, right, bottom, top, reflect_mu, reflect_eta, &upwind, &partner);
+               left, right, bottom, top, reflect_mu, reflect_eta, &upwind, &partner, &dirichlet_face);
             if (kind != RowKind::INTERIOR) is_bc_row[r] = 1;
+
+            if (kind == RowKind::DIRICHLET)
+            {
+               // The rhs takes the winning face's inflow, restricted to its
+               // window by the boundary cell's tangential centre coordinate -
+               // node (i, j) sits at (i dx, j dy), the same centre formula
+               // PaintBoxesKernel uses
+               for (PetscInt f = 0; f < 4; f++) {
+                  if (face_id[f] != dirichlet_face) continue;
+                  const PetscScalar t = (dirichlet_face == FACE_LEFT || dirichlet_face == FACE_RIGHT) ? \
+                     ((PetscScalar)j + 0.5) * dy_ : ((PetscScalar)i + 0.5) * dx_;
+                  dirichlet_value[r] = InWindow(face_of[f], t) ? face_value[f] : (PetscScalar)0.0;
+               }
+            }
 
             if (kind == RowKind::REFLECT)
             {
@@ -272,9 +326,10 @@ PetscErrorCode StructuredFD2D::create(MPI_Comm comm, PhaseSpace &ps, PetscInt n_
                // direction of the grid is a single cell wide and the opposite
                // face catches it, which there is no sensible matrix for
                Upwind upwind2;
-               PetscInt partner2 = -1;
+               PetscInt partner2 = -1, dirichlet_face2 = -1;
                PetscCheck(ClassifyRow(i, j, partner, mu, eta, n_cells_x, n_cells_y, \
-                  left, right, bottom, top, reflect_mu, reflect_eta, &upwind2, &partner2) == RowKind::INTERIOR, \
+                  left, right, bottom, top, reflect_mu, reflect_eta, &upwind2, &partner2, \
+                  &dirichlet_face2) == RowKind::INTERIOR, \
                   comm, PETSC_ERR_SUP, "the reflection partner of node (%" PetscInt_FMT ", %" \
                   PetscInt_FMT ") angle %" PetscInt_FMT " is itself a boundary row - a reflective " \
                   "face on a single-cell-wide direction is not supported", i, j, a);
@@ -323,7 +378,7 @@ PetscErrorCode StructuredFD2D::create(MPI_Comm comm, PhaseSpace &ps, PetscInt n_
 
    // Slot maps - row r owns COO slots 3r (upwind-x), 3r + 1 (upwind-y) and
    // 3r + 2 (diagonal)
-   PetscCall(set_uniform_pattern(3, is_bc_row, reflect_slot));
+   PetscCall(set_uniform_pattern(3, is_bc_row, reflect_slot, dirichlet_value));
 
    PetscFunctionReturn(PETSC_SUCCESS);
 }
