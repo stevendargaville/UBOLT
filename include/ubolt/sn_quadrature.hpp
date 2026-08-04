@@ -45,11 +45,13 @@ protected:
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-// 1D SN quadrature (Gauss-Legendre, SN order 2 or 4)
+// 1D SN quadrature: Gauss-Legendre, any even order
 //
 // The order is what a problem asks for; how many ordinates that is, is the
 // quadrature's own business - in 1D the SN order IS the ordinate count, an N
-// point Gauss-Legendre rule on [-1, 1]
+// point Gauss-Legendre rule on [-1, 1]. The nodes and weights are generated to
+// machine precision at create() time rather than tabulated, so there is no
+// upper bound on the order
 //
 // Keeps the ordinates on the host (the COO preallocation is a host loop) and on
 // the device (the assembly and scatter kernels)
@@ -72,14 +74,19 @@ private:
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-// 2D (XY geometry) SN quadrature: the level-symmetric sets, S2 (4 ordinates)
-// and S4 (12), which is 4 quadrants x {1, 3} directions each - N (N + 2) / 2
-// ordinates for order N
+// 2D (XY geometry) SN quadrature: the level-symmetric (LQn) sets, even orders
+// 2 to 18 - N (N + 2) / 2 ordinates for order N, which is 4 quadrants x
+// N (N + 2) / 8 directions each, so 4 at S2, 12 at S4 and 40 at S8
 //
 // XY geometry is symmetric about the z = 0 plane, so only the directions with
 // xi > 0 are tracked and their weights are doubled to stand in for the mirrored
 // half. The weights therefore sum to the full 4 pi, and xi itself is never
 // needed - the operator only ever sees mu and eta
+//
+// The weights are NOT equal across a set beyond S4: they are constant on the
+// permutation classes of the direction's level indices. S18 is the last order
+// the family reaches - above it the weights stop being all positive, which is
+// where the generated table stops rather than something to work around
 class PETSC_VISIBILITY_PUBLIC SNQuadrature2D : public AngularQuadrature {
 public:
    PetscErrorCode create(PetscInt sn_order);
@@ -105,13 +112,14 @@ private:
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-// 3D SN quadrature: the level-symmetric sets, S2 (8 ordinates) and S4 (24),
-// which is 8 octants x {1, 3} directions each - N (N + 2) ordinates for order N
+// 3D SN quadrature: the same level-symmetric (LQn) sets as 2D, even orders 2
+// to 18 - N (N + 2) ordinates for order N, 8 octants x N (N + 2) / 8 each
 //
 // Unlike 2D there is no symmetry plane to fold over, so all eight octants are
 // tracked and xi is a real cosine the streaming term reads. That doubles the
 // ordinate count of the same-order 2D set: S2 is 8 here against 2D's 4, S4 is
-// 24 against 12. The weights still sum to the full 4 pi
+// 24 against 12, S8 is 80 against 40. The weights still sum to the full 4 pi,
+// and beyond S4 they are constant on permutation classes rather than equal
 class PETSC_VISIBILITY_PUBLIC SNQuadrature3D : public AngularQuadrature {
 public:
    PetscErrorCode create(PetscInt sn_order);

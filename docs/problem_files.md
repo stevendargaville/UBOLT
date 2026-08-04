@@ -37,7 +37,7 @@ ignored everywhere (JSON has no comments), holding provenance prose.
 | `dimension` | int, 1, 2 or 3 | yes | picks the backend: `StructuredFD1D`, `StructuredFD2D` or `StructuredFD3D` |
 | `mesh.n_cells` | int[dimension] | yes | `[nx]`, `[nx, ny]` or `[nx, ny, nz]`, all positive |
 | `mesh.lengths` | number[dimension] | yes | `[lx]`, `[lx, ly]` or `[lx, ly, lz]`, all positive |
-| `sn_order` | int, positive and even | yes | the SN order N, NOT the ordinate count - how many ordinates that is, is the quadrature's business and differs by dimension (N in 1D, N(N+2)/2 in 2D, N(N+2) in 3D, so S4 is 4, 12 and 24 ordinates; a 3D set has twice the ordinates of the same-order 2D set, because there is no xi > 0 half to fold over). Orders 2 and 4 are implemented today |
+| `sn_order` | int, positive and even | yes | the SN order N, NOT the ordinate count - how many ordinates that is, is the quadrature's business and differs by dimension (N in 1D, N(N+2)/2 in 2D, N(N+2) in 3D, so S4 is 4, 12 and 24 ordinates; a 3D set has twice the ordinates of the same-order 2D set, because there is no xi > 0 half to fold over). 1D takes ANY even order - it is a Gauss-Legendre rule, generated at run time; 2D and 3D take the even orders 2 to 18, the level-symmetric (LQn) sets, which is as far as that family goes with all-positive weights |
 | `materials` | string or object | yes | a path to a materials file, resolved relative to the problem file's own directory, or the same schema inline |
 | `regions` | object | no | which cells are which material - see below; absent = uniform background |
 | `boundary_conditions` | object | no | per-face `"vacuum"`/`"reflect"`, or an object `{"type", "inflow", "window"}` - see below; unset faces are vacuum with inflow 0 |

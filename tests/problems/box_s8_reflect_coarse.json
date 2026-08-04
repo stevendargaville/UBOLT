@@ -1,0 +1,29 @@
+{
+ "_comment": "2D box, S8 (40 ordinates) with reflective left + bottom faces. S8 is the first order whose level-symmetric weights are NOT all equal - three distinct values across the permutation classes - so this is what puts unequal weights through a real solve: the angular integral, the reflection maps and the reflect partner columns all see them. A coarse 20x20 grid on purpose, since none of that is about resolution. The vacuum faces carry the 4 pi inflow that makes their per-ordinate incoming flux 1.0, matching box_30_s4_reflect_lb.json so the two differ only in the quadrature order.",
+ "dimension": 2,
+ "mesh": {
+  "n_cells": [20, 20],
+  "lengths": [1.0, 1.0]
+ },
+ "sn_order": 8,
+ "materials": {
+  "n_groups": 1,
+  "materials": [
+   {
+    "id": 0,
+    "name": "st2_ss1",
+    "Sigma_t": [2.0],
+    "Sigma_s": [
+     [1.0]
+    ],
+    "Source": [1.0]
+   }
+  ]
+ },
+ "boundary_conditions": {
+  "left": "reflect",
+  "right": {"type": "vacuum", "inflow": 12.566370614359172},
+  "bottom": "reflect",
+  "top": {"type": "vacuum", "inflow": 12.566370614359172}
+ }
+}

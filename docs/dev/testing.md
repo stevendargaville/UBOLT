@@ -22,10 +22,10 @@
 - Targets: `make check` (fast sanity, 6 runs) < `make tests_short` < `make tests`.
   Parallel variants use `$(MPIEXEC) -n 2` — plus one `-n 4` run, see the 2D section — and
   are skipped under MPIUNI, including `run_check`'s single parallel line.
-- `tests/verify_2dk` is the exception to "pass/fail is a pinned iteration count": it is a
-  discretisation check and its exit code comes from tolerances on two numerical checks
-  (below). It prints what it measured against the tolerance, so a run that is drifting
-  towards failure is visible before it fails.
+- The `verify_*` drivers are the exception to "pass/fail is a pinned iteration count":
+  they are discretisation and quadrature checks and their exit codes come from tolerances
+  on numerical checks (below). They print what they measured against the tolerance, so a
+  run that is drifting towards failure is visible before it fails.
 
 ## Baselines (tests/baselines/)
 Captured `-ksp_monitor -ksp_converged_reason` logs. They are the ground truth for a
@@ -45,8 +45,9 @@ new driver, plus the t0 structural identity, the painting identity at np=1 and n
 the 1D/2D infinite-medium checks.
 
 ### Single-group baselines
-Re-captured 2026-08-01 after the Dirichlet-row fix to the matrix-free scatter (see below).
-Before that, 2026-07-31 after the negative-angle upwind sign fix, and before *that* they
+Re-captured 2026-08-04 for the quadrature precision fix (see below). Before that,
+2026-08-01 after the Dirichlet-row fix to the matrix-free scatter, 2026-07-31 after the
+negative-angle upwind sign fix, and before *that* they
 came from the pre-refactor code (the single-file `UBOLTk.kokkos.cxx`); Phase 1a and Phase
 1b each reproduced all 16 bitwise, which is what those phases were verified against. The
 `-ubolt_coo_two_call` assembly fallback reproduces them bitwise.
@@ -61,32 +62,55 @@ came from the pre-refactor code (the single-file `UBOLTk.kokkos.cxx`); Phase 1a 
 - Re-capture with `make baselines` — only do this deliberately (i.e. when the reference
   behavior itself is being intentionally changed), never to make a failing test pass.
 - Environment matters for exact reproduction: these were captured with a debug PETSc main
-  build (`arch-linux-c-debug`), gcc 13, OpenMPI, np as named. Different
-  compilers/optimization may shift trailing digits; iteration counts should still match.
+  build (`arch-linux-c-debug`), gcc 13, OpenMPI, np as named — the same environment every
+  previous capture used, so a capture-to-capture diff is like for like. Different
+  compilers/optimization may shift trailing digits; iteration counts should still match
+  (measured, on the pre-change code: debug against opt moves no count in any of the 24
+  logs, leaves the initial residuals identical, and drifts early iterations by 1.3e-13).
 - np=1 and np=2 logs differ in the trailing digits (parallel reduction order); compare a
   log against the baseline for the *same* np, never across np.
 
 ## Single-group baseline iteration counts
-Captured 2026-08-01, capped at `-ksp_max_it 200`. The two older columns are kept because
-earlier phases were verified against them — "sign fix" is the 2026-07-31 capture, before
-the scatter's Dirichlet rows were fixed, and "pre-refactor" is what the original single
-file did:
+Captured 2026-08-04, capped at `-ksp_max_it 200`. The older columns are kept because
+earlier phases were verified against them — "Dirichlet fix" is the 2026-08-01 capture,
+before the quadrature constants were fixed; "sign fix" is 2026-07-31, before the scatter's
+Dirichlet rows were fixed; and "pre-refactor" is what the original single file did:
 
-| config | np=1 | np=2 | sign fix (np=1, np=2) | pre-refactor |
-|---|---|---|---|---|
-| default pc, st=0 | 1 | 1 | 1, 1 | 1, 1 |
-| default pc, st=2 | 6 | 6 | 5, 5 | 10, 10 |
-| default pc, st=0, diag_scale | 1 | 1 | 1, 1 | 1, 1 |
-| default pc, st=2, diag_scale | DIVERGED_ITS (200) | DIVERGED_ITS (200) | 175, 173 | DIVERGED_ITS |
-| precon_stream, st=0 | 1 | 1 | 1, 1 | 1, 1 |
-| precon_stream, st=2 | 9 | 9 | 10, 10 | 16, 16 |
-| precon_stream, st=0, diag_scale | 3 | 3 | 3, 3 | 3, 3 |
-| precon_stream, st=2, diag_scale | DIVERGED_BREAKDOWN (150) | DIVERGED_BREAKDOWN (150) | DIVERGED_BREAKDOWN (90) | DIVERGED_ITS |
+| config | np=1 | np=2 | Dirichlet fix (np=1, np=2) | sign fix (np=1, np=2) | pre-refactor |
+|---|---|---|---|---|---|
+| default pc, st=0 | 1 | 1 | 1, 1 | 1, 1 | 1, 1 |
+| default pc, st=2 | 6 | 6 | 6, 6 | 5, 5 | 10, 10 |
+| default pc, st=0, diag_scale | 1 | 1 | 1, 1 | 1, 1 | 1, 1 |
+| default pc, st=2, diag_scale | DIVERGED_ITS (200) | DIVERGED_ITS (200) | DIVERGED_ITS (200) | 175, 173 | DIVERGED_ITS |
+| precon_stream, st=0 | 1 | 1 | 1, 1 | 1, 1 | 1, 1 |
+| precon_stream, st=2 | 9 | 9 | 9, 9 | 10, 10 | 16, 16 |
+| precon_stream, st=0, diag_scale | 3 | 3 | 3, 3 | 3, 3 | 3, 3 |
+| precon_stream, st=2, diag_scale | DIVERGED_BREAKDOWN (60) | DIVERGED_BREAKDOWN (180) | DIVERGED_BREAKDOWN (150, 150) | DIVERGED_BREAKDOWN (90) | DIVERGED_ITS |
 
-The st=0 rows are identical across all three captures, and must be: `sigma_s = 0` there,
+The st=0 rows are identical across every capture, and must be: `sigma_s = 0` there,
 so neither the scatter nor its Dirichlet rows exist.
 
 History of these baselines:
+- **The quadrature constants were truncated to float precision** (FIXED 2026-08-04, this
+  re-capture): the direction cosines were literals of 7 to 10 significant digits in a
+  double code (`0.5773502692` for `1/sqrt(3)`, a relative error of 1.8e-10), and the
+  quadratures now generate them — 1D by Newton on the Legendre polynomial at `create`
+  time, 2D and 3D from a table generated at 60 decimal digits by `src/sn_lqn_table.py`.
+  That perturbs every result in the trailing digits and nothing else, which is what the
+  re-capture was checked against, on the same arch so the diff is like for like. Over the
+  20 non-pathological logs: **no iteration count moved**, and the **initial** residual —
+  the direct fingerprint of the constants, with no solver amplification in it — drifts by
+  at most 2.2e-10, the size of the perturbation itself. Later iterations amplify that, as
+  they must: through the non-converged iterations the drift stays under 1e-10 everywhere
+  except the multigroup streaming-pmat pair, whose 11-iteration histories reach 2.2e-4 by
+  the end. A run's FINAL residual is not a useful comparison at all — it sits at the rtol
+  floor, so the change in it is 1e-13 to 1e-17 of that run's initial residual (3e-7 for
+  the multigroup streaming pair) while its *relative* change can be anything.
+  What DID move is the two `precon_stream, st=2, diag_scale` logs, from
+  DIVERGED_BREAKDOWN at 150 to 60 (np=1) and 180 (np=2). Those are the pathological
+  configs below: they break down rather than converge, so where they break down is not a
+  stable quantity, and no recipe pins them. Across the whole recipe suite exactly one
+  count moved — 2D 80x40 with a streaming-only pmat, 10 to 9 — see the 2D table.
 - **The matrix-free scatter wrote to the Dirichlet rows** (FIXED after Phase 4, this
   re-capture): `ScatteringTerm::apply_add` subtracted the scattering source from every row
   including the boundary ones, so the shell's Dirichlet rows were not the identity the
@@ -148,6 +172,67 @@ With `-precon_stream` the streaming-only pmat does not depend on the group, so P
 set up once for the whole sweep; with the default pc the assembled matrix is refilled per
 group and PCAIR re-runs its setup each time. Both are exercised by the recipes.
 
+## Quadrature verification
+`tests/verify_quadraturek` checks the angular quadratures in isolation, and it exists
+because since 2026-08-04 they are **generated rather than tabulated**: 1D is a
+Gauss-Legendre rule built by Newton in `SNQuadrature::create`, and 2D/3D read the
+level-symmetric table `src/sn_lqn_table.py` emits into `src/sn_lqn_table.hpp`. Neither is
+anything a reader can eyeball, and nothing downstream can tell a subtly wrong set from a
+right one — a wrong quadrature makes a plausible, converging, wrong answer.
+
+Tolerances, not iteration counts, decide its exit code, and it prints every measurement
+against its tolerance. It is in both `make check` and `make tests_short`, serial and at
+`-n 2`; the quadrature is replicated on every rank, so the parallel run says only that the
+driver is clean under MPI. It costs well under a second.
+
+What it pins:
+- **1D**, at S2, S4, S6, S8, S12, S16 and S32: exactness on every polynomial of degree
+  up to 2N−1, which is the whole of what an N point Gauss rule promises (measures ~1e-15
+  against 1e-13); the weights summing to 2; the nodes strictly ascending inside (−1, 1);
+  and the ± pairing, weight symmetry and reflection map, all as **exact** equality — the
+  reflection search compares cosines with `==`, so the mirrored node has to be the bitwise
+  negation of its partner, which is why the generator mirrors by negating a shared value
+  rather than recomputing. S2 and S4 are additionally checked against their published
+  nodes and weights to 1e-15, which is the only outside reference in the file.
+- **2D and 3D**, at every order the table carries (even 2 to 18): the even axis moments
+  through order N — the conditions that *define* a level-symmetric set, so this is the
+  real test of the generated table (measures ~1e-15 against 1e-12); the ordinate counts
+  N(N+2)/2 and N(N+2); weights summing to 4π; strictly positive weights; unit direction
+  vectors in 3D and mu²+eta² < 1 strictly in 2D; and all three reflection maps being
+  weight-preserving involutions that flip exactly their own cosine. 3D also checks
+  invariance under all six permutations of the axes, by search — that is what "level
+  symmetric" means, and it is what a class weight attached to the wrong permutation would
+  break.
+- **The fold**: the 2D set is exactly the ξ > 0 half of the 3D set with doubled weights,
+  matched by (mu, eta) with `==`. The two classes build their ordinates from the same
+  table but by separate loops, so nothing else would catch them diverging.
+- **The two closed-form cosines**: S2's 1/√3 and S4's √((5−√10)/15), to 1e-15. Everything
+  above S4 rests on the generator's own assertions, so these are what say the generator is
+  solving the right problem.
+- **The error paths**: an odd order in any dimension, and S20 in 2D and 3D, all have to
+  fail. Run under `PetscReturnErrorHandler` so an expected error neither aborts the run
+  (CI puts `-on_error_abort` in `PETSC_OPTIONS`) nor prints a stack trace.
+
+The driver hard-codes 2 and 18 as the range rather than reading it out of the library, so
+a silently shortened table fails it — and the S20 rejection is what says the table has not
+silently grown either.
+
+The generator carries its own assertions and is checked separately: `python3
+src/sn_lqn_table.py` re-derives everything and asserts the moment residuals, positivity,
+the cosine ordering, the point counts, and agreement with the published mu_1 values; the
+output is deterministic, so `python3 src/sn_lqn_table.py --check` fails if the checked-in
+header is not what the script generates. That is not a `make` target — the table changes
+about as often as the definition of a level-symmetric set does.
+
+**Why the table stops at S18.** From S14 up, the axis moments do not determine the weights
+uniquely — a family of dimension 1 at S14 and S16, 2 at S18, 3 at S20 — and the generator
+picks the member minimising the error in the MIXED even moments, one least-squares problem
+and the whole rule. At S20 that member has a weight of −1.8e-5, so the generator stops
+there; the cap is a computed result, printed in the generated header with the offending
+number, not a constant anyone typed. That is the level-symmetric family running out, which
+is the well-known reason SN codes cap LQn around here; a higher order needs a different
+family (product, Gauss-Chebyshev), not a different choice within this one.
+
 ## 2D verification (Phase 4)
 There are **no 2D baselines**, and that is deliberate. A residual-history baseline is an
 indirect fingerprint of the numerics; in 2D `tests/verify_2dk` compares the operator
@@ -205,10 +290,21 @@ the painted-regions section): only the two streaming-only pmat serial references
 | 50x50, st=0 (pure streaming) | 3 | 3 |
 | 60x60, st=0 | — | 3 |
 | 60x60, st=2 | 7 | 7 |
-| 50x50, streaming-only pmat, st=2 | 9 | 9 |
-| 80x40, streaming-only pmat, st=2 | 10 | — |
+| 50x50, streaming-only pmat, st=2 | 9 (pinned 10) | 9 (pinned 10) |
+| 80x40, streaming-only pmat, st=2 | 9 (pinned 10) | — |
 | 30x30 S4, st=2 | 6 | 6 |
 | 60x60 S4, st=2 | 6 | 6 |
+| 20x20 S8, left+bottom reflect, ratio 0.5 | 6 | 6 |
+
+**The three streaming-only pmat recipes are the arch-fragile ones, and all three carry a
+pin of 10 against a reference count of 9.** They converge by clearing rtol on the last
+iteration with only a percent or two to spare, so a perturbation far too small to call a
+regression decides whether that last iteration counts. The 2026-08-04 quadrature precision
+fix is exactly such a perturbation, and it demonstrated the point twice: 80x40 serial
+measured 10 before it and 9 after on both local arches, while 50x50 serial measured 9
+locally both before and after but moved 9 -> 10 on all three CI images. So the reference
+counts in the table are not what the pins should be here — do not tighten these three onto
+a local measurement, which is a mistake this change made and CI caught.
 
 Mesh independent on every shape: 40x20 to 80x40 holds at 6, and 200x50 in the 1x0.25
 box (not a recipe) is 5, the same as 80x20.
@@ -232,6 +328,32 @@ images, and the resized recipes' pins are debug-arch measurements pending a swee
 cost is
 one iteration of slack on the reference build for those five recipes — the 1D
 streaming-pmat baselines still pin their counts exactly.
+
+**The 2026-08-04 quadrature precision fix was swept locally** (opt, then re-checked on
+debug) **and then against CI**, which is where the streaming-only pmat pins above got
+their slack — the local sweep alone was not enough, and the note above records why. It has
+NOT been swept in the sense of tightening every other pin back onto a per-arch maximum;
+those are unchanged from before the fix, which is safe because the change only ever moves
+a count by one and every other recipe passed on all four arches.
+
+## Unequal quadrature weights
+Up to and including S4 a level-symmetric set shares 4π equally between its ordinates; from
+S6 up it does not — the weights are constant on the permutation classes of a direction's
+level indices, two distinct values at S6, three at S8, ten at S18. Nothing in the
+solver ever assumed otherwise (the discretisation backends read only the sign of a cosine,
+`w_d()` is always consumed through `UboltAngularIntegral`'s gemm, and DSA's
+`/sum_weights` prolongation is the isotropic projection rather than an equal-weight
+assumption), but until 2026-08-04 no order above S4 existed, so nothing exercised it.
+
+`box_s8_reflect_coarse.json` is what does: 2D, S8 (40 ordinates, three distinct weights),
+coarse 20x20 because none of this is about resolution, with reflective left and bottom
+faces so the reflection maps and the reflect partner columns see the unequal weights too.
+It runs serial and at `-n 2`, 6 iterations both ways.
+
+Note that `verify_2dk` and `verify_3dk` build their reference matrices with
+`sum_weights / n_angles` as the weight, which is only correct at S2 and S4 — the orders
+they run. A future reference-matrix run at a higher order has to read the weights out of
+the quadrature instead.
 
 ## Reflective boundary conditions
 A problem file's `boundary_conditions` object takes `vacuum` (the default for an unset
@@ -269,6 +391,7 @@ vacuum — the last group always has ratio 1 (no downscatter out of it).
 | 1D multigroup 4 groups t05, left reflect | 8 (max over groups) | — |
 | 2D 50x50, left+bottom reflect, st=2 ratio 0.5 | 6 | 6 |
 | 2D 50x50 S4, left+bottom reflect, ratio 0.5 | 6 | — |
+| 2D 20x20 S8, left+bottom reflect, ratio 0.5 | 6 | 6 |
 | 2D all-reflect infinite medium (rtol 1e-12) | 10 | 10 |
 
 ## Painted regions (MaterialSpec)

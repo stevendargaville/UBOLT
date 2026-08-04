@@ -42,14 +42,31 @@ sections are per (a materials file may state `length_unit`; UBOLT does not
 convert, it just trusts you to be consistent).
 
 ### 2. Angles
-`sn_order` is the SN order N — S2 and S4 today, in every dimension. How many
-ordinates that is, is the quadrature's business and differs by dimension: N in
-1D, N(N+2)/2 in 2D, N(N+2) in 3D, so S4 is 4, 12 and 24 ordinates. A 3D set
-has twice the ordinates of the same-order 2D set — 2D folds the xi > 0 half
-over, 3D has nothing to fold — which is why the order, not the count, is what
-a problem file names: S4 means the same angular resolution in all three. An
-unimplemented order fails in the quadrature's `create` with the valid set in
-the message.
+`sn_order` is the SN order N, always positive and even. How many ordinates that
+is, is the quadrature's business and differs by dimension: N in 1D, N(N+2)/2 in
+2D, N(N+2) in 3D, so S4 is 4, 12 and 24 ordinates. A 3D set has twice the
+ordinates of the same-order 2D set — 2D folds the xi > 0 half over, 3D has
+nothing to fold — which is why the order, not the count, is what a problem file
+names: S4 means the same angular resolution in all three.
+
+Which orders exist also differs by dimension. **1D takes any even order**: it is
+the N point Gauss-Legendre rule on [-1, 1] and the quadrature generates it by
+Newton at `create` time, so nothing is tabulated and there is no upper bound.
+**2D and 3D take the even orders 2 to 18**, the level-symmetric (LQn) sets,
+whose constants come from a generated table (`src/sn_lqn_table.py` emits
+`src/sn_lqn_table.hpp`; regenerate it, never edit it). S18 is where that family
+stops, and the generator finds that out rather than being told: it walks the
+orders upwards and stops at the first one whose weights are not all positive,
+which is S20. A negative weight is the family running out, not something to work
+around — a higher order needs a different family (a product or Gauss-Chebyshev
+set), which UBOLT does not have. An order outside the range fails in the
+quadrature's `create` and the message says which range it missed.
+
+Beyond S4 the level-symmetric weights are **not equal within a set** — they are
+constant on the permutation classes of a direction's level indices, three
+distinct values at S8 and up to ten at S18. Nothing in the solver assumes
+otherwise, and `tests/problems/box_s8_reflect_coarse.json` is the recipe that
+keeps it that way.
 
 ### 3. Materials
 Three ways to fill `"materials"`:
@@ -209,6 +226,7 @@ your machine.
 | Cold problem driven by a source region | `box_60_cold.json` (2D), `cube_10_cold.json` (3D) |
 | Overlapping paint boxes (later paint wins) | `box_30_overlap.json` (2D), `cube_10_overlap.json` (3D) |
 | S4 angular resolution | `box_30_s4_st2.json` (2D), `cube_10_s4_st2.json` (3D) |
+| A higher order, with unequal quadrature weights | `box_s8_reflect_coarse.json` (2D) |
 | 3D uniform cube | `cube_10_st2.json` |
 | 3D with reflective faces (three-face corner) | `cube_10_reflect_3faces.json` |
 | Heterogeneous 3D (absorber block) | `cube_10_absorber.json` |
