@@ -833,6 +833,33 @@ DSA recipes therefore pin exact coverage only.** Untangling it is future work �
 it is very likely the same unexplained amat/pmat interaction recorded for
 `-precon_stream -precon_dsa` in `TODO.md`.
 
+### Streaming-only groups
+A group whose `Sigma_t` is identically zero has no ratio to any reference — and
+needs none, because its operator IS the bare streaming matrix. `RefShiftPmats`
+gives every such group one shared unshifted bin whose pmat is the streaming
+matrix itself (reference-counted, not copied — it costs no memory beyond its
+hierarchy), picks the reference as the first group with removal in every cell,
+and bins the rest as usual. Only a group that is zero in SOME cells is refused:
+a single ratio cannot represent a field that is removal here and void there.
+
+`slab_decades4_stream0.json` is `slab_decades4.json` with the top group made
+pure streaming (`Sigma_t[0] = 0` in both materials, and with it every scatter
+out of that group — a zero total admits none, so group 0 is a decoupled
+streaming solve):
+
+| `slab_decades4_stream0.json` | per-group iterations |
+|---|---|
+| default pc (full pmat, the reference) | 1, 8, 14, 20 |
+| `-matfree_removal` alone (bare streaming pmat) | 1, 22, 116, **DIVERGED_ITS (300)** |
+| `-precon_ref_shift` (default rule — exact here) | 1, 8, 14, 20 |
+
+Group 0 solves in one iteration either way — the bare streaming pmat IS its
+exact operator — and the reference falls to group 1, whose three alphas span
+two decades, within the default rule's exact reach. The single-group corner is
+`slab_st0.json`: every group streaming-only, no reference at all, one unshifted
+bin, and the count must equal the matrix-free run without the flag (same pmat,
+same everything).
+
 ### Pins and slack
 
 | recipe | np=1 | np=2 | pin |
@@ -847,6 +874,8 @@ it is very likely the same unexplained amat/pmat interaction recorded for
 | 2D `box_decades4`, `-precon_ref_k 4 -precon_dsa` | 11 | 11 | 12 |
 | 2D `box_diffusive`, ref-shift, no DSA | 29 | — | 30 |
 | 2D `box_diffusive`, ref-shift + DSA | 11 | — | 12 |
+| 1D `slab_decades4_stream0`, default k | 20 | 20 | 20 |
+| 1D `slab_st0`, ref-shift (all streaming-only) | 1 | — | 1 |
 
 The exact-coverage 1D pins sit on the measured count, as every other 1D pin
 does. Everything else carries one iteration of slack: the DSA rows for the
@@ -871,11 +900,13 @@ Three guards, all of which exit non-zero, so all of which are checked BY HAND:
 - `./transportk -problem problems/slab_mg4_t05.json -matfree_removal -precon_ref_k 2`
   must fail with the "it needs `-precon_ref_shift`" message rather than silently
   ignoring the number.
-- `./transportk -problem problems/slab_st0.json -matfree_removal -precon_ref_shift`
-  must fail with the `Sigma_t > 0 in every cell and every group` message. The
-  shift is a RATIO to the reference removal and a void has none — the same
-  guard, and the same eventual fix (a region-masked operator), as `-precon_dsa`'s
-  void guard above.
+- the mixed-void guard: give `materials/decades4_stream0.json`'s material 1 a
+  POSITIVE group-0 `Sigma_t` (leave material 0's at zero) and run
+  `slab_decades4_stream0.json` with the flags — it must fail with the "zero in
+  some cells and positive in others" message. A group zero EVERYWHERE is the
+  handled streaming-only case above; a group zero SOMEWHERE is a void region,
+  which no single ratio can represent — same stance, and the same eventual fix
+  (a region-masked operator), as `-precon_dsa`'s void guard above.
 
 ## Source and inflow conventions
 Both rhs knobs are **isotropic, angle-integrated strengths**, divided by the

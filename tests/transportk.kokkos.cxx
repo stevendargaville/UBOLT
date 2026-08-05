@@ -37,10 +37,13 @@
 // -precon_ref_shift is what makes that mode usable when the removal is strong.
 // A bare streaming pmat has no removal in it at all, and PCAIR set up on one
 // diverges from roughly a mean free path per cell; the flag preconditions each
-// group with L + alpha_g * D_ref instead, D_ref being group 0's per-cell
-// Sigma_t and alpha_g that group's ratio to it, in k = -precon_ref_k shared
-// copies (default: the fewest that keep every group close to the one it uses -
-// see RefShiftPmats). It NEEDS -matfree_removal, which is the only mode whose
+// group with L + alpha_g * D_ref instead, D_ref being the reference group's
+// per-cell Sigma_t (the first with removal in every cell) and alpha_g that
+// group's ratio to it, in k = -precon_ref_k shared copies (default: the fewest
+// that keep every group close to the one it uses - see RefShiftPmats). A
+// streaming-only group - Sigma_t identically zero - is exact for free: its
+// operator IS the streaming matrix, so all such groups share one unshifted bin
+// holding that matrix itself. It NEEDS -matfree_removal, which is the only mode whose
 // pmat is missing its removal, and is a checked error without it. k pmats means
 // k PCAIR hierarchies, which is the design's stated cost. It composes with
 // -precon_dsa: the correction wants a removal-carrying pmat to attach to, and

@@ -30,47 +30,82 @@ static void ShiftFillKernel(PetscScalarKokkosView shift_d, \
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-// alpha_g: the log-mean over the mesh of Sigma_t(g) / Sigma_t(0)
+// alpha_g: the log-mean over the mesh of Sigma_t(g) / Sigma_t(ref)
 //
 // The geometric mean rather than the arithmetic one because the quantity that
 // governs the preconditioner's quality is a RATIO - a group twice the reference
 // and a group half of it are equally mismatched, and only the log-mean says so.
 // It also makes the identity exact in the case that matters: when every
-// material is a density-scaled copy of one material, Sigma_t(g)/Sigma_t(0) is
+// material is a density-scaled copy of one material, Sigma_t(g)/Sigma_t(ref) is
 // the same number in every cell, and its log-mean is that number
+//
+// The reference is the FIRST group whose removal is positive in every cell -
+// group 0 whenever group 0 qualifies, so the alphas (and the pins) are what
+// they always were on any problem the old group-0 convention accepted. A group
+// whose removal is identically ZERO is a streaming-only group: no ratio to any
+// reference exists, but none is needed, because the exactly-right pmat for it
+// is the bare streaming matrix itself - it gets alpha = 0 and bin_alphas gives
+// those groups a dedicated unshifted bin. What stays a hard error is a group
+// that is zero in SOME cells: a single ratio cannot represent a field that is
+// removal here and void there (and a negative Sigma_t is nonsense anywhere)
 //
 // A host loop over one cell-sized mirror per group, once, at setup - the same
 // shape as DSAPrecon::assemble's guard pass, and for the same reason: there is
 // nothing here worth a device reduction and the arithmetic is easier to read
 PetscErrorCode RefShiftPmats::compute_alphas(const GroupXSections &xs)
 {
-   PetscReal min_sigma_t = PETSC_MAX_REAL;
-
    PetscFunctionBeginUser;
 
    alpha_.assign(n_groups_, 1.0);
+   ref_group_ = -1;
 
-   auto sigma_t_ref_h = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), xs.sigma_t(0));
-
-   // The void guard first, over every group: log(0) is not a mismatch ratio,
-   // it is a missing material. Reduced over the ranks before it is checked, so
-   // every rank fails the same way
+   // Classify every group by its global min and max: all-positive (a ratio
+   // exists), identically zero (streaming-only), or mixed (the error). One
+   // reduction for all groups, so every rank classifies - and fails - the
+   // same way
+   std::vector<PetscReal> min_max(2 * n_groups_);
    for (PetscInt g = 0; g < n_groups_; g++) {
+      PetscReal mn = PETSC_MAX_REAL, mx = -PETSC_MAX_REAL;
       auto sigma_t_h = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), xs.sigma_t(g));
       for (PetscInt c = 0; c < ps_.local_cells; c++) {
-         min_sigma_t = PetscMin(min_sigma_t, PetscRealPart(sigma_t_h(c)));
+         mn = PetscMin(mn, PetscRealPart(sigma_t_h(c)));
+         mx = PetscMax(mx, PetscRealPart(sigma_t_h(c)));
+      }
+      // One buffer, min negated so a single MAX reduction serves both
+      min_max[2 * g] = -mn;
+      min_max[2 * g + 1] = mx;
+   }
+   PetscCallMPI(MPIU_Allreduce(MPI_IN_PLACE, min_max.data(), 2 * n_groups_, MPIU_REAL, \
+      MPIU_MAX, comm_));
+
+   is_streaming_group_.assign(n_groups_, false);
+   for (PetscInt g = 0; g < n_groups_; g++) {
+      const PetscReal mn = -min_max[2 * g], mx = min_max[2 * g + 1];
+      PetscCheck(mn >= 0.0, comm_, PETSC_ERR_ARG_OUTOFRANGE, \
+         "group %" PetscInt_FMT " has a negative Sigma_t (%g) somewhere", g, (double)mn);
+      if (mx == 0.0) { is_streaming_group_[g] = true; alpha_[g] = 0.0; }
+      else {
+         PetscCheck(mn > 0.0, comm_, PETSC_ERR_ARG_OUTOFRANGE, \
+            "group %" PetscInt_FMT "'s Sigma_t is zero in some cells and positive in others " \
+            "(min %g, max %g) - the reference shift is a single RATIO per group, and no " \
+            "ratio represents a field that is removal here and void there. A group that is " \
+            "zero EVERYWHERE is fine (it is preconditioned with the streaming matrix " \
+            "itself); for a void region, run without -precon_ref_shift or give the void a " \
+            "small Sigma_t", g, (double)mn, (double)mx);
+         if (ref_group_ < 0) ref_group_ = g;
       }
    }
-   PetscCallMPI(MPIU_Allreduce(MPI_IN_PLACE, &min_sigma_t, 1, MPIU_REAL, MPIU_MIN, comm_));
-   PetscCheck(min_sigma_t > 0.0, comm_, PETSC_ERR_ARG_OUTOFRANGE, \
-      "the reference-shifted pmat needs Sigma_t > 0 in every cell and every group - the " \
-      "shift is a RATIO to the reference removal and a void has none, and the smallest " \
-      "Sigma_t anywhere is %g. Run without -precon_ref_shift, or give the void a small " \
-      "Sigma_t", (double)min_sigma_t);
+   // Every group streaming-only: no reference, no ratios, and nothing to do -
+   // bin_alphas puts them all in the one unshifted bin
+   if (ref_group_ < 0) PetscFunctionReturn(PETSC_SUCCESS);
 
-   // Group 0 IS the reference, so its ratio is 1 by construction and there is
-   // nothing to sum - taking the log of sigma_t/sigma_t would only add rounding
-   for (PetscInt g = 1; g < n_groups_; g++) {
+   auto sigma_t_ref_h = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), \
+      xs.sigma_t(ref_group_));
+
+   // The reference's own ratio is 1 by construction and there is nothing to
+   // sum - taking the log of sigma_t/sigma_t would only add rounding
+   for (PetscInt g = 0; g < n_groups_; g++) {
+      if (g == ref_group_ || is_streaming_group_[g]) continue;
 
       PetscReal log_sum = 0.0;
 
@@ -129,49 +164,71 @@ static PetscInt BinsNeeded(const std::vector<PetscReal> &sorted_log, PetscReal s
 // pmat was built with, and that mismatch is what the default rule reads
 void RefShiftPmats::bin_alphas(PetscInt n_bins)
 {
-   std::vector<PetscInt> order(n_groups_);
-   std::vector<PetscReal> log_alpha(n_groups_), sorted_log(n_groups_), candidates;
-
-   for (PetscInt g = 0; g < n_groups_; g++) log_alpha[g] = PetscLogReal(alpha_[g]);
-   std::iota(order.begin(), order.end(), 0);
-   // Stable, so equal alphas keep group order and the binning is deterministic:
-   // it has to be, because every rank computes it redundantly
-   std::stable_sort(order.begin(), order.end(), \
-      [&](PetscInt a, PetscInt b) { return log_alpha[a] < log_alpha[b]; });
-   for (PetscInt i = 0; i < n_groups_; i++) sorted_log[i] = log_alpha[order[i]];
-
-   for (PetscInt i = 0; i < n_groups_; i++) {
-      for (PetscInt j = i; j < n_groups_; j++) candidates.push_back(sorted_log[j] - sorted_log[i]);
+   // Only the groups that HAVE a ratio are clustered. A streaming-only group
+   // (alpha 0) sits at minus infinity in log space and needs no clustering
+   // anyway: all such groups share one dedicated unshifted bin, appended after
+   // the shifted ones - its pmat is the streaming matrix itself, which is
+   // EXACT for them, so they never contribute mismatch
+   std::vector<PetscInt> pos;
+   for (PetscInt g = 0; g < n_groups_; g++) {
+      if (!is_streaming_group_[g]) pos.push_back(g);
    }
-   std::sort(candidates.begin(), candidates.end());
-   PetscReal spread = candidates.back();
-   for (size_t c = 0; c < candidates.size(); c++) {
-      if (BinsNeeded(sorted_log, candidates[c]) <= n_bins) { spread = candidates[c]; break; }
-   }
+   const PetscInt n_pos = (PetscInt)pos.size();
 
    bin_of_group_.assign(n_groups_, 0);
    bin_alpha_.clear();
-
-   PetscInt bin_start = 0;
-   for (PetscInt i = 0; i < n_groups_; i++) {
-
-      // A new bin starts as soon as this alpha is further than `spread` above
-      // the one that opened the current bin - the same greedy pass BinsNeeded
-      // counted, so it lands in exactly n_bins bins or fewer
-      if (sorted_log[i] - sorted_log[bin_start] > spread) {
-         bin_alpha_.push_back(PetscExpReal( \
-            0.5 * (sorted_log[bin_start] + sorted_log[i - 1])));
-         bin_start = i;
-      }
-      bin_of_group_[order[i]] = (PetscInt)bin_alpha_.size();
-   }
-   bin_alpha_.push_back(PetscExpReal( \
-      0.5 * (sorted_log[bin_start] + sorted_log[n_groups_ - 1])));
-
    worst_mismatch_ = 1.0;
-   for (PetscInt g = 0; g < n_groups_; g++) {
-      const PetscReal ratio = alpha_[g] / bin_alpha_[bin_of_group_[g]];
-      worst_mismatch_ = PetscMax(worst_mismatch_, PetscMax(ratio, 1.0 / ratio));
+
+   if (n_pos > 0) {
+
+      std::vector<PetscInt> order(n_pos);
+      std::vector<PetscReal> log_alpha(n_pos), sorted_log(n_pos), candidates;
+
+      for (PetscInt i = 0; i < n_pos; i++) log_alpha[i] = PetscLogReal(alpha_[pos[i]]);
+      std::iota(order.begin(), order.end(), 0);
+      // Stable, so equal alphas keep group order and the binning is
+      // deterministic: it has to be, because every rank computes it redundantly
+      std::stable_sort(order.begin(), order.end(), \
+         [&](PetscInt a, PetscInt b) { return log_alpha[a] < log_alpha[b]; });
+      for (PetscInt i = 0; i < n_pos; i++) sorted_log[i] = log_alpha[order[i]];
+
+      for (PetscInt i = 0; i < n_pos; i++) {
+         for (PetscInt j = i; j < n_pos; j++) candidates.push_back(sorted_log[j] - sorted_log[i]);
+      }
+      std::sort(candidates.begin(), candidates.end());
+      PetscReal spread = candidates.back();
+      for (size_t c = 0; c < candidates.size(); c++) {
+         if (BinsNeeded(sorted_log, candidates[c]) <= n_bins) { spread = candidates[c]; break; }
+      }
+
+      PetscInt bin_start = 0;
+      for (PetscInt i = 0; i < n_pos; i++) {
+
+         // A new bin starts as soon as this alpha is further than `spread`
+         // above the one that opened the current bin - the same greedy pass
+         // BinsNeeded counted, so it lands in exactly n_bins bins or fewer
+         if (sorted_log[i] - sorted_log[bin_start] > spread) {
+            bin_alpha_.push_back(PetscExpReal( \
+               0.5 * (sorted_log[bin_start] + sorted_log[i - 1])));
+            bin_start = i;
+         }
+         bin_of_group_[pos[order[i]]] = (PetscInt)bin_alpha_.size();
+      }
+      bin_alpha_.push_back(PetscExpReal( \
+         0.5 * (sorted_log[bin_start] + sorted_log[n_pos - 1])));
+
+      for (PetscInt i = 0; i < n_pos; i++) {
+         const PetscReal ratio = alpha_[pos[i]] / bin_alpha_[bin_of_group_[pos[i]]];
+         worst_mismatch_ = PetscMax(worst_mismatch_, PetscMax(ratio, 1.0 / ratio));
+      }
+   }
+
+   if (n_pos < n_groups_) {
+      const PetscInt streaming_bin = (PetscInt)bin_alpha_.size();
+      bin_alpha_.push_back(0.0);
+      for (PetscInt g = 0; g < n_groups_; g++) {
+         if (is_streaming_group_[g]) bin_of_group_[g] = streaming_bin;
+      }
    }
 }
 
@@ -190,13 +247,20 @@ PetscErrorCode RefShiftPmats::create(MPI_Comm comm, const PhaseSpace &ps, \
 
    PetscCall(compute_alphas(xs));
 
-   // How many bins. A value the caller asked for is taken as given (clamped to
-   // something that exists); otherwise the default rule - see the header for
-   // where the 3s come from
-   if (n_bins > 0) n_bins = PetscMin(n_bins, n_groups_);
+   // How many bins - counting the SHIFTED ones only: the unshifted bin any
+   // streaming-only groups share is appended on top of the count, because it
+   // is exact for them and its matrix is not even a copy (below). A value the
+   // caller asked for is taken as given (clamped to something that exists);
+   // otherwise the default rule - see the header for where the 3s come from
+   PetscInt n_pos = 0;
+   for (PetscInt g = 0; g < n_groups_; g++) {
+      if (!is_streaming_group_[g]) n_pos++;
+   }
+   if (n_pos == 0) n_bins = 0;
+   else if (n_bins > 0) n_bins = PetscMin(n_bins, n_pos);
    else {
 
-      const PetscInt cap = PetscMin(default_max_bins, n_groups_);
+      const PetscInt cap = PetscMin(default_max_bins, n_pos);
       std::vector<PetscReal> mismatch(cap + 1, 0.0);
       PetscReal best = PETSC_MAX_REAL;
 
@@ -214,19 +278,30 @@ PetscErrorCode RefShiftPmats::create(MPI_Comm comm, const PhaseSpace &ps, \
          if (mismatch[k] <= best * (1.0 + 1e-12)) n_bins = k;
       }
    }
+   // The binning takes what it actually needs, which can be fewer bins than
+   // were asked for: an exact partition of fewer distinct alphas than bins is
+   // still exact, and a hierarchy per duplicate would buy nothing. From here
+   // bin_alpha_ is the authority on how many bins exist (n_bins() reads it),
+   // shifted ones plus the unshifted one if any group needs it
    bin_alphas(n_bins);
-   // What the binning actually needed, which can be fewer than what was asked
-   // for: an exact partition of fewer distinct alphas than bins is still exact,
-   // and a hierarchy per duplicate would buy nothing
-   n_bins = (PetscInt)bin_alpha_.size();
 
    // One pmat per bin: a copy of the streaming operator with that bin's
-   // representative removal added onto the interior diagonal
+   // representative removal added onto the interior diagonal. The unshifted
+   // bin (streaming-only groups, bin_alpha 0) is not even a copy - it IS the
+   // streaming matrix, reference-counted so destroy() can treat every bin the
+   // same way. Its groups' operator is exactly L, so their pmat is exact for
+   // free
    const BoundaryInfo &boundary = disc.boundary_info();
-   PetscScalarKokkosView sigma_t_ref_d = xs.sigma_t(0);
+   PetscScalarKokkosView sigma_t_ref_d = xs.sigma_t(ref_group_ < 0 ? 0 : ref_group_);
 
-   pmats_.assign(n_bins, NULL);
-   for (PetscInt k = 0; k < n_bins; k++) {
+   pmats_.assign((PetscInt)bin_alpha_.size(), NULL);
+   for (PetscInt k = 0; k < (PetscInt)pmats_.size(); k++) {
+
+      if (bin_alpha_[k] == 0.0) {
+         PetscCall(PetscObjectReference((PetscObject)streaming_mat));
+         pmats_[k] = streaming_mat;
+         continue;
+      }
 
       Vec shift_vec;
       PetscScalarKokkosView shift_d;

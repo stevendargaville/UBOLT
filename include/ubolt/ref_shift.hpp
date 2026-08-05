@@ -19,9 +19,17 @@
 // roughly one mean free path per cell), because the operator it is set up on is
 // then nothing like the one being solved. A pmat of L + alpha * D_ref puts the
 // removal back:
-//   - D_ref is the REFERENCE removal, group 0's per-cell Sigma_t. Per cell, not
-//     a scalar: on a heterogeneous problem a scalar shift is wrong everywhere
-//     except one material, while a per-cell reference tracks the geometry
+//   - D_ref is the REFERENCE removal: the first group whose per-cell Sigma_t
+//     is positive everywhere (group 0 whenever group 0 qualifies). Per cell,
+//     not a scalar: on a heterogeneous problem a scalar shift is wrong
+//     everywhere except one material, while a per-cell reference tracks the
+//     geometry
+//   - a group whose removal is identically ZERO (streaming-only) has no ratio
+//     to anything, and needs none: its operator is exactly L, so all such
+//     groups share one unshifted bin whose pmat IS the streaming matrix
+//     (reference-counted, not copied) - exact for them by construction. Only
+//     a group that is zero in SOME cells is refused, since one ratio cannot
+//     represent a field that is removal here and void there
 //   - alpha_g is what relates group g's removal to that reference. If every
 //     material shares the same group-to-group ratio structure - a
 //     density-scaled copy of one material, the common case - then
@@ -83,8 +91,13 @@ public:
    // caller - destroy() frees them
    Mat pmat(PetscInt bin) const { return pmats_[bin]; }
 
-   // Group g's own ratio to the reference removal (alpha_0 is 1 by definition)
+   // Group g's own ratio to the reference removal (the reference group's is 1
+   // by definition; a streaming-only group's is 0)
    PetscReal alpha(PetscInt g) const { return alpha_[g]; }
+   // The group whose per-cell Sigma_t is the reference D_ref - the first with
+   // removal in every cell; -1 when every group is streaming-only (there is
+   // then nothing to reference and the one bin is the streaming matrix)
+   PetscInt ref_group() const { return ref_group_; }
    // The ratio the bin's pmat was actually built with
    PetscReal bin_alpha(PetscInt bin) const { return bin_alpha_[bin]; }
    // The worst mismatch any group is preconditioned at, as a ratio >= 1
@@ -94,7 +107,8 @@ public:
    PetscReal worst_mismatch() const { return worst_mismatch_; }
 
 private:
-   // The log-mean of Sigma_t(g) / Sigma_t(0) over every cell, per group
+   // The log-mean of Sigma_t(g) / Sigma_t(ref) over every cell, per group -
+   // and the classification that picks ref and flags streaming-only groups
    PetscErrorCode compute_alphas(const GroupXSections &xs);
    // Partition the sorted log-alphas into contiguous bins minimising the
    // widest bin - see the .cxx for why this beats cutting at the largest gaps
@@ -103,6 +117,8 @@ private:
    MPI_Comm comm_ = MPI_COMM_NULL;
    PhaseSpace ps_;
    PetscInt n_groups_ = 0;
+   PetscInt ref_group_ = -1;
+   std::vector<bool> is_streaming_group_;
    std::vector<PetscReal> alpha_;
    std::vector<PetscReal> bin_alpha_;
    std::vector<PetscInt> bin_of_group_;

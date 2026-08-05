@@ -207,6 +207,18 @@ run_tests_short_serial:
 	./transportk -problem problems/slab_decades4.json -matfree_removal -precon_ref_shift -ksp_max_it 43
 	@echo "Test 1D decades multigroup, reference-shifted pmat with the DSA correction on top"
 	./transportk -problem problems/slab_decades4.json -matfree_removal -precon_ref_shift -precon_ref_k 4 -precon_dsa -ksp_max_it 12
+# A streaming-only group (Sigma_t identically zero) costs the reference shift
+# nothing: it is preconditioned with the streaming matrix itself, which is its
+# EXACT operator, the reference falls to the first group with removal, and the
+# rest bin as usual. slab_decades4_stream0 is slab_decades4 with the top group
+# made pure streaming - it solves in 1 iteration and groups 1-3 land on the
+# full pmat's counts exactly (1, 8, 14, 20). The single-group corner is
+# slab_st0: every group streaming-only, one unshifted bin, same count as the
+# matrix-free run without the flag
+	@echo "Test 1D decades multigroup with a streaming-only top group, reference-shifted pmat"
+	./transportk -problem problems/slab_decades4_stream0.json -matfree_removal -precon_ref_shift -ksp_max_it 20
+	@echo "Test 1D slab, streaming-only everywhere, reference-shifted pmat degenerates to bare L"
+	./transportk -problem problems/slab_st0.json -matfree_removal -precon_ref_shift -ksp_pc_side right -ksp_max_it 1
 	@echo "Test 1D slab multigroup, weak removal (advection dominated)"
 	./transportk -problem problems/slab_mg4_t05_st0.json -ksp_max_it 1
 	@echo "Test 1D slab multigroup, S2 on a coarser slab"
@@ -451,6 +463,8 @@ run_tests_short_parallel:
 	$(MPIEXEC) -n 2 ./transportk -problem problems/slab_decades4.json -matfree_removal -precon_ref_shift -ksp_max_it 43
 	@echo "Test 1D decades multigroup, reference-shifted pmat with DSA in parallel"
 	$(MPIEXEC) -n 2 ./transportk -problem problems/slab_decades4.json -matfree_removal -precon_ref_shift -precon_ref_k 4 -precon_dsa -ksp_max_it 12
+	@echo "Test 1D decades multigroup with a streaming-only top group in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/slab_decades4_stream0.json -matfree_removal -precon_ref_shift -ksp_max_it 20
 	@echo "Test 1D slab multigroup, matrix-free removal against the assembled operator in parallel"
 	$(MPIEXEC) -n 2 ./transportk -problem problems/slab_mg4_t05.json -check_matfree -ksp_max_it 6
 	@echo "Test 1D slab multigroup, uncoupled groups in parallel"
