@@ -282,9 +282,28 @@ previous one's verification has passed and been reviewed.
       add_diagonal writes the same expression its assemble_add does, in the same order,
       so the composed diagonal is BITWISE the assembled one — pinned by `-check_matfree`
       (measured 0.0 everywhere; matvec 2.5e-16 to 4.2e-16 against 1e-13).
+- [x] An effective preconditioner for the streaming-only pmat when removal is strong —
+      DONE as `-precon_ref_shift` (+ `-precon_ref_k`), the Aug 2026 campaign's strategy A.
+      `RefShiftPmats` (`include/ubolt/ref_shift.hpp`) builds k copies of the streaming
+      matrix carrying `alpha_k * D_ref`, `D_ref` being group 0's per-cell `Sigma_t` and
+      `alpha_g` the log-mean of `Sigma_t(g)/Sigma_t(0)`; the groups are clustered into k
+      log-spaced bins and the driver keeps one `TransportSolver` (so one PCAIR hierarchy)
+      per bin. Exact coverage — one bin per distinct ratio — reproduces the FULL pmat's
+      iteration counts exactly on six problem files, out of k matrices assembled once and
+      no assembly in the sweep at all; the new decades files are where the bare streaming
+      pmat does not converge at all and the shift does. DSA re-attaches on it (exactly the
+      full-pmat + DSA counts) where it cannot attach to a bare L. Counts, the bare-L
+      comparison and the mismatch cost: `docs/dev/testing.md`.
 - Verify: matvec equivalence vs assembled path on random vectors (<1e-13); solution norms
   match Phase 2; iteration counts recorded (not pinned) — preconditioner quality is the
   research question; findings recorded below.
+- [ ] Follow-up: DSA on a MISMATCHED reference-shifted pmat is fragile — 2D `box_decades4`
+      at k = 2 takes 179 iterations on the thick group where exact coverage takes 11, while
+      the 1D twin is fine. Likely the same unexplained amat/pmat interaction as
+      `-precon_stream -precon_dsa`. The DSA recipes pin exact coverage only until it is
+      understood.
+- [ ] Follow-up: sweep the `-precon_ref_shift` pins over the CI arches (64-bit, OpenMP) —
+      they are local opt-arch measurements, and a pin is the max over the arches.
 
 ## Phase 6 — DMPlex FEM backends
 - [ ] DECISION POINT first: hand-written Kokkos DG/CG kernels over DMPlex (plan default)
@@ -737,6 +756,8 @@ previous one's verification has passed and been reviewed.
   note was written against — 1D st=2 goes 6 -> 9, the multigroup sweep max 6 -> 11, 2D
   50x50 6 -> 8 and 120x60 7 -> 9. Phase 5's cost/benefit looks different at that ratio, and
   the numbers in `docs/dev/testing.md` are the ones to argue from.
+  ANSWERED for the strong-removal case by the Aug 2026 campaign's k reference-shifted
+  hierarchies — landed as `-precon_ref_shift`, see the Phase 5 checklist above.
 - **MFEM as Phase 6 backend**: MFEM owns mesh/FE spaces/integrators (ConvectionIntegrator +
   DGTraceIntegrator = DG upwind streaming out of the box; AMR; high-order; GPU full and
   partial assembly). Frictions: MFEM's PETSc bridge produces MATAIJ not MATAIJKOKKOS (pflare

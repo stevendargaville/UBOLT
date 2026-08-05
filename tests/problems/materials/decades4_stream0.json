@@ -1,0 +1,30 @@
+{
+ "_comment": "The decades4 materials with the TOP group made streaming-only: Sigma_t[0] = 0 exactly, and with it every scatter out of group 0 (a total of zero admits no scattering), so group 0 is a decoupled pure-streaming solve driven by its source and inflow alone. The remaining groups keep decades4's structure (1, 10, 100 with downscatter, material 1 the 5x density-scaled copy). Exists to pin RefShiftPmats' streaming-only group handling: the reference becomes group 1, group 0 gets the unshifted bin whose pmat IS the streaming matrix, and the shifted groups bin exactly as they would without it.",
+ "n_groups": 4,
+ "materials": [
+  {
+   "id": 0,
+   "name": "decades_stream0",
+   "Sigma_t": [0.0, 1.0, 10.0, 100.0],
+   "Sigma_s": [
+    [0.0, 0.0, 0.0, 0.0],
+    [0.0, 0.6, 0.3, 0.0],
+    [0.0, 0.0, 9.0, 0.8],
+    [0.0, 0.0, 0.0, 99.0]
+   ],
+   "Source": [1.0, 1.0, 1.0, 1.0]
+  },
+  {
+   "id": 1,
+   "name": "decades_stream0_dense",
+   "Sigma_t": [0.0, 5.0, 50.0, 500.0],
+   "Sigma_s": [
+    [0.0, 0.0, 0.0, 0.0],
+    [0.0, 3.0, 1.5, 0.0],
+    [0.0, 0.0, 45.0, 4.0],
+    [0.0, 0.0, 0.0, 495.0]
+   ],
+   "Source": [1.0, 1.0, 1.0, 1.0]
+  }
+ ]
+}

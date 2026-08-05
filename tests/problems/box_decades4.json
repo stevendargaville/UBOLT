@@ -1,0 +1,24 @@
+{
+ "_comment": "The 2D twin of slab_decades4.json: 30x30 over 3x3, so dx = dy = 0.1 and the four groups sit at the same 0.01, 0.1, 1 and 10 mean free paths per cell, with the same 5x dense block painted in the middle. Only the dimension changes, which is what makes the counts comparable. The block's bounds are cell boundaries (1.2 and 1.8 are 12 and 18 cells in), never cell centres.",
+ "dimension": 2,
+ "mesh": {
+  "n_cells": [30, 30],
+  "lengths": [3.0, 3.0]
+ },
+ "sn_order": 4,
+ "materials": "materials/decades4.json",
+ "regions": {
+  "paint": [
+   {
+    "material": 1,
+    "box": [1.2, 1.8, 1.2, 1.8]
+   }
+  ]
+ },
+ "boundary_conditions": {
+  "left": {"type": "vacuum", "inflow": 12.566370614359172},
+  "right": {"type": "vacuum", "inflow": 12.566370614359172},
+  "bottom": {"type": "vacuum", "inflow": 12.566370614359172},
+  "top": {"type": "vacuum", "inflow": 12.566370614359172}
+ }
+}

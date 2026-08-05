@@ -21,6 +21,7 @@
 #include "ubolt/multigroup.hpp"
 #include "ubolt/transport_operator.hpp"
 #include "ubolt/dsa.hpp"
+#include "ubolt/ref_shift.hpp"
 #include "ubolt/transport_solver.hpp"
 #include "ubolt/flux_output.hpp"
 

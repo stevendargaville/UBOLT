@@ -1,0 +1,22 @@
+{
+ "_comment": "slab_decades4 with the top group streaming-only (Sigma_t 0 in both materials - see materials/decades4_stream0.json). Pins the streaming-only group handling of the reference-shifted pmat: group 0 is preconditioned with the streaming matrix itself (exact, its operator IS L), the reference falls to group 1, and the three removal-carrying groups bin as usual. Same mesh, paint and inflow as slab_decades4.json.",
+ "dimension": 1,
+ "mesh": {
+  "n_cells": [100],
+  "lengths": [10.0]
+ },
+ "sn_order": 4,
+ "materials": "materials/decades4_stream0.json",
+ "regions": {
+  "paint": [
+   {
+    "material": 1,
+    "interval": [4.0, 6.0]
+   }
+  ]
+ },
+ "boundary_conditions": {
+  "left": {"type": "vacuum", "inflow": 2.0},
+  "right": {"type": "vacuum", "inflow": 2.0}
+ }
+}
