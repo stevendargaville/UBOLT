@@ -6,9 +6,11 @@
 // single-group problem, so there is no separate driver for it
 //
 // Strategy knobs: -precon_stream (precondition with a streaming-only pmat),
-// -precon_dsa (add the DSA diffusion correction to the composite - its inner
-// solve takes the -dsa_ prefix), -diag_scale, and the
-// verification ones, -check_inf_medium and the -flux_vtk output override
+// -matfree_removal (apply the removal term matrix-free, so the assembled matrix
+// is streaming only), -precon_dsa (add the DSA diffusion correction to the
+// composite - its inner solve takes the -dsa_ prefix), -diag_scale, and the
+// verification ones, -check_inf_medium, -check_matfree and the -flux_vtk
+// output override
 //
 // Group Gauss-Seidel with downscatter only: groups are ordered high energy to
 // low, the within-group scatter stays on the lhs (matrix-free) and everything
@@ -17,6 +19,19 @@
 // there is no outer iteration - that arrives with upscatter. The sparsity is
 // preallocated once and every group refills the same matrix through
 // TransportOperator::assemble()
+//
+// -matfree_removal is that last sentence taken away. With the removal applied
+// matrix-free the assembled matrix carries STREAMING ONLY, which does not
+// depend on the group, so it is assembled ONCE before the sweep and no group
+// refills anything: a group is a pointer swap on the two terms plus
+// TransportSolver::refresh(), and PCAIR sets up once for the whole sweep. The
+// assembled matrix is then already the streaming-only pmat -precon_stream
+// builds a second copy of, so this mode IMPLIES that preconditioner and an
+// explicit -precon_stream alongside it is accepted and ignored (which is what
+// makes a matfree recipe exactly its -precon_stream twin plus this flag - the
+// two must agree on iteration count, see ../docs/dev/testing.md).
+// -diag_scale is a checked error in this mode: it would scale the streaming
+// part of the operator and leave the matrix-free removal and scatter unscaled
 //
 // Currently run with:
 // make build_tests && ./transportk -problem problems/slab_st2.json -ksp_monitor
@@ -29,6 +44,114 @@
 #include <string>
 #include <vector>
 #include <cstring>
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+// -check_matfree: is the matrix-free removal the same operator as the
+// assembled one, and is the composed diagonal the same diagonal?
+//
+// Both operators are built here from the same discretisation and the same
+// streaming term, so the ONLY difference between them is which half of
+// RemovalTerm is live - which is exactly the thing being claimed equivalent.
+// Two measurements, per group, on the same random vectors:
+//
+//  1. the shells applied to random vectors, max_{r} |y_f - y_a| / max_r |y_a|.
+//     NOT expected to be zero: the assembled path sums streaming and removal
+//     into one matrix entry and multiplies once, the matrix-free path
+//     multiplies twice and adds, so the two differ in the last bits. Rounding,
+//     nothing else - a mistake in the apply is many orders larger
+//  2. the composed diagonal against MatGetDiagonal of the fully assembled
+//     matrix, max_r |d_f - d_a|. This one IS expected to be exactly 0.0: the
+//     terms' add_diagonal write the same expressions in the same order as
+//     their assemble_add, and the boundary rows get the same 1.0
+//
+// The assembled operator is refilled per group and the matrix-free one is not
+// touched at all - the per-group behaviour, not just the operator at one group
+static PetscErrorCode CheckMatfreeEquivalence(MPI_Comm comm, const PhaseSpace &ps, \
+   const Discretisation &disc, const AngularQuadrature &quad, const OperatorTerm *streaming, \
+   const GroupXSections &xs, PetscInt n_groups, PetscInt n_vectors, \
+   PetscReal *max_rel_diff, PetscReal *max_diag_diff)
+{
+   PetscFunctionBeginUser;
+
+   // The pair of removals, one each way, and a scatter apiece so neither
+   // operator can be reading the other's scratch
+   RemovalTerm removal_a, removal_f;
+   PetscCall(removal_a.create(ps, disc, xs.sigma_t(0)));
+   PetscCall(removal_f.create(ps, disc, xs.sigma_t(0)));
+   removal_f.set_matrix_free(PETSC_TRUE);
+   ScatteringTerm scattering_a, scattering_f;
+   PetscCall(scattering_a.create(ps, disc, quad, xs.sigma_s(0, 0)));
+   PetscCall(scattering_f.create(ps, disc, quad, xs.sigma_s(0, 0)));
+
+   TransportOperator op_a, op_f;
+   PetscCall(op_a.create(comm, ps, disc));
+   PetscCall(op_a.add_term(streaming));
+   PetscCall(op_a.add_term(&removal_a));
+   PetscCall(op_a.add_term(&scattering_a));
+   PetscCall(op_f.create(comm, ps, disc));
+   PetscCall(op_f.add_term(streaming));
+   PetscCall(op_f.add_term(&removal_f));
+   PetscCall(op_f.add_term(&scattering_f));
+   // Streaming only, and streaming does not depend on the group: this is the
+   // one and only assembly the matrix-free operator gets
+   PetscCall(op_f.assemble());
+
+   Vec x, y_a, y_f, d_a, d_f;
+   PetscCall(MatCreateVecs(op_a.assembled_mat(), &x, &y_a));
+   PetscCall(VecDuplicate(y_a, &y_f));
+   PetscCall(VecDuplicate(y_a, &d_a));
+   PetscCall(VecDuplicate(y_a, &d_f));
+
+   PetscRandom rand;
+   PetscCall(PetscRandomCreate(comm, &rand));
+   PetscCall(PetscRandomSetFromOptions(rand));
+
+   for (PetscInt g = 0; g < n_groups; g++) {
+
+      removal_a.set_sigma_t(xs.sigma_t(g));
+      removal_f.set_sigma_t(xs.sigma_t(g));
+      scattering_a.set_sigma_s(xs.sigma_s(g, g));
+      scattering_f.set_sigma_s(xs.sigma_s(g, g));
+      // The default path's per-group refill. The matrix-free one has nothing
+      // to refill, which is the point of it
+      PetscCall(op_a.assemble());
+
+      for (PetscInt k = 0; k < n_vectors; k++) {
+
+         PetscReal norm_a = 0.0, diff = 0.0;
+
+         PetscCall(VecSetRandom(x, rand));
+         PetscCall(MatMult(op_a.mat(), x, y_a));
+         PetscCall(MatMult(op_f.mat(), x, y_f));
+
+         PetscCall(VecNorm(y_a, NORM_INFINITY, &norm_a));
+         PetscCall(VecAXPY(y_f, -1.0, y_a));
+         PetscCall(VecNorm(y_f, NORM_INFINITY, &diff));
+         *max_rel_diff = PetscMax(*max_rel_diff, norm_a > 0.0 ? diff / norm_a : diff);
+      }
+
+      // The composed diagonal against the assembled one. op_f is the operator
+      // that has to compose - op_a's removal is in its matrix
+      PetscReal diag_diff = 0.0;
+      PetscCall(op_f.diagonal(d_f));
+      PetscCall(MatGetDiagonal(op_a.assembled_mat(), d_a));
+      PetscCall(VecAXPY(d_f, -1.0, d_a));
+      PetscCall(VecNorm(d_f, NORM_INFINITY, &diag_diff));
+      *max_diag_diff = PetscMax(*max_diag_diff, diag_diff);
+   }
+
+   PetscCall(PetscRandomDestroy(&rand));
+   PetscCall(VecDestroy(&x));
+   PetscCall(VecDestroy(&y_a));
+   PetscCall(VecDestroy(&y_f));
+   PetscCall(VecDestroy(&d_a));
+   PetscCall(VecDestroy(&d_f));
+   PetscCall(op_a.destroy());
+   PetscCall(op_f.destroy());
+
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -52,6 +175,11 @@ int main(int argc, char **args) {
    // Do we precondition with streaming or streaming/removal
    PetscBool precon_stream = PETSC_FALSE;
    PetscCall(PetscOptionsGetBool(NULL, NULL, "-precon_stream", &precon_stream, NULL));
+   // Do we apply the removal term matrix-free instead of assembling it - see
+   // the header comment. Implies the streaming-only pmat, since the assembled
+   // matrix IS one, and takes every assembly out of the group sweep
+   PetscBool matfree_removal = PETSC_FALSE;
+   PetscCall(PetscOptionsGetBool(NULL, NULL, "-matfree_removal", &matfree_removal, NULL));
    // Do we add the DSA diffusion correction to the composite preconditioner
    // (index 2, its inner solve under the -dsa_ prefix - see DSAPrecon). Off by
    // default: nothing preconditions the scattering without it, which is what
@@ -61,9 +189,24 @@ int main(int argc, char **args) {
    // Diagonally scale the assembled operator and the rhs
    PetscBool diag_scale = PETSC_FALSE;
    PetscCall(PetscOptionsGetBool(NULL, NULL, "-diag_scale", &diag_scale, NULL));
+   // Diagonal scaling scales the ASSEMBLED operator and the rhs, and under
+   // -matfree_removal the assembled operator is the streaming part alone: the
+   // removal and the scatter would go through the shell unscaled and the
+   // system solved would not be the scaled one. Inconsistent by construction,
+   // so it is an error rather than a caveat
+   PetscCheck(!(diag_scale && matfree_removal), PETSC_COMM_WORLD, PETSC_ERR_ARG_INCOMP, \
+      "-diag_scale scales the assembled operator, which under -matfree_removal carries " \
+      "streaming only - the matrix-free removal and scatter would stay unscaled");
    // Check the solution against the infinite-medium constant (below)
    PetscBool check_inf_medium = PETSC_FALSE;
    PetscCall(PetscOptionsGetBool(NULL, NULL, "-check_inf_medium", &check_inf_medium, NULL));
+   // Check the matrix-free removal against the assembled one - the operator on
+   // random vectors and the composed diagonal against the assembled diagonal,
+   // per group (see CheckMatfreeEquivalence above). Independent of
+   // -matfree_removal: it builds both operators itself, so it says the same
+   // thing about whichever mode this run is solving in
+   PetscBool check_matfree = PETSC_FALSE;
+   PetscCall(PetscOptionsGetBool(NULL, NULL, "-check_matfree", &check_matfree, NULL));
    // Write the scalar flux of the solution for inspection - overrides the
    // problem file's output.flux_vtk. A single-group problem writes the
    // filename as given, multigroup writes one file per group: -flux_vtk
@@ -76,6 +219,7 @@ int main(int argc, char **args) {
 
    KSPConvergedReason reason = KSP_CONVERGED_ITERATING;
    PetscReal inf_medium_err = 0.0;
+   PetscReal matfree_err = 0.0, matfree_diag_err = 0.0;
 
    // Device memory has to be gone before PetscFinalize takes Kokkos down
    {
@@ -196,11 +340,25 @@ int main(int argc, char **args) {
       }
 
       // ~~~~~~~~~~~~~
+      // Is the matrix-free removal the same operator as the assembled one?
+      // Both are built inside the check, so this says nothing about which mode
+      // the solve below runs in - see CheckMatfreeEquivalence
+      // ~~~~~~~~~~~~~
+      if (check_matfree) PetscCall(CheckMatfreeEquivalence(PETSC_COMM_WORLD, ps, *disc, *quad, \
+         streaming, xs, n_groups, 3, &matfree_err, &matfree_diag_err));
+
+      // ~~~~~~~~~~~~~
       // The operator: streaming + removal assembled, scattering matrix-free.
       // Built once for group 0 and re-pointed at each group's xsections below
+      //
+      // Under -matfree_removal the removal moves to the other half, so the
+      // assembled matrix is streaming only. The mode goes on before the first
+      // assemble() (the operator partitions its terms there) - add_term does
+      // not care which side of it this call lands on
       // ~~~~~~~~~~~~~
       RemovalTerm removal;
       PetscCall(removal.create(ps, *disc, xs.sigma_t(0)));
+      removal.set_matrix_free(matfree_removal);
       ScatteringTerm scattering;
       PetscCall(scattering.create(ps, *disc, *quad, xs.sigma_s(0, 0)));
 
@@ -226,12 +384,21 @@ int main(int argc, char **args) {
       // once here and PCAIR keeps its setup across the whole sweep. It also
       // stays UNSCALED under -diag_scale, matching what the removal shell
       // preconditions - only the assembled operator and the rhs are scaled
+      //
+      // Not under -matfree_removal: the assembled matrix is already exactly
+      // this matrix, so a second copy of it would be the same values twice.
+      // An explicit -precon_stream is therefore redundant rather than wrong,
+      // and is quietly ignored - see the header comment
       Mat streaming_mat = NULL;
-      if (precon_stream)
+      if (precon_stream && !matfree_removal)
       {
          const OperatorTerm *streaming_only[] = {streaming};
          PetscCall(op.assemble_subset(1, streaming_only, &streaming_mat));
       }
+
+      // Streaming only, and streaming does not depend on the group: assemble
+      // it ONCE, here, and the sweep below assembles nothing at all
+      if (matfree_removal) PetscCall(op.assemble());
 
       // ~~~~~~~~~~~~~
       // Sweep the groups
@@ -241,10 +408,12 @@ int main(int argc, char **args) {
 
          // Point the terms at this group and refill the values. No
          // re-preallocation - the sparsity is the discretisation's, not the
-         // group's
+         // group's. Under -matfree_removal there is nothing to refill: both
+         // re-pointed terms are matrix-free and read their xsections straight
+         // through, so the pointer swaps above are the whole per-group update
          removal.set_sigma_t(xs.sigma_t(g));
          scattering.set_sigma_s(xs.sigma_s(g, g));
-         PetscCall(op.assemble());
+         if (!matfree_removal) PetscCall(op.assemble());
          // The diffusion operator is built from the same two xsections, so it
          // is refilled here rather than in TransportSolver::refresh() - the
          // solver has no idea which group is being solved
@@ -276,9 +445,12 @@ int main(int argc, char **args) {
             PetscCall(VecPointwiseMult(b, diag_vec, b));
          }
 
-         // The shell only exists once something has been assembled
+         // The shell only exists once something has been assembled. Pmat is
+         // the streaming-only copy if one was built, and otherwise the
+         // assembled matrix - which under -matfree_removal is streaming only
+         // in its own right
          if (g == 0) PetscCall(solver.create(PETSC_COMM_WORLD, op, \
-            precon_stream ? streaming_mat : op.assembled_mat(), precon_dsa ? &dsa : nullptr));
+            streaming_mat ? streaming_mat : op.assembled_mat(), precon_dsa ? &dsa : nullptr));
          // sigma_t changed under the removal preconditioner
          else PetscCall(solver.refresh());
 
@@ -369,6 +541,15 @@ int main(int argc, char **args) {
       "infinite-medium check: max error %g against tolerance 1e-9 - %s\n", \
       (double)inf_medium_err, inf_medium_ok ? "pass" : "FAIL"));
 
+   // Same for the matrix-free equivalence: the matvec is a rounding difference
+   // against 1e-13, the diagonal is an identity and its tolerance is 0.0
+   const PetscBool matfree_ok = (PetscBool)(!check_matfree || \
+      (matfree_err < 1e-13 && matfree_diag_err == 0.0));
+   if (check_matfree) PetscCall(PetscFPrintf(PETSC_COMM_WORLD, stderr, \
+      "matrix-free removal check: max relative matvec difference %g against tolerance 1e-13, " \
+      "max diagonal difference %g against 0 - %s\n", \
+      (double)matfree_err, (double)matfree_diag_err, matfree_ok ? "pass" : "FAIL"));
+
    PetscCall(PetscFinalize());
-   return (reason > 0 && inf_medium_ok) ? 0 : 1;
+   return (reason > 0 && inf_medium_ok && matfree_ok) ? 0 : 1;
 }
