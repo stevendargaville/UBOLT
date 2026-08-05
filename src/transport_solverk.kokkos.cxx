@@ -23,13 +23,21 @@ static PetscErrorCode RemovalPCDestroy(PC pc)
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-// Read the inverse diagonal off the assembled matrix
-// Phase 5 composes this analytically from the terms instead
-static PetscErrorCode RemovalPCFillContext(removal_pc_ctx *shell, Mat assembled)
+// The Jacobi stage's inverse diagonal
+//
+// Read off the assembled matrix, which is where it has always come from -
+// unless a term carrying a diagonal is being applied matrix-free, in which case
+// the assembled matrix no longer holds the whole diagonal and MatGetDiagonal
+// would silently precondition with whatever part of it happens to be assembled
+// (streaming alone, under -matfree_removal). Then the operator composes it from
+// the terms instead: the same number, bitwise - transportk's -check_matfree
+// pins exactly that - written another way
+static PetscErrorCode RemovalPCFillContext(removal_pc_ctx *shell, const TransportOperator *op)
 {
    PetscFunctionBeginUser;
 
-   PetscCall(MatGetDiagonal(assembled, shell->inverse_sigma_t_vec));
+   if (op->diagonal_is_composed()) PetscCall(op->diagonal(shell->inverse_sigma_t_vec));
+   else PetscCall(MatGetDiagonal(op->assembled_mat(), shell->inverse_sigma_t_vec));
    PetscCall(VecReciprocal(shell->inverse_sigma_t_vec));
 
    PetscFunctionReturn(PETSC_SUCCESS);
@@ -37,7 +45,7 @@ static PetscErrorCode RemovalPCFillContext(removal_pc_ctx *shell, Mat assembled)
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-static PetscErrorCode RemovalPCCreateContext(removal_pc_ctx **shell, Mat assembled)
+static PetscErrorCode RemovalPCCreateContext(removal_pc_ctx **shell, const TransportOperator *op)
 {
    removal_pc_ctx *newctx;
 
@@ -45,8 +53,8 @@ static PetscErrorCode RemovalPCCreateContext(removal_pc_ctx **shell, Mat assembl
 
    PetscCall(PetscNew(&newctx));
    // Create vector for removal preconditioning
-   PetscCall(MatCreateVecs(assembled, &newctx->inverse_sigma_t_vec, NULL));
-   PetscCall(RemovalPCFillContext(newctx, assembled));
+   PetscCall(MatCreateVecs(op->assembled_mat(), &newctx->inverse_sigma_t_vec, NULL));
+   PetscCall(RemovalPCFillContext(newctx, op));
 
    *shell = newctx;
 
@@ -96,7 +104,7 @@ PetscErrorCode TransportSolver::create(MPI_Comm comm, const TransportOperator &o
 
    PetscFunctionBeginUser;
 
-   assembled_ = op.assembled_mat();
+   op_ = &op;
 
    PetscCall(KSPCreate(comm, &ksp_));
    PetscCall(KSPSetOperators(ksp_, op.mat(), pmat));
@@ -112,9 +120,9 @@ PetscErrorCode TransportSolver::create(MPI_Comm comm, const TransportOperator &o
    PetscCall(PCCompositeAddPCType(pc, PCSHELL));
    PetscCall(PCCompositeGetPC(pc, 0, &pc_removal));
 
-   // The removal preconditioner always works off the operator's own assembled
-   // matrix, whatever pmat the streaming preconditioner was handed
-   PetscCall(RemovalPCCreateContext(&shell, op.assembled_mat()));
+   // The removal preconditioner always works off the operator's own diagonal,
+   // whatever pmat the streaming preconditioner was handed
+   PetscCall(RemovalPCCreateContext(&shell, op_));
 
    PetscCall(PCShellSetApply(pc_removal, RemovalPCApply));
    PetscCall(PCShellSetContext(pc_removal, shell));
@@ -168,7 +176,8 @@ PetscErrorCode TransportSolver::create(MPI_Comm comm, const TransportOperator &o
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-// Re-read the removal PC's inverse diagonal after a values-only refill
+// Re-read (or re-compose) the removal PC's inverse diagonal after the group's
+// xsections have changed under it
 PetscErrorCode TransportSolver::refresh()
 {
    PC pc, pc_removal;
@@ -180,7 +189,7 @@ PetscErrorCode TransportSolver::refresh()
    // Index 0 is the removal shell, added first in create()
    PetscCall(PCCompositeGetPC(pc, 0, &pc_removal));
    PetscCall(PCShellGetContext(pc_removal, &shell));
-   PetscCall(RemovalPCFillContext(shell, assembled_));
+   PetscCall(RemovalPCFillContext(shell, op_));
 
    PetscFunctionReturn(PETSC_SUCCESS);
 }
@@ -204,7 +213,7 @@ PetscErrorCode TransportSolver::destroy()
    PetscFunctionBeginUser;
 
    PetscCall(KSPDestroy(&ksp_));
-   assembled_ = NULL;
+   op_ = nullptr;
 
    PetscFunctionReturn(PETSC_SUCCESS);
 }
