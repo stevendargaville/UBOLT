@@ -7,10 +7,11 @@
 //
 // Strategy knobs: -precon_stream (precondition with a streaming-only pmat),
 // -matfree_removal (apply the removal term matrix-free, so the assembled matrix
-// is streaming only), -precon_dsa (add the DSA diffusion correction to the
-// composite - its inner solve takes the -dsa_ prefix), -diag_scale, and the
-// verification ones, -check_inf_medium, -check_matfree and the -flux_vtk
-// output override
+// is streaming only), -precon_ref_shift + -precon_ref_k (put a representative
+// removal back onto that streaming pmat, in k reference-shifted copies),
+// -precon_dsa (add the DSA diffusion correction to the composite - its inner
+// solve takes the -dsa_ prefix), -diag_scale, and the verification ones,
+// -check_inf_medium, -check_matfree and the -flux_vtk output override
 //
 // Group Gauss-Seidel with downscatter only: groups are ordered high energy to
 // low, the within-group scatter stays on the lhs (matrix-free) and everything
@@ -32,6 +33,18 @@
 // two must agree on iteration count, see ../docs/dev/testing.md).
 // -diag_scale is a checked error in this mode: it would scale the streaming
 // part of the operator and leave the matrix-free removal and scatter unscaled
+//
+// -precon_ref_shift is what makes that mode usable when the removal is strong.
+// A bare streaming pmat has no removal in it at all, and PCAIR set up on one
+// diverges from roughly a mean free path per cell; the flag preconditions each
+// group with L + alpha_g * D_ref instead, D_ref being group 0's per-cell
+// Sigma_t and alpha_g that group's ratio to it, in k = -precon_ref_k shared
+// copies (default: the fewest that keep every group close to the one it uses -
+// see RefShiftPmats). It NEEDS -matfree_removal, which is the only mode whose
+// pmat is missing its removal, and is a checked error without it. k pmats means
+// k PCAIR hierarchies, which is the design's stated cost. It composes with
+// -precon_dsa: the correction wants a removal-carrying pmat to attach to, and
+// this is what puts one there
 //
 // Currently run with:
 // make build_tests && ./transportk -problem problems/slab_st2.json -ksp_monitor
@@ -180,6 +193,27 @@ int main(int argc, char **args) {
    // matrix IS one, and takes every assembly out of the group sweep
    PetscBool matfree_removal = PETSC_FALSE;
    PetscCall(PetscOptionsGetBool(NULL, NULL, "-matfree_removal", &matfree_removal, NULL));
+   // Do we put a representative removal back onto the streaming-only pmat -
+   // see the header comment. -precon_ref_k is how many reference-shifted
+   // copies to build; unset (0) asks RefShiftPmats for its default rule
+   PetscBool precon_ref_shift = PETSC_FALSE;
+   PetscCall(PetscOptionsGetBool(NULL, NULL, "-precon_ref_shift", &precon_ref_shift, NULL));
+   PetscInt precon_ref_k = 0;
+   PetscBool have_ref_k = PETSC_FALSE;
+   PetscCall(PetscOptionsGetInt(NULL, NULL, "-precon_ref_k", &precon_ref_k, &have_ref_k));
+   // The shift exists to repair a pmat that is missing its removal, and
+   // -matfree_removal is the only mode that produces one. Under any other mode
+   // the pmat already carries the removal (the default) or was deliberately
+   // asked not to (-precon_stream), so the flag would either do nothing or
+   // silently undo the choice
+   PetscCheck(!precon_ref_shift || matfree_removal, PETSC_COMM_WORLD, PETSC_ERR_ARG_INCOMP, \
+      "-precon_ref_shift shifts the streaming-only pmat that -matfree_removal leaves " \
+      "behind: run the two together");
+   PetscCheck(!have_ref_k || precon_ref_shift, PETSC_COMM_WORLD, PETSC_ERR_ARG_INCOMP, \
+      "-precon_ref_k counts the reference-shifted pmats: it needs -precon_ref_shift");
+   PetscCheck(precon_ref_k >= 0, PETSC_COMM_WORLD, PETSC_ERR_ARG_OUTOFRANGE, \
+      "-precon_ref_k must be positive (or left unset for the default), was given %" \
+      PetscInt_FMT, precon_ref_k);
    // Do we add the DSA diffusion correction to the composite preconditioner
    // (index 2, its inner solve under the -dsa_ prefix - see DSAPrecon). Off by
    // default: nothing preconditions the scattering without it, which is what
@@ -400,10 +434,31 @@ int main(int argc, char **args) {
       // it ONCE, here, and the sweep below assembles nothing at all
       if (matfree_removal) PetscCall(op.assemble());
 
+      // The reference-shifted pmats: k copies of that streaming matrix, each
+      // with a representative removal on its interior diagonal, and a map from
+      // group to which one. Built here because it reads the assembled matrix,
+      // so it has to come after the assemble above
+      RefShiftPmats ref_shift;
+      if (precon_ref_shift) {
+         PetscCall(ref_shift.create(PETSC_COMM_WORLD, ps, *disc, xs, op.assembled_mat(), \
+            precon_ref_k));
+         PetscCall(PetscFPrintf(PETSC_COMM_WORLD, stderr, \
+            "reference-shifted pmat: %" PetscInt_FMT " hierarchies over %" PetscInt_FMT \
+            " groups, worst mismatch %g\n", ref_shift.n_bins(), n_groups, \
+            (double)ref_shift.worst_mismatch()));
+      }
+
       // ~~~~~~~~~~~~~
       // Sweep the groups
+      //
+      // One solver per pmat: without -precon_ref_shift that is one for the
+      // whole sweep, with it one per bin. A solver owns its KSP, its composite
+      // PC and the PCAIR hierarchy underneath it, so this vector IS the memory
+      // the mode costs - and each one is created lazily, the first time a group
+      // that uses it comes round
       // ~~~~~~~~~~~~~
-      TransportSolver solver;
+      std::vector<TransportSolver> solvers(precon_ref_shift ? ref_shift.n_bins() : 1);
+      std::vector<PetscBool> solver_created(solvers.size(), PETSC_FALSE);
       for (PetscInt g = 0; g < n_groups; g++) {
 
          // Point the terms at this group and refill the values. No
@@ -446,11 +501,18 @@ int main(int argc, char **args) {
          }
 
          // The shell only exists once something has been assembled. Pmat is
-         // the streaming-only copy if one was built, and otherwise the
-         // assembled matrix - which under -matfree_removal is streaming only
-         // in its own right
-         if (g == 0) PetscCall(solver.create(PETSC_COMM_WORLD, op, \
-            streaming_mat ? streaming_mat : op.assembled_mat(), precon_dsa ? &dsa : nullptr));
+         // this group's reference-shifted copy if there are any, the
+         // streaming-only copy if one was built, and otherwise the assembled
+         // matrix - which under -matfree_removal is streaming only in its own
+         // right
+         const PetscInt bin = precon_ref_shift ? ref_shift.bin_of_group(g) : 0;
+         TransportSolver &solver = solvers[bin];
+         if (!solver_created[bin]) {
+            Mat pmat = precon_ref_shift ? ref_shift.pmat(bin) : \
+               (streaming_mat ? streaming_mat : op.assembled_mat());
+            PetscCall(solver.create(PETSC_COMM_WORLD, op, pmat, precon_dsa ? &dsa : nullptr));
+            solver_created[bin] = PETSC_TRUE;
+         }
          // sigma_t changed under the removal preconditioner
          else PetscCall(solver.refresh());
 
@@ -518,9 +580,11 @@ int main(int argc, char **args) {
          }
       }
 
-      PetscCall(solver.destroy());
-      // After the solver: the shell at composite index 2 pointed at it
+      for (size_t s = 0; s < solvers.size(); s++) PetscCall(solvers[s].destroy());
+      // After the solvers: the shell at composite index 2 pointed at it
       PetscCall(dsa.destroy());
+      // Same order for the pmats the solvers were built on
+      PetscCall(ref_shift.destroy());
       PetscCall(op.destroy());
       PetscCall(disc->destroy());
       PetscCall(MatDestroy(&streaming_mat));
