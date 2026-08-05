@@ -26,6 +26,10 @@ public:
    virtual ~OperatorTerm() = default;
 
    // Does this term contribute to the assembled matrix / to the matrix-free apply
+   //
+   // Both are read by TransportOperator at ASSEMBLE time, not when the term is
+   // added, so a term that can be either (see RemovalTerm::set_matrix_free) can
+   // be switched any time before the first TransportOperator::assemble()
    virtual PetscBool assembled() const { return PETSC_FALSE; }
    virtual PetscBool matrix_free() const { return PETSC_FALSE; }
 
@@ -37,6 +41,30 @@ public:
    }
    // Add this term's action to y: y += term * x
    virtual PetscErrorCode apply_add(Vec, Vec) const
+   {
+      PetscFunctionBeginUser;
+      PetscFunctionReturn(PETSC_SUCCESS);
+   }
+
+   // Does this term sit on the streaming/removal operator's diagonal, and if so
+   // add it into d. TransportOperator::diagonal() composes the whole diagonal
+   // that way, for when a term carrying one is applied matrix-free and is
+   // therefore missing from the assembled matrix - MatGetDiagonal would then
+   // hand the Jacobi stage of the preconditioner a silently incomplete diagonal
+   //
+   // "The diagonal" is the ASSEMBLED operator's: streaming plus removal.
+   // ScatteringTerm deliberately does not override this. It has never been in
+   // the assembled matrix, so nothing in the preconditioner has ever seen its
+   // diagonal, and composing it in would be a different preconditioner rather
+   // than the same one written another way
+   //
+   // A term that does override it owes the composition the SAME arithmetic its
+   // assemble_add writes into the diagonal slot, so the composed value matches
+   // the assembled one bitwise - transportk's -check_matfree pins exactly that.
+   // BC rows are not a term's business here either: the composition writes them
+   // itself, the 1.0 the assembly puts on them
+   virtual PetscBool has_diagonal() const { return PETSC_FALSE; }
+   virtual PetscErrorCode add_diagonal(Vec) const
    {
       PetscFunctionBeginUser;
       PetscFunctionReturn(PETSC_SUCCESS);
