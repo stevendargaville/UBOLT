@@ -64,6 +64,38 @@ PetscErrorCode StreamingTerm::assemble_add(PetscScalarKokkosView &coo_v_d) const
 }
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+// The same |mu|/dx this term writes into the diagonal slot above, added into d
+// - deliberately the same expression, so a composed diagonal is bitwise the
+// assembled one. BC rows belong to the composition, not to a term
+// This happens entirely on the device
+PetscErrorCode StreamingTerm::add_diagonal(Vec d) const
+{
+   const PetscInt n_angles = n_angles_;
+   const PetscScalar dx = dx_;
+   const PetscScalarKokkosView mu_d = mu_d_;
+   const PetscIntKokkosView is_bc_row_d = boundary_.is_bc_row_d;
+
+   PetscFunctionBeginUser;
+
+   PetscScalarKokkosView d_d;
+   PetscCall(VecGetKokkosView(d, &d_d));
+
+   Kokkos::parallel_for(
+      Kokkos::RangePolicy<>(0, local_rows_), KOKKOS_LAMBDA(PetscInt r) {
+
+         if (is_bc_row_d(r)) return;
+
+         const PetscInt a = r % n_angles;
+         d_d(r) += PetscAbsScalar(mu_d(a)) / dx;
+      });
+
+   PetscCall(VecRestoreKokkosView(d, &d_d));
+
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 // StreamingTerm2D
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -124,6 +156,44 @@ PetscErrorCode StreamingTerm2D::assemble_add(PetscScalarKokkosView &coo_v_d) con
          coo_v_d(first)     += -cx;
          coo_v_d(first + 1) += -cy;
       });
+
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+// The cx + cy this term writes into the diagonal slot above - the same
+// expression in the same order, so a composed diagonal is bitwise the
+// assembled one
+// This happens entirely on the device
+PetscErrorCode StreamingTerm2D::add_diagonal(Vec d) const
+{
+   const PetscInt n_angles = n_angles_;
+   const PetscScalar dx = dx_;
+   const PetscScalar dy = dy_;
+   const PetscScalarKokkosView mu_d = mu_d_;
+   const PetscScalarKokkosView eta_d = eta_d_;
+   const PetscIntKokkosView is_bc_row_d = boundary_.is_bc_row_d;
+
+   PetscFunctionBeginUser;
+
+   PetscScalarKokkosView d_d;
+   PetscCall(VecGetKokkosView(d, &d_d));
+
+   Kokkos::parallel_for(
+      Kokkos::RangePolicy<>(0, local_rows_), KOKKOS_LAMBDA(PetscInt r) {
+
+         if (is_bc_row_d(r)) return;
+
+         const PetscInt a = r % n_angles;
+
+         const PetscScalar cx = PetscAbsScalar(mu_d(a)) / dx;
+         const PetscScalar cy = PetscAbsScalar(eta_d(a)) / dy;
+
+         d_d(r) += cx + cy;
+      });
+
+   PetscCall(VecRestoreKokkosView(d, &d_d));
 
    PetscFunctionReturn(PETSC_SUCCESS);
 }
@@ -200,6 +270,47 @@ PetscErrorCode StreamingTerm3D::assemble_add(PetscScalarKokkosView &coo_v_d) con
 }
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+// The cx + cy + cz this term writes into the diagonal slot above - the same
+// expression in the same order, so a composed diagonal is bitwise the
+// assembled one
+// This happens entirely on the device
+PetscErrorCode StreamingTerm3D::add_diagonal(Vec d) const
+{
+   const PetscInt n_angles = n_angles_;
+   const PetscScalar dx = dx_;
+   const PetscScalar dy = dy_;
+   const PetscScalar dz = dz_;
+   const PetscScalarKokkosView mu_d = mu_d_;
+   const PetscScalarKokkosView eta_d = eta_d_;
+   const PetscScalarKokkosView xi_d = xi_d_;
+   const PetscIntKokkosView is_bc_row_d = boundary_.is_bc_row_d;
+
+   PetscFunctionBeginUser;
+
+   PetscScalarKokkosView d_d;
+   PetscCall(VecGetKokkosView(d, &d_d));
+
+   Kokkos::parallel_for(
+      Kokkos::RangePolicy<>(0, local_rows_), KOKKOS_LAMBDA(PetscInt r) {
+
+         if (is_bc_row_d(r)) return;
+
+         const PetscInt a = r % n_angles;
+
+         const PetscScalar cx = PetscAbsScalar(mu_d(a)) / dx;
+         const PetscScalar cy = PetscAbsScalar(eta_d(a)) / dy;
+         const PetscScalar cz = PetscAbsScalar(xi_d(a)) / dz;
+
+         d_d(r) += cx + cy + cz;
+      });
+
+   PetscCall(VecRestoreKokkosView(d, &d_d));
+
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 // RemovalTerm
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -240,6 +351,74 @@ PetscErrorCode RemovalTerm::assemble_add(PetscScalarKokkosView &coo_v_d) const
          // The xsections are per cell, the rows are per cell and angle
          coo_v_d(diag_slot_d(r)) += sigma_t_d(r / n_angles);
       });
+
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+// The matrix-free half of the same term: y += sigma_t psi, row by row. A pure
+// diagonal, so unlike the scatter there is nothing to integrate and nothing to
+// keep scratch for - it reads sigma_t_d straight through, which is why a group
+// sweep in this mode has no per-group work at all
+// This happens entirely on the device
+PetscErrorCode RemovalTerm::apply_add(Vec x, Vec y) const
+{
+   const PetscInt n_angles = n_angles_;
+   const PetscScalarKokkosView sigma_t_d = sigma_t_d_;
+   const PetscIntKokkosView is_bc_row_d = boundary_.is_bc_row_d;
+
+   PetscFunctionBeginUser;
+
+   // Const on the way in so PETSc does not mark x dirty
+   PetscScalarConstKokkosView x_d;
+   PetscScalarKokkosView y_d;
+   PetscCall(VecGetKokkosView(x, &x_d));
+   PetscCall(VecGetKokkosView(y, &y_d));
+
+   Kokkos::parallel_for(
+      Kokkos::RangePolicy<>(0, local_rows_), KOKKOS_LAMBDA(PetscInt r) {
+
+         // Add nothing to the bcs - the assembly wrote those rows and this
+         // would take that straight back off
+         if (is_bc_row_d(r)) return;
+
+         // The xsections are per cell, the rows are per cell and angle
+         y_d(r) += sigma_t_d(r / n_angles) * x_d(r);
+      });
+
+   PetscCall(VecRestoreKokkosView(x, &x_d));
+   PetscCall(VecRestoreKokkosView(y, &y_d));
+
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+// The same sigma_t this term writes into the diagonal slot above - which IS
+// the whole of this term, so assembled or matrix-free the composed diagonal is
+// bitwise the assembled one
+// This happens entirely on the device
+PetscErrorCode RemovalTerm::add_diagonal(Vec d) const
+{
+   const PetscInt n_angles = n_angles_;
+   const PetscScalarKokkosView sigma_t_d = sigma_t_d_;
+   const PetscIntKokkosView is_bc_row_d = boundary_.is_bc_row_d;
+
+   PetscFunctionBeginUser;
+
+   PetscScalarKokkosView d_d;
+   PetscCall(VecGetKokkosView(d, &d_d));
+
+   Kokkos::parallel_for(
+      Kokkos::RangePolicy<>(0, local_rows_), KOKKOS_LAMBDA(PetscInt r) {
+
+         if (is_bc_row_d(r)) return;
+
+         d_d(r) += sigma_t_d(r / n_angles);
+      });
+
+   PetscCall(VecRestoreKokkosView(d, &d_d));
 
    PetscFunctionReturn(PETSC_SUCCESS);
 }

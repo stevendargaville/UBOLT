@@ -25,6 +25,11 @@ public:
    // pmat is what the preconditioner is built from - either the operator's own
    // assembled matrix or a streaming-only one
    //
+   // op is not owned and must outlive the solver: the removal shell PC takes
+   // its diagonal from the operator, not from a matrix handle, so that a term
+   // applied matrix-free (and therefore absent from the assembled matrix) is
+   // still in the diagonal being inverted - see RemovalPCFillContext
+   //
    // dsa is optional and CALLER-OWNED: it must outlive the solver, and passing
    // nullptr (the default) is exactly the preconditioner UBOLT had before DSA
    // existed. Whoever passes one also drives it - DSAPrecon::set_group() is a
@@ -33,14 +38,17 @@ public:
       DSAPrecon *dsa = nullptr);
    PetscErrorCode destroy();
 
-   // Re-read whatever the preconditioner cached off the assembled matrix.
-   // Must be called after a values-only refill of that matrix: the removal
-   // shell PC holds the inverse diagonal, and the multigroup sweep changes
-   // sigma_t under it every group. PCAIR needs no help - it tracks pmat's
-   // state itself (and with a streaming-only pmat there is nothing to redo,
-   // since streaming does not depend on the group). Neither does the DSA
-   // shell: its per-group refill is DSAPrecon::set_group(), which needs the
-   // group's xsections and so belongs where the terms are re-pointed
+   // Re-take whatever the preconditioner cached off the operator's diagonal.
+   // Must be called once the group's xsections have changed under it: the
+   // removal shell PC holds the inverse diagonal, and the multigroup sweep
+   // changes sigma_t every group - whether that lands in the assembled matrix
+   // (the default, so this follows the values-only refill) or straight in the
+   // term (matrix-free removal, where there is no refill to follow). PCAIR
+   // needs no help - it tracks pmat's state itself (and with a streaming-only
+   // pmat there is nothing to redo, since streaming does not depend on the
+   // group). Neither does the DSA shell: its per-group refill is
+   // DSAPrecon::set_group(), which needs the group's xsections and so belongs
+   // where the terms are re-pointed
    PetscErrorCode refresh();
 
    PetscErrorCode solve(Vec b, Vec x);
@@ -50,8 +58,9 @@ public:
 
 private:
    KSP ksp_ = NULL;
-   // Not owned - the operator's assembled matrix, which the removal PC reads
-   Mat assembled_ = NULL;
+   // Not owned, and it must outlive the solver: the operator the removal PC
+   // takes its diagonal from, per group
+   const TransportOperator *op_ = nullptr;
    KSPConvergedReason reason_ = KSP_CONVERGED_ITERATING;
 };
 

@@ -28,6 +28,22 @@ static void SetBoundaryRows(PetscScalarKokkosView coo_v_d, \
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
+// Write 1.0 onto the boundary rows of a composed diagonal - the diagonal
+// SetBoundaryRows above puts in the matrix, for both BC families (a reflective
+// row's -1.0 coupling is to the MIRRORED angle, so it is never the diagonal)
+// A free function for the same reason SetBoundaryRows is one
+static void SetBoundaryDiagonal(PetscScalarKokkosView d_d, PetscIntKokkosView is_bc_row_d, \
+   PetscInt local_rows)
+{
+   Kokkos::parallel_for(
+      Kokkos::RangePolicy<>(0, local_rows), KOKKOS_LAMBDA(PetscInt r) {
+
+         if (is_bc_row_d(r)) d_d(r) = 1.0;
+      });
+}
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
 // Apply the assembled terms, then every matrix-free term on top
 static PetscErrorCode ShellMatMultApply(Mat A, Vec x, Vec y)
 {
@@ -86,7 +102,6 @@ PetscErrorCode TransportOperator::add_term(const OperatorTerm *term)
    PetscFunctionBeginUser;
 
    terms_.push_back(term);
-   if (term->matrix_free()) matrix_free_.push_back(term);
 
    PetscFunctionReturn(PETSC_SUCCESS);
 }
@@ -100,8 +115,13 @@ PetscErrorCode TransportOperator::assemble()
 
    PetscFunctionBeginUser;
 
+   // The partition is taken HERE and not in add_term, so a term that can be
+   // either half (RemovalTerm::set_matrix_free) can be switched in either
+   // order relative to being added - only before the first assemble
+   matrix_free_.clear();
    for (const OperatorTerm *term : terms_) {
       if (term->assembled()) assembled_terms.push_back(term);
+      if (term->matrix_free()) matrix_free_.push_back(term);
    }
    PetscCall(assemble_into(assembled_, (PetscInt)assembled_terms.size(), assembled_terms.data()));
 
@@ -133,6 +153,43 @@ PetscErrorCode TransportOperator::assemble_subset(PetscInt n_terms, const Operat
 
    PetscCall(disc_->create_matrix(mat));
    PetscCall(assemble_into(*mat, n_terms, terms));
+
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+// Is a term carrying a diagonal being applied matrix-free? Then it is missing
+// from the assembled matrix and MatGetDiagonal there is silently incomplete
+PetscBool TransportOperator::diagonal_is_composed() const
+{
+   for (const OperatorTerm *term : terms_) {
+      if (term->matrix_free() && !term->assembled() && term->has_diagonal()) return PETSC_TRUE;
+   }
+   return PETSC_FALSE;
+}
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+// Compose the diagonal from the terms: every add_diagonal in the order the
+// terms were added, which is the order assemble_into sums the COO values in,
+// so the composed value is bitwise what MatGetDiagonal reads off a fully
+// assembled matrix. Then the boundary rows, whose diagonal is the 1.0 the
+// assembly writes and nothing a term contributed
+PetscErrorCode TransportOperator::diagonal(Vec d) const
+{
+   const PetscIntKokkosView is_bc_row_d = disc_->boundary_info().is_bc_row_d;
+   const PetscInt local_rows = ps_.local_rows();
+
+   PetscFunctionBeginUser;
+
+   PetscCall(VecSet(d, 0.0));
+   for (const OperatorTerm *term : terms_) PetscCall(term->add_diagonal(d));
+
+   PetscScalarKokkosView d_d;
+   PetscCall(VecGetKokkosView(d, &d_d));
+   SetBoundaryDiagonal(d_d, is_bc_row_d, local_rows);
+   PetscCall(VecRestoreKokkosView(d, &d_d));
 
    PetscFunctionReturn(PETSC_SUCCESS);
 }

@@ -23,6 +23,9 @@ public:
    PetscBool assembled() const override { return PETSC_TRUE; }
    PetscErrorCode assemble_add(PetscScalarKokkosView &coo_v_d) const override;
 
+   PetscBool has_diagonal() const override { return PETSC_TRUE; }
+   PetscErrorCode add_diagonal(Vec d) const override;
+
 private:
    PetscInt n_angles_ = 0;
    PetscInt local_rows_ = 0;
@@ -46,6 +49,9 @@ public:
 
    PetscBool assembled() const override { return PETSC_TRUE; }
    PetscErrorCode assemble_add(PetscScalarKokkosView &coo_v_d) const override;
+
+   PetscBool has_diagonal() const override { return PETSC_TRUE; }
+   PetscErrorCode add_diagonal(Vec d) const override;
 
 private:
    PetscInt n_angles_ = 0;
@@ -73,6 +79,9 @@ public:
    PetscBool assembled() const override { return PETSC_TRUE; }
    PetscErrorCode assemble_add(PetscScalarKokkosView &coo_v_d) const override;
 
+   PetscBool has_diagonal() const override { return PETSC_TRUE; }
+   PetscErrorCode add_diagonal(Vec d) const override;
+
 private:
    PetscInt n_angles_ = 0;
    PetscInt local_rows_ = 0;
@@ -92,6 +101,13 @@ private:
 //
 // Nothing here is dimension-specific - it writes the diagonal slot and skips
 // the Dirichlet rows - so it takes any Discretisation
+//
+// The one term that can go either way. Assembled (the default) it is a
+// per-group refill of the shared matrix; matrix-free it leaves the assembled
+// matrix carrying STREAMING ONLY, which does not depend on the group, so a
+// multigroup sweep assembles once and PCAIR sets up once for the whole sweep.
+// Same operator either way, to rounding - see -matfree_removal in
+// tests/transportk and its -check_matfree equivalence check
 class PETSC_VISIBILITY_PUBLIC RemovalTerm : public OperatorTerm {
 public:
    // sigma_t_d is indexed by local cell and must outlive the term
@@ -99,15 +115,31 @@ public:
 
    // Point the term at a different xsection. The group sweep calls this and
    // then TransportOperator::assemble() to refill the values, which is why
-   // nothing here caches anything derived from sigma_t
+   // nothing here caches anything derived from sigma_t. Matrix-free the apply
+   // reads it straight through, so there is nothing to refill at all
    void set_sigma_t(const PetscScalarKokkosView &sigma_t_d) { sigma_t_d_ = sigma_t_d; }
 
-   PetscBool assembled() const override { return PETSC_TRUE; }
+   // Assemble this term (the default) or apply it matrix-free. Set it before
+   // the first TransportOperator::assemble() - the operator partitions its
+   // terms there, not in add_term, so the order of the two calls does not
+   // matter, only that this one comes first
+   void set_matrix_free(PetscBool matrix_free) { matrix_free_ = matrix_free; }
+
+   PetscBool assembled() const override { return (PetscBool)!matrix_free_; }
    PetscErrorCode assemble_add(PetscScalarKokkosView &coo_v_d) const override;
+
+   PetscBool matrix_free() const override { return matrix_free_; }
+   PetscErrorCode apply_add(Vec x, Vec y) const override;
+
+   // Always: whichever half of the term is live, the removal is on the
+   // operator's diagonal and the Jacobi stage of the preconditioner wants it
+   PetscBool has_diagonal() const override { return PETSC_TRUE; }
+   PetscErrorCode add_diagonal(Vec d) const override;
 
 private:
    PetscInt n_angles_ = 0;
    PetscInt local_rows_ = 0;
+   PetscBool matrix_free_ = PETSC_FALSE;
    PetscScalarKokkosView sigma_t_d_;
    CooPattern pattern_;
    BoundaryInfo boundary_;

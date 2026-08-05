@@ -90,6 +90,8 @@ ifeq ($(PETSC_HAVE_MPIUNI),0)
 endif
 	@echo "Check 1D slab multigroup, 4 groups with downscatter"
 	./transportk -problem problems/slab_mg4_t05.json -ksp_max_it 6
+	@echo "Check the matrix-free removal against the assembled operator, per group"
+	./transportk -problem problems/slab_mg4_t05.json -check_matfree -ksp_max_it 6
 	@echo "Check 2D box against the closed form and a reference matrix"
 	./verify_2dk
 	@echo "Check 2D box streaming/removal + matrix-free scatter with AIRG"
@@ -118,6 +120,8 @@ run_tests_short_serial:
 	./transportk -problem problems/slab_st2.json -ksp_max_it 6
 	@echo "Test 1D slab, streaming-only pmat, strong removal"
 	./transportk -problem problems/slab_st2.json -precon_stream -ksp_pc_side right -ksp_max_it 9
+	@echo "Test 1D slab, matrix-free removal (the twin of the line above - same count, by design)"
+	./transportk -problem problems/slab_st2.json -matfree_removal -ksp_pc_side right -ksp_max_it 9
 	@echo "Test 1D slab, streaming/removal pmat, weak removal (advection dominated)"
 	./transportk -problem problems/slab_st0.json -ksp_max_it 1
 	@echo "Test 1D slab, diagonally scaled"
@@ -139,6 +143,8 @@ run_tests_short_serial:
 	./transportk -problem problems/slab_inf_medium.json -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 10
 	@echo "Test 1D slab, reflective face with one MatSetValuesCOO per term"
 	./transportk -problem problems/slab_st2_reflect_left.json -ksp_max_it 8 -ubolt_coo_two_call
+	@echo "Test 1D slab, matrix-free removal against the infinite-medium solution (all faces reflective)"
+	./transportk -problem problems/slab_inf_medium.json -matfree_removal -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 8
 #
 # DSA. slab_diffusive.json is ten mean free paths per cell at a scattering
 # ratio of 0.99 - the regime nothing in the composite preconditioner addressed
@@ -167,6 +173,8 @@ run_tests_short_serial:
 	./transportk -problem problems/slab_mg4_t2.json -ksp_max_it 6
 	@echo "Test 1D slab multigroup, streaming-only pmat reused across the sweep"
 	./transportk -problem problems/slab_mg4_t05.json -precon_stream -ksp_pc_side right -ksp_max_it 11
+	@echo "Test 1D slab multigroup, matrix-free removal - not one assembly in the whole sweep"
+	./transportk -problem problems/slab_mg4_t05.json -matfree_removal -ksp_pc_side right -ksp_max_it 11
 	@echo "Test 1D slab multigroup, weak removal (advection dominated)"
 	./transportk -problem problems/slab_mg4_t05_st0.json -ksp_max_it 1
 	@echo "Test 1D slab multigroup, S2 on a coarser slab"
@@ -197,6 +205,8 @@ run_tests_short_serial:
 	./transportk -problem problems/box_50_st0.json -ksp_max_it 3
 	@echo "Test 2D box, streaming-only pmat"
 	./transportk -problem problems/box_50_st2.json -precon_stream -ksp_pc_side right -ksp_max_it 10
+	@echo "Test 2D box, matrix-free removal (the twin of the line above - same count, by design)"
+	./transportk -problem problems/box_50_st2.json -matfree_removal -ksp_pc_side right -ksp_max_it 10
 	@echo "Test 2D box, S4 (12 angles)"
 	./transportk -problem problems/box_30_s4_st2.json -ksp_max_it 6
 	@echo "Test 2D box, one MatSetValuesCOO per term instead of a single summed one"
@@ -213,6 +223,10 @@ run_tests_short_serial:
 	./transportk -problem problems/box_s8_reflect_coarse.json -ksp_max_it 6
 	@echo "Test 2D box, all faces reflective against the infinite-medium solution"
 	./transportk -problem problems/box_50_inf_medium.json -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 10
+	@echo "Test 2D box, matrix-free removal against the assembled operator (reflective faces)"
+	./transportk -problem problems/box_50_reflect_lb.json -check_matfree -ksp_max_it 6
+	@echo "Test 2D box, matrix-free removal against the infinite-medium solution (all faces reflective)"
+	./transportk -problem problems/box_50_inf_medium.json -matfree_removal -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 25
 #
 # DSA in 2D. box_diffusive.json is slab_diffusive.json's twin - the same ten
 # mean free paths per cell at a scattering ratio of 0.99, on a 50x50 box - so
@@ -292,12 +306,16 @@ run_tests_short_serial:
 	./transportk -problem problems/cube_10x5x5_st2.json -ksp_max_it 6
 	@echo "Test 3D cube, streaming-only pmat"
 	./transportk -problem problems/cube_10_st2.json -precon_stream -ksp_pc_side right -ksp_max_it 6
+	@echo "Test 3D cube, matrix-free removal (the twin of the line above - same count, by design)"
+	./transportk -problem problems/cube_10_st2.json -matfree_removal -ksp_pc_side right -ksp_max_it 6
 	@echo "Test 3D cube, S4 (24 angles)"
 	./transportk -problem problems/cube_10_s4_st2.json -ksp_max_it 6
 	@echo "Test 3D cube, one MatSetValuesCOO per term instead of a single summed one"
 	./transportk -problem problems/cube_10_st2.json -ksp_max_it 5 -ubolt_coo_two_call
 	@echo "Test 3D cube, reflective left + front + bottom faces (a three-face reflective corner)"
 	./transportk -problem problems/cube_10_reflect_3faces.json -ksp_max_it 5
+	@echo "Test 3D cube, matrix-free removal against the assembled operator (reflective corner)"
+	./transportk -problem problems/cube_10_reflect_3faces.json -check_matfree -ksp_max_it 5
 	@echo "Test 3D cube, all faces reflective against the infinite-medium solution"
 	./transportk -problem problems/cube_10_inf_medium.json -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 10
 #
@@ -346,12 +364,16 @@ run_tests_short_parallel:
 	$(MPIEXEC) -n 2 ./transportk -problem problems/slab_st0.json -ksp_max_it 1
 	@echo "Test 1D slab, streaming-only pmat, strong removal in parallel"
 	$(MPIEXEC) -n 2 ./transportk -problem problems/slab_st2.json -precon_stream -ksp_pc_side right -ksp_max_it 9
+	@echo "Test 1D slab, matrix-free removal in parallel (the twin of the line above)"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/slab_st2.json -matfree_removal -ksp_pc_side right -ksp_max_it 9
 	@echo "Test 1D slab, S2 on a coarser slab in parallel"
 	$(MPIEXEC) -n 2 ./transportk -problem problems/slab_s2_coarse.json -ksp_max_it 9
 	@echo "Test 1D slab, one MatSetValuesCOO per term in parallel"
 	$(MPIEXEC) -n 2 ./transportk -problem problems/slab_st2.json -ksp_max_it 6 -ubolt_coo_two_call
 	@echo "Test 1D slab, all faces reflective against the infinite-medium solution in parallel"
 	$(MPIEXEC) -n 2 ./transportk -problem problems/slab_inf_medium.json -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 11
+	@echo "Test 1D slab, matrix-free removal against the infinite-medium solution in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/slab_inf_medium.json -matfree_removal -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 9
 	@echo "Test 1D slab, diffusive regime without the DSA correction in parallel"
 	$(MPIEXEC) -n 2 ./transportk -problem problems/slab_diffusive.json -ksp_max_it 21
 	@echo "Test 1D slab, diffusive regime with the DSA correction in parallel"
@@ -362,6 +384,10 @@ run_tests_short_parallel:
 	$(MPIEXEC) -n 2 ./transportk -problem problems/slab_mg4_t05.json -ksp_max_it 6
 	@echo "Test 1D slab multigroup, streaming-only pmat in parallel"
 	$(MPIEXEC) -n 2 ./transportk -problem problems/slab_mg4_t05.json -precon_stream -ksp_pc_side right -ksp_max_it 11
+	@echo "Test 1D slab multigroup, matrix-free removal in parallel (the twin of the line above)"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/slab_mg4_t05.json -matfree_removal -ksp_pc_side right -ksp_max_it 11
+	@echo "Test 1D slab multigroup, matrix-free removal against the assembled operator in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/slab_mg4_t05.json -check_matfree -ksp_max_it 6
 	@echo "Test 1D slab multigroup, uncoupled groups in parallel"
 	$(MPIEXEC) -n 2 ./transportk -problem problems/slab_mg4_t0.json -ksp_max_it 6
 #
@@ -384,6 +410,10 @@ run_tests_short_parallel:
 	$(MPIEXEC) -n 2 ./transportk -problem problems/box_50_st0.json -ksp_max_it 3
 	@echo "Test 2D box, streaming-only pmat in parallel"
 	$(MPIEXEC) -n 2 ./transportk -problem problems/box_50_st2.json -precon_stream -ksp_pc_side right -ksp_max_it 10
+	@echo "Test 2D box, matrix-free removal in parallel (the twin of the line above)"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/box_50_st2.json -matfree_removal -ksp_pc_side right -ksp_max_it 10
+	@echo "Test 2D box, matrix-free removal against the assembled operator in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/box_50_st2.json -check_matfree -ksp_max_it 6
 	@echo "Test 2D box, S4 in parallel"
 	$(MPIEXEC) -n 2 ./transportk -problem problems/box_30_s4_st2.json -ksp_max_it 6
 	@echo "Test 2D box, one MatSetValuesCOO per term in parallel"
@@ -447,6 +477,8 @@ run_tests_short_parallel:
 	$(MPIEXEC) -n 2 ./transportk -problem problems/cube_10x5x5_st2.json -ksp_max_it 6
 	@echo "Test 3D cube, streaming-only pmat in parallel"
 	$(MPIEXEC) -n 2 ./transportk -problem problems/cube_10_st2.json -precon_stream -ksp_pc_side right -ksp_max_it 6
+	@echo "Test 3D cube, matrix-free removal in parallel (the twin of the line above)"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/cube_10_st2.json -matfree_removal -ksp_pc_side right -ksp_max_it 6
 	@echo "Test 3D cube, S4 in parallel"
 	$(MPIEXEC) -n 2 ./transportk -problem problems/cube_10_s4_st2.json -ksp_max_it 6
 	@echo "Test 3D cube, one MatSetValuesCOO per term in parallel"
@@ -485,6 +517,8 @@ run_tests_serial:
 	./transportk -problem problems/box_60_s4_st2.json -ksp_max_it 7
 	@echo "Test 2D box, streaming-only pmat on a larger grid"
 	./transportk -problem problems/box_80x40_st2.json -precon_stream -ksp_pc_side right -ksp_max_it 10
+	@echo "Test 2D box, matrix-free removal on a larger grid (the twin of the line above)"
+	./transportk -problem problems/box_80x40_st2.json -matfree_removal -ksp_pc_side right -ksp_max_it 10
 	@echo "Test 2D box, pure scattering on a larger grid"
 	./transportk -problem problems/box_60_st2.json -ksp_max_it 7
 	@echo "Test 3D cube, three-halves as fine in each direction (mesh independence)"
