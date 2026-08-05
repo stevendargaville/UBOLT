@@ -96,7 +96,8 @@ public:
 private:
    // The log-mean of Sigma_t(g) / Sigma_t(0) over every cell, per group
    PetscErrorCode compute_alphas(const GroupXSections &xs);
-   // Sort the log-alphas and cut at the largest gaps - see the .cxx
+   // Partition the sorted log-alphas into contiguous bins minimising the
+   // widest bin - see the .cxx for why this beats cutting at the largest gaps
    void bin_alphas(PetscInt n_bins);
 
    MPI_Comm comm_ = MPI_COMM_NULL;
