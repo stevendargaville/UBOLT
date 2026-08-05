@@ -1,0 +1,22 @@
+{
+ "_comment": "Decades multigroup slab: 100 cells over a length of 10, so dx = 0.1 and the four groups sit at 0.01, 0.1, 1 and 10 mean free paths per cell (five times that in the painted dense block). Pins the reference-shifted streaming pmat - a bare streaming pmat cannot precondition the thick groups at all, and the group ratios span a factor of 1000, so how many shifted hierarchies cover them is the question. The dense block is painted on cell boundaries (4.0 and 6.0 are 40 and 60 cells in), never on a cell centre.",
+ "dimension": 1,
+ "mesh": {
+  "n_cells": [100],
+  "lengths": [10.0]
+ },
+ "sn_order": 4,
+ "materials": "materials/decades4.json",
+ "regions": {
+  "paint": [
+   {
+    "material": 1,
+    "interval": [4.0, 6.0]
+   }
+  ]
+ },
+ "boundary_conditions": {
+  "left": {"type": "vacuum", "inflow": 2.0},
+  "right": {"type": "vacuum", "inflow": 2.0}
+ }
+}

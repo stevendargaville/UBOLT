@@ -734,6 +734,149 @@ A recipe passes on exit 0, so the two guards are checked BY HAND:
   constraint the transport operator carries (see the reflective section above),
   which is why no shipped problem file is in that state.
 
+## The reference-shifted streaming pmat (`-precon_ref_shift`)
+
+`-matfree_removal` leaves the assembled matrix carrying streaming ONLY, and the
+pmat defaults to it. That is fine while the removal is weak and useless once it
+is strong: PCAIR is then set up on something the solve is not.
+`-precon_ref_shift` puts a representative removal back — the pmat becomes
+`L + alpha_g * D_ref`, with `D_ref` group 0's per-cell `Sigma_t` and `alpha_g`
+the log-mean of `Sigma_t(g)/Sigma_t(0)` over the mesh — in `k` shared copies,
+`k` from `-precon_ref_k` or from the default rule in `RefShiftPmats`. It is off
+by default, so every recipe, count and baseline above is untouched; these are
+NEW pins. It requires `-matfree_removal` (a checked error otherwise), and `k`
+pmats means `k` PCAIR hierarchies, which is the mode's whole cost.
+
+**The claim is an identity, not an improvement.** When the alphas are covered
+exactly — one bin per distinct ratio, which the driver reports on stderr as
+`worst mismatch 1` — `alpha_g * D_ref` IS `Sigma_t(g)` cell by cell, the pmat is
+the full one, and the run reproduces the DEFAULT (full-pmat) iteration counts
+exactly. Out of `k` matrices assembled once, with no assembly anywhere in the
+group sweep. Six problem files say so independently:
+
+| exact-coverage identity | ref-shift count | the full-pmat count it reproduces |
+|---|---|---|
+| `slab_st2.json` (1 group, so k = 1 always) | 6 | 6 |
+| `slab_mg4_t05.json`, `-precon_ref_k 2` (two distinct ratios) | 6, 6, 6, 6 | 6, 6, 6, 6 |
+| `slab_decades4.json`, `-precon_ref_k 4` | 4, 8, 14, 20 | 4, 8, 14, 20 |
+| `box_decades4.json`, `-precon_ref_k 4` | 4, 6, 15, 30 | 4, 6, 15, 30 |
+| `slab_diffusive.json` (1 group), no DSA / `-precon_dsa` | 20 / 11 | 20 / 11 |
+| `box_diffusive.json` (1 group), no DSA / `-precon_dsa` | 29 / 11 | 29 / 11 |
+
+Mind the pc side: these run with the DEFAULT (left) preconditioning, not the
+`-ksp_pc_side right` every `-precon_stream` and `-matfree_removal` recipe
+carries. That is the point — the pmat is a full one again, so the comparison is
+with the full-pmat recipes, not with the streaming-only ones.
+
+### The decades problem files
+`slab_decades4.json` and `box_decades4.json` are the new problem files, sharing
+`materials/decades4.json`: four groups at `Sigma_t` 0.1, 1, 10 and 100 with
+within-group scattering ratios 0.5, 0.6, 0.9 and 0.99 and downscatter into the
+next group down only (so the group sweep is still exact), over cells of width
+0.1 — 0.01, 0.1, 1 and 10 mean free paths per cell. A 5x density-scaled copy of
+the material is painted over a block in the middle, so the problem is
+heterogeneous while every group RATIO stays identical in both materials:
+`alpha_g * D_ref` is exact per group there, which no scalar shift could be. The
+1D file is 100 cells over a length of 10, the 2D one 30x30 over 3x3 — the same
+physics one axis wider, in the way the diffusive trio is.
+
+The alphas are 1, 10, 100 and 1000, three decades, which is the point: covering
+them exactly costs four hierarchies and the default rule settles for two.
+Per-group counts, measured on the local opt arch; serial and `-n 2` agree
+throughout except the DSA runs' third group (6 serial, 5 at `-n 2`):
+
+| `slab_decades4.json` | per-group iterations |
+|---|---|
+| default pc (full pmat, the reference) | 4, 8, 14, 20 |
+| `-matfree_removal` alone (bare streaming pmat) | 10, 26, 208, **DIVERGED_ITS (300)** |
+| `-precon_ref_shift -precon_ref_k 4` (exact) | 4, 8, 14, 20 |
+| `-precon_ref_shift` (the default rule: k = 2, worst mismatch 3.16) | 13, 11, 26, 42 |
+| `-precon_ref_shift -precon_ref_k 1` (one shared pmat, mismatch 31.6) | 115, 22, 23, 76 |
+| `-precon_dsa` on the full pmat | 4, 4, 6, 11 |
+| `-matfree_removal -precon_dsa` (bare L + DSA) | 11, 30, **DIVERGED_ITS (300)** |
+| `-precon_ref_shift -precon_ref_k 4 -precon_dsa` | 4, 4, 6, 11 |
+| `-precon_ref_shift -precon_dsa` (k = 2) | 11, 11, 7, 13 |
+
+| `box_decades4.json` | per-group iterations |
+|---|---|
+| default pc (full pmat, the reference) | 4, 6, 15, 30 |
+| `-matfree_removal` alone (bare streaming pmat) | 6, 17, 89, **DIVERGED_ITS (300)** |
+| `-precon_ref_shift -precon_ref_k 4` (exact) | 4, 6, 15, 30 |
+| `-precon_ref_shift` (the default rule: k = 2) | 7, 8, 24, 48 |
+| `-precon_ref_shift -precon_ref_k 4 -precon_dsa` | 4, 4, 6, 11 |
+
+Read each table's second row against its third: that pair IS the test. The bare
+streaming pmat does not converge on the thick group at all, and the shift is
+what makes the mode usable there. **The bare-L rows are deliberately NOT
+recipes** — a pin whose expected outcome is divergence would have to be shaped
+as a failure, and a recipe's pass/fail is its exit code. They are recorded here
+instead, and they are what makes the ref-shift pins mean something.
+
+The mismatch cost is the other thing these tables pin down: at a worst mismatch
+of 3.16 the thick group costs 42 against the exact 20 in 1D and 48 against 30 in
+2D, i.e. roughly a factor of two. That is worse than the campaign's 1.3-1.6x for
+a factor-3 mismatch, and the difference is that the campaign measured one
+mismatched group on a homogeneous problem where these have two mismatched groups
+at once on a heterogeneous one at 10 mean free paths per cell.
+
+### DSA on a shifted pmat
+DSA cannot attach to a bare streaming pmat — structurally, not by degree. Both
+`-matfree_removal -precon_dsa` rows above diverge, as `-precon_stream
+-precon_dsa` already does (see the DSA section). On an EXACTLY covered shifted
+pmat it lands on the full-pmat-plus-DSA counts exactly, 11 on the thick group in
+every table above, which is the re-attachment claim.
+
+On a MISMATCHED shifted pmat it is fragile, and that is a real caveat: 1D at
+k = 2 is fine (13 on the thick group against the 42 it takes without DSA) while
+2D at k = 2 takes **179** on the group where `-precon_ref_k 4` takes 11. **The
+DSA recipes therefore pin exact coverage only.** Untangling it is future work —
+it is very likely the same unexplained amat/pmat interaction recorded for
+`-precon_stream -precon_dsa` in `TODO.md`.
+
+### Pins and slack
+
+| recipe | np=1 | np=2 | pin |
+|---|---|---|---|
+| 1D `slab_st2`, ref-shift (1 group) | 6 | — | 6 |
+| 1D `slab_mg4_t05`, `-precon_ref_k 2` | 6 | 6 | 6 |
+| 1D `slab_decades4`, `-precon_ref_k 4` | 20 | 20 | 20 |
+| 1D `slab_decades4`, default k | 42 | 42 | 43 |
+| 1D `slab_decades4`, `-precon_ref_k 4 -precon_dsa` | 11 | 11 | 12 |
+| 2D `box_decades4`, `-precon_ref_k 4` | 30 | 30 | 31 |
+| 2D `box_decades4`, default k | 48 | 48 | 49 |
+| 2D `box_decades4`, `-precon_ref_k 4 -precon_dsa` | 11 | 11 | 12 |
+| 2D `box_diffusive`, ref-shift, no DSA | 29 | — | 30 |
+| 2D `box_diffusive`, ref-shift + DSA | 11 | — | 12 |
+
+The exact-coverage 1D pins sit on the measured count, as every other 1D pin
+does. Everything else carries one iteration of slack: the DSA rows for the
+PCGAMG reason the other DSA pins do, the 2D rows for the reason the other 2D
+pins do, and the two default-k rows because a PCAIR hierarchy set up on a
+deliberately mismatched operator is the most arch-sensitive setup in the suite.
+**CI-arch sweep pending** — these are local opt-arch measurements, the same flag
+the DSA and benchmark pins carry.
+
+The parallel variants are not just duplicates here. The alphas are a log-mean
+over every cell, so they come off an MPI reduction, and the binning is then
+computed redundantly on every rank; a `-n 2` run that did not reproduce the
+serial count would mean the ranks had disagreed about which pmat a group
+belongs to.
+
+### Checks that are not recipes
+Three guards, all of which exit non-zero, so all of which are checked BY HAND:
+
+- `./transportk -problem problems/slab_mg4_t05.json -precon_ref_shift` must fail
+  with the "run the two together" message: the shift repairs the pmat
+  `-matfree_removal` leaves behind, and every other mode already has its removal.
+- `./transportk -problem problems/slab_mg4_t05.json -matfree_removal -precon_ref_k 2`
+  must fail with the "it needs `-precon_ref_shift`" message rather than silently
+  ignoring the number.
+- `./transportk -problem problems/slab_st0.json -matfree_removal -precon_ref_shift`
+  must fail with the `Sigma_t > 0 in every cell and every group` message. The
+  shift is a RATIO to the reference removal and a void has none — the same
+  guard, and the same eventual fix (a region-masked operator), as `-precon_dsa`'s
+  void guard above.
+
 ## Source and inflow conventions
 Both rhs knobs are **isotropic, angle-integrated strengths**, divided by the
 quadrature's `sum_weights` on their way onto the ordinates — `/2` in 1D, `/4 pi` in 2D

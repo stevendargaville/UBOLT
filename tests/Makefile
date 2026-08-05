@@ -92,6 +92,8 @@ endif
 	./transportk -problem problems/slab_mg4_t05.json -ksp_max_it 6
 	@echo "Check the matrix-free removal against the assembled operator, per group"
 	./transportk -problem problems/slab_mg4_t05.json -check_matfree -ksp_max_it 6
+	@echo "Check the reference-shifted pmat covering both group ratios exactly (the full-pmat count)"
+	./transportk -problem problems/slab_mg4_t05.json -matfree_removal -precon_ref_shift -precon_ref_k 2 -ksp_max_it 6
 	@echo "Check 2D box against the closed form and a reference matrix"
 	./verify_2dk
 	@echo "Check 2D box streaming/removal + matrix-free scatter with AIRG"
@@ -122,6 +124,11 @@ run_tests_short_serial:
 	./transportk -problem problems/slab_st2.json -precon_stream -ksp_pc_side right -ksp_max_it 9
 	@echo "Test 1D slab, matrix-free removal (the twin of the line above - same count, by design)"
 	./transportk -problem problems/slab_st2.json -matfree_removal -ksp_pc_side right -ksp_max_it 9
+# One group is the degenerate case of the reference-shifted pmat: alpha is 1,
+# there is one bin, and L + 1 * D_ref IS the full pmat - so this has to land on
+# the full-pmat count above (6), not the streaming-only one (9)
+	@echo "Test 1D slab, reference-shifted pmat with one group - the full pmat, rebuilt"
+	./transportk -problem problems/slab_st2.json -matfree_removal -precon_ref_shift -ksp_max_it 6
 	@echo "Test 1D slab, streaming/removal pmat, weak removal (advection dominated)"
 	./transportk -problem problems/slab_st0.json -ksp_max_it 1
 	@echo "Test 1D slab, diagonally scaled"
@@ -175,6 +182,31 @@ run_tests_short_serial:
 	./transportk -problem problems/slab_mg4_t05.json -precon_stream -ksp_pc_side right -ksp_max_it 11
 	@echo "Test 1D slab multigroup, matrix-free removal - not one assembly in the whole sweep"
 	./transportk -problem problems/slab_mg4_t05.json -matfree_removal -ksp_pc_side right -ksp_max_it 11
+#
+# The reference-shifted streaming pmat (-precon_ref_shift): put a
+# REPRESENTATIVE removal back onto the streaming-only matrix the line above
+# leaves behind, in k shared copies. Two claims, and both are identities rather
+# than "it got better":
+#  - EXACT COVERAGE. This file's Sigma_t is 2.5, 2.5, 2.5, 2.0, so there are
+#    exactly two distinct group ratios and k = 2 covers them exactly (the driver
+#    prints worst mismatch 1). The pmat is then the full one, group by group, so
+#    this run has to land on the FULL-pmat count (6), not the matrix-free twin's
+#    11 - a whole sweep of full-pmat quality out of two assembled matrices and
+#    no assembly at all inside the sweep
+#  - slab_decades4 is where mismatch actually costs something: four groups
+#    spanning three decades of Sigma_t, up to 10 mean free paths per cell, where
+#    the bare streaming pmat above does not converge at all. k = 4 is exact and
+#    reproduces the full pmat's counts exactly; the default rule picks k = 2 and
+#    pays roughly a factor of two for it. Counts, the bare-L comparison and the
+#    pins' slack: ../docs/dev/testing.md
+	@echo "Test 1D slab multigroup, reference-shifted pmat covering both group ratios exactly"
+	./transportk -problem problems/slab_mg4_t05.json -matfree_removal -precon_ref_shift -precon_ref_k 2 -ksp_max_it 6
+	@echo "Test 1D decades multigroup, reference-shifted pmat, one hierarchy per group (exact)"
+	./transportk -problem problems/slab_decades4.json -matfree_removal -precon_ref_shift -precon_ref_k 4 -ksp_max_it 20
+	@echo "Test 1D decades multigroup, reference-shifted pmat, default number of hierarchies"
+	./transportk -problem problems/slab_decades4.json -matfree_removal -precon_ref_shift -ksp_max_it 43
+	@echo "Test 1D decades multigroup, reference-shifted pmat with the DSA correction on top"
+	./transportk -problem problems/slab_decades4.json -matfree_removal -precon_ref_shift -precon_ref_k 4 -precon_dsa -ksp_max_it 12
 	@echo "Test 1D slab multigroup, weak removal (advection dominated)"
 	./transportk -problem problems/slab_mg4_t05_st0.json -ksp_max_it 1
 	@echo "Test 1D slab multigroup, S2 on a coarser slab"
@@ -207,6 +239,17 @@ run_tests_short_serial:
 	./transportk -problem problems/box_50_st2.json -precon_stream -ksp_pc_side right -ksp_max_it 10
 	@echo "Test 2D box, matrix-free removal (the twin of the line above - same count, by design)"
 	./transportk -problem problems/box_50_st2.json -matfree_removal -ksp_pc_side right -ksp_max_it 10
+#
+# The reference-shifted pmat in 2D. box_decades4.json is slab_decades4.json's
+# twin - the same four groups over the same 0.1-wide cells, one axis wider - so
+# the two are directly comparable, and the bare streaming pmat fails on both.
+# One hierarchy per group reproduces the full pmat's counts exactly here too
+	@echo "Test 2D decades multigroup, reference-shifted pmat, one hierarchy per group (exact)"
+	./transportk -problem problems/box_decades4.json -matfree_removal -precon_ref_shift -precon_ref_k 4 -ksp_max_it 31
+	@echo "Test 2D decades multigroup, reference-shifted pmat, default number of hierarchies"
+	./transportk -problem problems/box_decades4.json -matfree_removal -precon_ref_shift -ksp_max_it 49
+	@echo "Test 2D decades multigroup, reference-shifted pmat with the DSA correction on top"
+	./transportk -problem problems/box_decades4.json -matfree_removal -precon_ref_shift -precon_ref_k 4 -precon_dsa -ksp_max_it 12
 	@echo "Test 2D box, S4 (12 angles)"
 	./transportk -problem problems/box_30_s4_st2.json -ksp_max_it 6
 	@echo "Test 2D box, one MatSetValuesCOO per term instead of a single summed one"
@@ -242,6 +285,16 @@ run_tests_short_serial:
 	./transportk -problem problems/box_diffusive.json -ksp_max_it 30
 	@echo "Test 2D box, diffusive regime with the DSA correction"
 	./transportk -problem problems/box_diffusive.json -precon_dsa -ksp_max_it 12
+# The same pair on a reference-shifted pmat rather than the assembled one. This
+# file is single-group, so the shift is exact and both lines have to reproduce
+# the two counts above (29 and 11) - which is the structural claim: DSA needs a
+# pmat that carries a removal to attach to, and cannot attach to a bare
+# streaming one at all (-matfree_removal alone does not converge on this file,
+# with or without -precon_dsa - see ../docs/dev/testing.md)
+	@echo "Test 2D box, diffusive regime on a reference-shifted pmat, no DSA (the reference)"
+	./transportk -problem problems/box_diffusive.json -matfree_removal -precon_ref_shift -ksp_max_it 30
+	@echo "Test 2D box, diffusive regime on a reference-shifted pmat with the DSA correction"
+	./transportk -problem problems/box_diffusive.json -matfree_removal -precon_ref_shift -precon_dsa -ksp_max_it 12
 	@echo "Test 2D box, DSA against the infinite-medium solution (all faces reflective)"
 	./transportk -problem problems/box_50_inf_medium.json -precon_dsa -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 11
 	@echo "Test 2D box, DSA on a problem that never needed it"
@@ -386,6 +439,18 @@ run_tests_short_parallel:
 	$(MPIEXEC) -n 2 ./transportk -problem problems/slab_mg4_t05.json -precon_stream -ksp_pc_side right -ksp_max_it 11
 	@echo "Test 1D slab multigroup, matrix-free removal in parallel (the twin of the line above)"
 	$(MPIEXEC) -n 2 ./transportk -problem problems/slab_mg4_t05.json -matfree_removal -ksp_pc_side right -ksp_max_it 11
+# The reference-shifted pmat in parallel. The alphas are a log-mean over EVERY
+# cell, so they come off an MPI reduction and the binning is then computed
+# redundantly on each rank - these have to reproduce the serial counts exactly
+# or the ranks have disagreed about which pmat a group belongs to
+	@echo "Test 1D slab multigroup, reference-shifted pmat covering both group ratios exactly in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/slab_mg4_t05.json -matfree_removal -precon_ref_shift -precon_ref_k 2 -ksp_max_it 6
+	@echo "Test 1D decades multigroup, reference-shifted pmat in parallel, one hierarchy per group"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/slab_decades4.json -matfree_removal -precon_ref_shift -precon_ref_k 4 -ksp_max_it 20
+	@echo "Test 1D decades multigroup, reference-shifted pmat in parallel, default hierarchies"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/slab_decades4.json -matfree_removal -precon_ref_shift -ksp_max_it 43
+	@echo "Test 1D decades multigroup, reference-shifted pmat with DSA in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/slab_decades4.json -matfree_removal -precon_ref_shift -precon_ref_k 4 -precon_dsa -ksp_max_it 12
 	@echo "Test 1D slab multigroup, matrix-free removal against the assembled operator in parallel"
 	$(MPIEXEC) -n 2 ./transportk -problem problems/slab_mg4_t05.json -check_matfree -ksp_max_it 6
 	@echo "Test 1D slab multigroup, uncoupled groups in parallel"
@@ -412,6 +477,12 @@ run_tests_short_parallel:
 	$(MPIEXEC) -n 2 ./transportk -problem problems/box_50_st2.json -precon_stream -ksp_pc_side right -ksp_max_it 10
 	@echo "Test 2D box, matrix-free removal in parallel (the twin of the line above)"
 	$(MPIEXEC) -n 2 ./transportk -problem problems/box_50_st2.json -matfree_removal -ksp_pc_side right -ksp_max_it 10
+	@echo "Test 2D decades multigroup, reference-shifted pmat in parallel, one hierarchy per group"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/box_decades4.json -matfree_removal -precon_ref_shift -precon_ref_k 4 -ksp_max_it 31
+	@echo "Test 2D decades multigroup, reference-shifted pmat in parallel, default hierarchies"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/box_decades4.json -matfree_removal -precon_ref_shift -ksp_max_it 49
+	@echo "Test 2D decades multigroup, reference-shifted pmat with DSA in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/box_decades4.json -matfree_removal -precon_ref_shift -precon_ref_k 4 -precon_dsa -ksp_max_it 12
 	@echo "Test 2D box, matrix-free removal against the assembled operator in parallel"
 	$(MPIEXEC) -n 2 ./transportk -problem problems/box_50_st2.json -check_matfree -ksp_max_it 6
 	@echo "Test 2D box, S4 in parallel"
