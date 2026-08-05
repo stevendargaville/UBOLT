@@ -13,7 +13,8 @@ Codebase map
   `tests/transportk.kokkos.cxx`: THE solve driver, any dimension and group count — all
   physics comes from `-problem <file.json>` (schema: `docs/problem_files.md`), the CLI
   keeps only PETSc options and the strategy/verification knobs (`-precon_stream`,
-  `-precon_dsa`, `-diag_scale`, `-check_inf_medium`, `-flux_vtk` override). It is also where the group
+  `-matfree_removal`, `-precon_dsa`, `-diag_scale`, `-check_inf_medium`,
+  `-check_matfree`, `-flux_vtk` override). It is also where the group
   Gauss-Seidel sweep lives, until a second sweep strategy justifies promoting it into
   the library. It replaced the per-problem drivers (`slab_1dk`, `slab_1d_mgk`,
   `box_2dk`) in Aug 2026, verified byte-for-byte against all 24 baselines first.
@@ -110,7 +111,12 @@ Codebase map
   indices. The BC contract binds BOTH halves of a term, `assemble_add` and `apply_add`:
   leave flagged rows alone, they carry the boundary condition, and the assembly has
   already written them — the identity on a Dirichlet (vacuum) row, identity minus the
-  mirrored angle on a reflective one. Anything that builds a right hand side rather than
+  mirrored angle on a reflective one. A term that sits on the diagonal also owes
+  `has_diagonal()`/`add_diagonal(Vec)` the SAME arithmetic its `assemble_add` writes into
+  the diagonal slot — that is what lets the removal shell PC compose its diagonal from
+  the terms when a diagonal-carrying term is applied matrix-free (`-matfree_removal`)
+  instead of reading `MatGetDiagonal` off a matrix that is then missing it.
+  Anything that builds a right hand side rather than
   acting on the unknowns being solved for is NOT an `OperatorTerm` — see `GroupTransfer`
   — but it owes the mask the same thing; the rhs itself owes Dirichlet rows the per-row
   inflow — `UboltFillInflow` — and reflect rows a zero — `UboltZeroReflectRows`.

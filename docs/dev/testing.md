@@ -503,6 +503,73 @@ block was eyeballed via `-flux_vtk` (sigma_t 10 painted mid-cube, flux ~3.3 over
 block against ~10 in the surrounding medium) — those numbers are from the 20^3 file,
 before the 2026-08-02 resize, and have not been re-measured at 10^3.
 
+## Matrix-free removal (`-matfree_removal`)
+
+`RemovalTerm` can be applied matrix-free instead of assembled
+(`RemovalTerm::set_matrix_free`, `-matfree_removal` on the driver). The assembled
+matrix then carries **streaming only**, which does not depend on the group: it is
+assembled once before the sweep, no group refills anything, and PCAIR sets up once for
+the whole sweep. It is off by default, so every recipe, count and baseline above is
+untouched — all 24 baselines reproduce bitwise, which is what the default half of the
+change was verified against. The recipes below are NEW pins.
+
+Because the assembled matrix already *is* a streaming-only pmat, this mode **implies**
+`-precon_stream`; an explicit `-precon_stream` alongside it is redundant and quietly
+ignored (it would build a second copy of the same values). `-diag_scale` is a checked
+error in this mode — it scales the assembled operator, which here is the streaming part
+alone, so the matrix-free removal and scatter would stay unscaled. And because it
+implies `-precon_stream`, it inherits that flag's unsupported combination with
+`-precon_dsa` (see the DSA section below) — measured identical on
+`cube_diffusive.json`: 35 iterations either way alone, neither converging in 300 with
+`-precon_dsa` added. No recipe combines them, as none does for `-precon_stream`.
+
+**The counts are the `-precon_stream` counts; the residual histories are not.** Same
+operator, same pmat, same Jacobi diagonal — but the assembled path sums streaming and
+removal into one matrix entry and multiplies once where the matrix-free path multiplies
+twice and adds, so the two differ in the last bits and diverge from there. That is why
+the matfree recipes are *pinned at their twin's pin* and get no baseline of their own:
+the count is the invariant, the history is not. Every twin below measured exactly the
+same count as its `-precon_stream` line, serial and at `-n 2`.
+
+| config | `-precon_stream` / `-matfree_removal`, np=1 | np=2 |
+|---|---|---|
+| 1D slab st=2 | 9 / 9 | 9 / 9 |
+| 1D multigroup 4 groups t05 | 11, 11, 11, 9 / same | 11, 11, 11, 9 / same |
+| 2D 50x50 st=2 | 9 / 9 | 9 / 9 (pinned 10, as the twin is) |
+| 2D 80x40 st=2 | 10 / 10 | — |
+| 3D 10^3 st=2 | 6 / 6 | 6 / 6 |
+
+The infinite-medium check runs in this mode too — `slab_inf_medium.json` in 7 serial
+and 8 at `-n 2`, `box_50_inf_medium.json` in 24 both. Those are the streaming-only
+pmat's counts rather than the default pc's 10, and they are what `-precon_stream`
+measures on the same files. The solution lands at 1.4e-13 to 7.6e-12 against the 1e-9
+tolerance; the drift from the default path's ~1e-13 is the pmat and not the matrix-free
+apply, since `-precon_stream` measures the same errors to four digits. These three pins
+carry one iteration of slack (measured + 1) rather than sitting on the measured number:
+it is a new configuration and has not been swept over the CI arches.
+
+**`-check_matfree` is the sharp oracle**, and it is what makes the mode trustworthy
+rather than merely green. It builds BOTH operators on whatever problem file is being
+run — the same discretisation and the same streaming term, with only which half of
+`RemovalTerm` is live differing — and per group applies both shells to three random
+vectors, then compares the composed diagonal against `MatGetDiagonal` of the fully
+assembled matrix. The assembled operator is refilled per group and the matrix-free one
+is never touched after its single assembly, so the per-group behaviour is in the check
+and not just the operator at one group. Two tolerances, deliberately different:
+
+- the matvec, `max|y_f - y_a| / max|y_a|` against **1e-13**. Measured 2.5e-16 to
+  4.2e-16 in 1D, 2D and 3D, vacuum and reflective, serial and at `-n 2` — rounding and
+  nothing else, and a mistake in the apply is many orders larger.
+- the diagonal, `max|d_f - d_a|` against **0.0**, i.e. bitwise. Measured 0.0 everywhere,
+  and it has to be: each term's `add_diagonal` writes the same expression its
+  `assemble_add` writes into the diagonal slot, the composition sums them in the order
+  the COO values are summed in, and the BC rows get the same 1.0. That identity is the
+  whole reason the removal shell PC may compose its diagonal instead of reading it off a
+  matrix, so it is asserted rather than assumed.
+
+It is independent of `-matfree_removal` — it says the same thing whichever mode the
+solve around it runs in — and it is in `make check`, on the 1D multigroup file.
+
 ## DSA (the diffusion correction, `-precon_dsa`)
 
 `DSAPrecon` adds a third stage to the composite preconditioner: a cell-centred

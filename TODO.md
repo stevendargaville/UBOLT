@@ -263,10 +263,25 @@ previous one's verification has passed and been reviewed.
       pins are the reference-build measurements and a pin is the max over the arches.
 
 ## Phase 5 — Matrix-free removal / single-streaming-matrix experiment
-- [ ] RemovalTerm::apply_add + -matfree_removal: Assembled{Streaming} +
-      MatrixFree{Removal, Scattering}; one assembled matrix for all groups
-- [ ] Terms get optional get_inv_diagonal(Vec) so RemovalPCShell composes its diagonal
-      analytically instead of MatGetDiagonal(assembled)
+- [x] RemovalTerm::apply_add + -matfree_removal: Assembled{Streaming} +
+      MatrixFree{Removal, Scattering}; one assembled matrix for all groups — DONE.
+      `RemovalTerm::set_matrix_free` switches the halves (default unchanged, so all 24
+      baselines still reproduce bitwise); `TransportOperator` partitions its terms at
+      assemble() rather than add_term() so the switch can go either side of the add. The
+      mode assembles ONCE before the sweep and no group refills anything, so it implies
+      the streaming-only pmat (`-precon_stream` alongside it is redundant and ignored)
+      and rules out `-diag_scale` (a checked error). Counts equal the `-precon_stream`
+      twins exactly, 1D/2D/3D, serial and np=2; histories differ in the last bits by
+      design — see docs/dev/testing.md.
+- [x] Terms get optional get_inv_diagonal(Vec) so RemovalPCShell composes its diagonal
+      analytically instead of MatGetDiagonal(assembled) — DONE as
+      `OperatorTerm::has_diagonal()` + `add_diagonal(Vec)` (Streaming*/Removal override,
+      Scattering deliberately does not — it has never been in the assembled matrix)
+      composed by `TransportOperator::diagonal()`, BC rows 1.0. The solver uses it iff
+      `diagonal_is_composed()`, so the assembled path still reads MatGetDiagonal. Each
+      add_diagonal writes the same expression its assemble_add does, in the same order,
+      so the composed diagonal is BITWISE the assembled one — pinned by `-check_matfree`
+      (measured 0.0 everywhere; matvec 2.5e-16 to 4.2e-16 against 1e-13).
 - Verify: matvec equivalence vs assembled path on random vectors (<1e-13); solution norms
   match Phase 2; iteration counts recorded (not pinned) — preconditioner quality is the
   research question; findings recorded below.
