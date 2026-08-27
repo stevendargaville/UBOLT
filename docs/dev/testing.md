@@ -686,12 +686,12 @@ reproduce byte-for-byte.
 
 Four 2D problems replicate configurations from the DSA literature and pin the
 heterogeneous regimes nothing above reaches. Full parameter sweeps, the source
-papers' own numbers and the deviations from them live in the external report
-(`dsa_benchmarks_report.pdf` + `reproduce_dsa_benchmarks.py` in the transport
-dsa paper directory, which also generated `box_random8.json` — its `_comment`
-records the seed and draw order, so the file is reproducible from the harness
-alone). Each runs both ways, reference and `-precon_dsa`, serial and `-n 2`,
-in `run_tests_short_*`; all four cost ~1 s serial.
+papers' own numbers and the deviations from them live in an external report
+(`dsa_benchmarks_report.pdf` + `reproduce_dsa_benchmarks.py`, kept outside this
+repo; the harness also generated `box_random8.json` — its `_comment` records the
+seed and draw order, so the file is reproducible from the harness alone). Each
+runs both ways, reference and `-precon_dsa`, serial and `-n 2`, in
+`run_tests_short_*`; all four cost ~1 s serial.
 
 | problem | regime pinned | np=1 | np=2 |
 |---|---|---|---|

@@ -16,8 +16,8 @@ ifeq ($(PETSC_VERSION_MIN),0)
 $(error PETSc version is too old. UBOLT requires at least version 3.25.0)
 endif
 
-# Where to find a built PFLARE
-export PFLARE_DIR ?= /home/sdargavi/projects/PFLARE
+# Where to find a built PFLARE - assumed to sit alongside this repo
+export PFLARE_DIR ?= $(CURDIR)/../PFLARE
 
 # Get the flags we have on input
 # These are appended to the flags set by PETSc
