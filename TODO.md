@@ -721,9 +721,9 @@ previous one's verification has passed and been reviewed.
     Southworth/Holec/Haut NSE 195, Warsa-style periodic horizontal interface, Brunner-style
     lattice, per-realization random media, Larsen diffusion-limit epsilon sweep, and the
     well-behaved classics: Adams-Larsen homogeneous ratio sweep + Castrianni-Adams
-    iron-water), ~230 serial runs, report + reproduce harness at
-    `~/postdoc/documents/transport dsa paper/dsa_benchmarks_report.pdf` /
-    `reproduce_dsa_benchmarks.py`. Headlines: the multiplicative composite beats the
+    iron-water), ~230 serial runs, with the report (`dsa_benchmarks_report.pdf`) and the
+    reproduce harness (`reproduce_dsa_benchmarks.py`) kept outside this repo. Headlines:
+    the multiplicative composite beats the
     classic sweep+DSA yardstick (rho = 0.2247c) by ~1.6x on the classics and is flat
     across eight decades of crooked-pipe heterogeneity with NO robustness cliff anywhere;
     where the no-DSA composite fails outright (diffusion limit below eps 1e-2, crooked
@@ -757,8 +757,8 @@ previous one's verification has passed and been reviewed.
   the numbers in `docs/dev/testing.md` are the ones to argue from.
   ANSWERED for the strong-removal case by the Aug 2026 campaign's k reference-shifted
   hierarchies — landed as `-precon_ref_shift`, see the Phase 5 checklist above.
-  - **CAMPAIGN RUN (Aug 2026)** — four-track investigation, ~500 runs; full report at
-    `~/postdoc/documents/transport dsa paper/phase5_streaming_pmat_report.pdf`, data in
+  - **CAMPAIGN RUN (Aug 2026)** — four-track investigation, ~500 runs; the full report
+    (`phase5_streaming_pmat_report.pdf`) is kept outside this repo, data in
     `results_phase5*/`, code on `phase5-step0` + `phase5-track{1..4}` (worktrees
     `../UBOLT-track{1..4}`). All of it predates PR #13/#14/#15, so every number below is
     a finding and a direction, NEVER a pin — anything harvested is rebased and

@@ -7,7 +7,7 @@
 
 # Where to find a built PFLARE (exported by the top Makefile, defaulted
 # here so make can also be called directly in tests/)
-PFLARE_DIR ?= /home/sdargavi/projects/PFLARE
+PFLARE_DIR ?= $(CURDIR)/../../PFLARE
 # Where the top Makefile puts libubolt (also exported, defaulted the same way)
 LIBDIR ?= $(CURDIR)/../lib
 

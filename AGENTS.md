@@ -126,7 +126,7 @@ Codebase map
   — but it owes the mask the same thing; the rhs itself owes Dirichlet rows the per-row
   inflow — `UboltFillInflow` — and reflect rows a zero — `UboltZeroReflectRows`.
 - PETSc source is at `$PETSC_DIR/$PETSC_ARCH`. Both env variables must be set.
-  PFLARE is at `$PFLARE_DIR` (defaults to `/home/sdargavi/projects/PFLARE` in the Makefile).
+  PFLARE is at `$PFLARE_DIR` (defaults to `../PFLARE`, alongside this repo, in the Makefile).
 
 Read only when the task needs it
 - `TODO.md` — roadmap, current phase, per-phase verification criteria, research notes
