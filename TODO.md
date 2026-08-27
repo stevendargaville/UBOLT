@@ -259,8 +259,8 @@ previous one's verification has passed and been reviewed.
   in the checked matrix), the infinite-medium check (~1e-13, np 1 and 2), the painting
   identity (bitwise vs the uniform cube history), and pinned recipes for the cube
   problem files (counts in docs/dev/testing.md). No 3D baselines, the 2D precedent.
-- [ ] Follow-up: sweep the 3D pins over the CI arches (64-bit, OpenMP) — the recipe
-      pins are the reference-build measurements and a pin is the max over the arches.
+- [x] Follow-up sweep of the 3D pins over the CI arches: closed Aug 2026 — CI runs
+      green with the pins as committed, so no per-arch slack was needed.
 
 ## Phase 5 — Matrix-free removal / single-streaming-matrix experiment
 - [x] RemovalTerm::apply_add + -matfree_removal: Assembled{Streaming} +
@@ -584,8 +584,7 @@ previous one's verification has passed and been reviewed.
       strip (`pipe_src`, retired here with its paint box). It now carries
       `"left": {"type": "vacuum", "inflow": 1.0, "window": [2.0, 3.0]}` — the same four
       boundary cells the strip covered. Pins re-measured (123/72 serial, 94/69 at np=2)
-      on the local opt arch only; they still owe the CI-arch sweep, like the other DSA
-      pins.
+      on the local opt arch; CI runs green with them (Aug 2026).
 
 ## Phase 4 postscript 5 — generalised quadratures at full precision (Aug 2026)
 - [x] The quadratures were S2/S4 only, and their cosines were literals truncated to 7-10
@@ -742,7 +741,7 @@ previous one's verification has passed and been reviewed.
     heterogeneous-DSA-style variant (precondition only the thick region) is the fallback.
   - Four benchmark problems promoted to pinned recipes (`box_crooked_pipe`, `box_layers`,
     `box_lattice`, `box_random8`, serial + np2 in `tests_short`, measured on the local
-    opt arch, +1 slack) — **CI-arch sweep pending**, same flag as the DSA pins above.
+    opt arch, +1 slack) — CI runs green with these pins (Aug 2026).
     These files plus the external sweep set are the fixed benchmark suite for the Phase-5
     streaming/removal-separation comparison, the Phase-6 unstructured backends, and
     future parallel/GPU (LUMI) runs.
@@ -758,6 +757,66 @@ previous one's verification has passed and been reviewed.
   the numbers in `docs/dev/testing.md` are the ones to argue from.
   ANSWERED for the strong-removal case by the Aug 2026 campaign's k reference-shifted
   hierarchies — landed as `-precon_ref_shift`, see the Phase 5 checklist above.
+  - **CAMPAIGN RUN (Aug 2026)** — four-track investigation, ~500 runs; full report at
+    `~/postdoc/documents/transport dsa paper/phase5_streaming_pmat_report.pdf`, data in
+    `results_phase5*/`, code on `phase5-step0` + `phase5-track{1..4}` (worktrees
+    `../UBOLT-track{1..4}`). All of it predates PR #13/#14/#15, so every number below is
+    a finding and a direction, NEVER a pin — anything harvested is rebased and
+    re-measured (PR #13 alone moved 2D counts by ±1). All under a standardized frame
+    (right-preconditioned GMRES, rtol 1e-10, cap 300); the 1.5x note above is only true
+    below ~0.1 mfp/cell — the degradation tracks mfp/cell (~3-4x at 0.1, ~20x at 1,
+    DIVERGES at 10), and is otherwise flat in c, h and angle count. Findings:
+    - `-precon_stream` iteration counts are mathematically identical to the
+      matfree-removal build (same operator, same pmat), so all of this predated the
+      implementation and bound it — which is why `-matfree_removal` landed with counts
+      equal to its `-precon_stream` twins exactly.
+    - **DSA cannot attach to a removal-free pmat — structural, not a bug**: the exact
+      two-stage error operator (I - L^-1(L+D))(I - D^-1(L+D)) = I, so {Jacobi, AIR(L)}
+      is neutral and DSA's gain turns AIR's over-correction into growth. Exact-LU
+      cross-checked. DSA re-attaches iff removal enters AIR's operator.
+    - **The winning design** (LANDED as `-precon_ref_shift`): pmat = L + alpha*D_ref
+      with a PER-CELL reference removal (scalar shifts die on heterogeneity), k = 2-3
+      hierarchies log-spaced over the group range (mismatch curve saturates; k=2 covers
+      4 decades at <= 3.7x, exact ref recovers full-pmat counts EXACTLY incl.
+      box_layers 61, box_lattice 17, box_random8 67), + the DSA stage per group
+      (n_angles-fold smaller, in budget). The join is h-ROBUST where nothing else is:
+      diffusive corner 23/21/16 over 50^2 -> 200^2 (improving!) vs FAIL for plain
+      stream. Zero per-group AIR setups.
+    - **Free default, one line of solver code** (NOT landed — branch `phase5-track1`,
+      needs a rebase and a re-measure): bracket the AIR stage with a second removal
+      Jacobi (`-precon_removal_repeat 1`, = symmetric_multiplicative). Never worse than
+      plain stream anywhere, removes every divergence, beats the FULL pmat on 4/7 hard
+      benchmarks (box_diffusive 49 vs 79, cube 23 vs 41, layers 46 vs 61, random8 46 vs
+      67) and solves crooked pipe (103) where full pmat caps out. Its one hole: not
+      h-robust in the diffusive corner (49/134/FAIL) — that is DSA's job, so it composes
+      with rather than replaces the reference shift.
+    - `PCSetUseAmat` should be ON whenever the pmat is not the full operator (improves
+      plain stream 85 -> 58 on the cube; required for DSA) — still not the default, see
+      the follow-up in the Phase 5 checklist. The removal shell diagonal must be
+      composed as diag(L) + sigma_t with BC rows exactly 1.0, which is what
+      `OperatorTerm::add_diagonal` landed as.
+    - **Frozen AIR gridding seeded on L + per-group re-Galerkin costs 0..+2 its over
+      SEVEN decades of sigma_t** (PFLARE reuse_sparsity keeps C/F, recomputes all
+      values; seed direction matters — always seed from the streaming end; reuse
+      quality proxied with zero-transfer mg files). Production path (no fine assembly)
+      needs PFLARE work: a PCAIRSetDiagonalUpdate entry point + split level-1 Galerkin
+      (R L P stored + R D_g P per group) + trimming the reuse store (26.9x nnz today).
+      This is strategy B — if it lands, k drops toward 1 and it composes with
+      `-precon_ref_shift`; if it fails, k = 2-3 stands.
+      Also found: `-ksp_reuse_preconditioner` is silently a no-op for PCAIR (flag never
+      reaches the internal shell) — reported.
+    - **Matrix-free GMRES polynomial on the full OPERATOR** (PCPFLAREINV,
+      `-pc_pflareinv_matrix_free` mandatory, Newton/Neumann bases): zero memory, setup
+      = k+1 matvecs, beats PCAIR in the optically thick regime (cube 34 vs 41), order
+      grows O(1/h) in the streaming-dominated regime. The GPU-cleanest fallback. On the
+      streaming-only pmat polynomials are a dead end (converge to the wrong inverse).
+    - **Per-angle AIR via strided fieldsplit** is an exact tie with monolithic at +1%
+      memory (needs a `-pmat_block_size` knob, which lives on `phase5-step0` and is not
+      on main, and coarse_eq_limit divided by n_angles); reflect coupling costs +2. A
+      structural option, not an iteration win.
+    - Dead ends, measured: Neumann/Woodbury correction around the shifted apply
+      (diverges below s > T/2, net loss elsewhere); scalar shift on heterogeneous
+      media; polynomials on the streaming pmat; DSA on any removal-free pmat.
 - **MFEM as Phase 6 backend**: MFEM owns mesh/FE spaces/integrators (ConvectionIntegrator +
   DGTraceIntegrator = DG upwind streaming out of the box; AMR; high-order; GPU full and
   partial assembly). Frictions: MFEM's PETSc bridge produces MATAIJ not MATAIJKOKKOS (pflare

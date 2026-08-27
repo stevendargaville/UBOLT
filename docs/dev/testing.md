@@ -322,10 +322,9 @@ their pins equal the table), and instead the 50x50 ratio-1 SERIAL solve takes 7 
 64-bit — pinned 7 on all three recipes that run it (plain, `-ubolt_coo_two_call`, and
 the painting identity, which is the same history by construction) — while under OpenMP
 the np2 streaming-only pmat takes 10 (pinned 10) and the serial large-grid S4 takes 7
-(pinned 7 — that slack is kept across the 2026-08-02 resize, since the OpenMP image has
-not been re-swept at 60x60). Every other recipe measures its reference count in both
-images, and the resized recipes' pins are debug-arch measurements pending a sweep. The
-cost is
+(pinned 7 — that slack was kept across the 2026-08-02 resize). Every other recipe
+measures its reference count in both images; the resized recipes' pins are debug-arch
+measurements, and CI runs green with them. The cost is
 one iteration of slack on the reference build for those five recipes — the 1D
 streaming-pmat baselines still pin their counts exactly.
 
@@ -463,10 +462,9 @@ CI runners have few cores. The infinite-medium check is the decomposition-indepe
 parallel oracle, exactly as in 1D/2D (`cube_10_inf_medium.json`, ~1e-13 against 1e-9).
 
 ## 3D iteration counts
-Measured 2026-08-02 on the reference build at capture. **These pins have not yet been
-swept over the CI arches** (64-bit indices, OpenMP Kokkos) — a pin is the max over those,
-so expect the first CI run to move a few by one, and re-sweep both images rather than
-carrying slack (see the 2D section for the precedent).
+Measured 2026-08-02 on the reference build at capture. CI has since run green on the
+sensitive arches (64-bit indices, OpenMP Kokkos) with these pins as committed, so no
+per-arch slack was needed.
 
 | config | np=1 | np=2 |
 |---|---|---|
@@ -644,12 +642,11 @@ and the inner diffusion solve is reachable under its own prefix, so
 with five CG iterations. That buys nothing on this problem (11 either way), and
 that is the point: the default inexact solve is already enough.
 
-**These pins have not been swept over the CI arches yet**, and unlike the rest
-of the 3D pins they carry one iteration of deliberate slack (measured count + 1)
-rather than sitting on the measured number: PCGAMG is new to this test matrix
-and its aggregation is the most arch-sensitive thing in the suite. The table
-above is the reference measurement, so a later sweep can tighten the pins onto
-it.
+Unlike the rest of the 3D pins these carry one iteration of deliberate slack
+(measured count + 1) rather than sitting on the measured number: PCGAMG is new
+to this test matrix and its aggregation is the most arch-sensitive thing in the
+suite. CI runs green with that slack in place; the table above is the reference
+measurement, so a tightening pass would have to re-measure per arch first.
 
 **`-precon_stream` + `-precon_dsa` is not supported and no recipe combines
 them.** In 1D and 2D the combination does not converge in 300 iterations — but
@@ -707,8 +704,8 @@ Counts are reference / `-precon_dsa`; the pins sit at measured + 1 like the
 other DSA pins (PCGAMG/PCAIR slack). The crooked pipe is the one file whose
 reference count moves with the rank count (123 vs 94 — PCAIR on a strongly
 heterogeneous operator), so its serial and parallel pins differ. These were
-measured on the local **opt** arch only and have **not been swept over the CI
-arches** — same pending flag as the DSA pins above.
+measured on the local **opt** arch; CI runs green with the +1 slack in place,
+like the DSA pins above.
 
 The crooked pipe's counts were re-measured on 2026-08-04 when inflow went per
 face: the file used to be driven by a painted unit-`Source` strip in the first
@@ -882,8 +879,9 @@ does. Everything else carries one iteration of slack: the DSA rows for the
 PCGAMG reason the other DSA pins do, the 2D rows for the reason the other 2D
 pins do, and the two default-k rows because a PCAIR hierarchy set up on a
 deliberately mismatched operator is the most arch-sensitive setup in the suite.
-**CI-arch sweep pending** — these are local opt-arch measurements, the same flag
-the DSA and benchmark pins carry.
+**CI-arch sweep pending** — these are local opt-arch measurements, and unlike
+the DSA and benchmark pins (closed Aug 2026, CI green as committed) they have
+not yet seen a CI run.
 
 The parallel variants are not just duplicates here. The alphas are a log-mean
 over every cell, so they come off an MPI reduction, and the binning is then
