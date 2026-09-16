@@ -266,12 +266,15 @@ int main(int argc, char **args) {
       const std::string flux_vtk = have_flux_cli ? std::string(flux_vtk_cli) : spec.flux_vtk;
 
       // The infinite-medium check needs nothing for the streaming term to do
-      // and nowhere to leak: every face reflective, one uniform material, and
-      // absorption in every group so the constant is finite
+      // and nowhere to leak: one uniform material, absorption in every group
+      // so the constant is finite, and every face either reflective or a
+      // whole-face vacuum face whose inflow IS the infinite-medium flux - a
+      // boundary that feeds in exactly what the medium holds changes nothing,
+      // in either vacuum treatment, which is what lets the same oracle check
+      // the vacuum rows. The face ids are 1 .. 2 * dimension in every
+      // structured backend
       const PetscInt bg = spec.background_material;
       if (check_inf_medium) {
-         PetscCheck(spec.n_reflect_faces == 2 * spec.dimension, PETSC_COMM_WORLD, \
-            PETSC_ERR_ARG_INCOMP, "-check_inf_medium needs every face reflective");
          PetscCheck(spec.intervals.empty() && spec.boxes.empty() && spec.boxes_3d.empty(), \
             PETSC_COMM_WORLD, \
             PETSC_ERR_ARG_INCOMP, "-check_inf_medium needs uniform xsections and source: no paint");
@@ -280,6 +283,11 @@ int main(int argc, char **args) {
                < PetscRealPart(spec.materials.sigma_t_host()[bg * n_groups + g]), PETSC_COMM_WORLD, \
                PETSC_ERR_ARG_INCOMP, "-check_inf_medium needs absorption: within-group Sigma_s below " \
                "Sigma_t in every group");
+         }
+         for (PetscInt f = 1; f <= 2 * spec.dimension; f++) {
+            const BCFace face = spec.bcs.face(f);
+            PetscCheck(face.type == BCType::REFLECT || face.n_window_pairs == 0, PETSC_COMM_WORLD, \
+               PETSC_ERR_ARG_INCOMP, "-check_inf_medium needs every vacuum face unwindowed");
          }
       }
 
@@ -548,6 +556,18 @@ int main(int argc, char **args) {
             }
             expected[g] = coupled / (spec.materials.sigma_t_host()[bg * n_groups + g] \
                - spec.materials.sigma_s_host()[(bg * n_groups + g) * n_groups + g]);
+
+            // A vacuum face's per-ordinate inflow has to be that constant, or
+            // the constant is not the solution and the comparison is meaningless
+            for (PetscInt f = 1; f <= 2 * spec.dimension; f++) {
+               const BCFace face = spec.bcs.face(f);
+               if (face.type == BCType::REFLECT) continue;
+               PetscCheck(PetscAbsScalar(face.inflow / quad->sum_weights() - expected[g]) \
+                  <= 1e-12 * PetscAbsScalar(expected[g]), PETSC_COMM_WORLD, PETSC_ERR_ARG_INCOMP, \
+                  "-check_inf_medium needs every vacuum face's inflow / sum_weights to be the " \
+                  "infinite-medium flux %g in every group (face %" PetscInt_FMT ", group %" \
+                  PetscInt_FMT ")", (double)PetscRealPart(expected[g]), f, g);
+            }
 
             PetscReal err_g = 0.0;
             PetscCall(VecShift(psi[g], -expected[g]));

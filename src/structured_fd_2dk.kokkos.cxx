@@ -100,7 +100,10 @@ static PetscErrorCode CheckDALayout(DM da, const PhaseSpace &ps, const PetscInt 
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-enum class RowKind { INTERIOR, DIRICHLET, REFLECT };
+// GHOST is the VacuumTreatment::GHOST_FLUX counterpart of DIRICHLET: the same
+// rows, but kept as ordinary unknowns with the outside-pointing upwind slots
+// nulled and the inflow moved to the rhs
+enum class RowKind { INTERIOR, DIRICHLET, REFLECT, GHOST };
 
 // The upwind neighbour is behind the direction on each axis: to the left/below
 // for a positive cosine, to the right/above for a negative one. A zero cosine
@@ -132,7 +135,7 @@ static RowKind ClassifyRow(PetscInt i, PetscInt j, PetscInt a, \
    const PetscScalar *mu, const PetscScalar *eta, PetscInt n_cells_x, PetscInt n_cells_y, \
    BCType left, BCType right, BCType bottom, BCType top, \
    const PetscInt *reflect_mu, const PetscInt *reflect_eta, Upwind *upwind, PetscInt *partner, \
-   PetscInt *dirichlet_face)
+   PetscInt *dirichlet_face, PetscBool ghost = PETSC_FALSE, PetscInt *ghost_face = nullptr)
 {
    upwind->upwind_i = (mu[a] > 0) ? i - 1 : ((mu[a] < 0) ? i + 1 : i);
    upwind->upwind_j = (eta[a] > 0) ? j - 1 : ((eta[a] < 0) ? j + 1 : j);
@@ -145,18 +148,45 @@ static RowKind ClassifyRow(PetscInt i, PetscInt j, PetscInt a, \
 
    *partner = -1;
    *dirichlet_face = -1;
+   if (ghost_face) { ghost_face[0] = -1; ghost_face[1] = -1; }
    if (!x_outside && !y_outside) return RowKind::INTERIOR;
 
    // Which face the direction comes in through on each outside axis
    const BCType x_bc = (mu[a] > 0) ? left : right;
    const BCType y_bc = (eta[a] > 0) ? bottom : top;
-   if (x_outside && x_bc == BCType::VACUUM) {
-      *dirichlet_face = (mu[a] > 0) ? StructuredFD2D::FACE_LEFT : StructuredFD2D::FACE_RIGHT;
-      return RowKind::DIRICHLET;
+
+   // Under the ghost-flux treatment the precedence at a MIXED corner is the
+   // opposite of the default's "vacuum wins": a row becomes a ghost-flux row
+   // only when EVERY face it comes in through is vacuum, and otherwise stays
+   // the reflective row below, mirrored over every outside axis exactly as an
+   // all-reflective corner is. Reflective faces are deliberately untouched by
+   // this mode, and a row that reflects on one axis cannot also carry a flux
+   // on the other without a second boundary family in the same equation
+   if (ghost) {
+      const PetscBool x_reflect = (PetscBool)(x_outside && x_bc == BCType::REFLECT);
+      const PetscBool y_reflect = (PetscBool)(y_outside && y_bc == BCType::REFLECT);
+      if (!x_reflect && !y_reflect) {
+         if (ghost_face) {
+            if (x_outside) ghost_face[0] = (mu[a] > 0) ? StructuredFD2D::FACE_LEFT : \
+               StructuredFD2D::FACE_RIGHT;
+            if (y_outside) ghost_face[1] = (eta[a] > 0) ? StructuredFD2D::FACE_BOTTOM : \
+               StructuredFD2D::FACE_TOP;
+         }
+         return RowKind::GHOST;
+      }
    }
-   if (y_outside && y_bc == BCType::VACUUM) {
-      *dirichlet_face = (eta[a] > 0) ? StructuredFD2D::FACE_BOTTOM : StructuredFD2D::FACE_TOP;
-      return RowKind::DIRICHLET;
+   // Reaching here in ghost mode means at least one incoming face is
+   // reflective, so the row falls through to the reflective treatment below;
+   // the default mode's "vacuum wins" checks are skipped entirely
+   if (!ghost) {
+      if (x_outside && x_bc == BCType::VACUUM) {
+         *dirichlet_face = (mu[a] > 0) ? StructuredFD2D::FACE_LEFT : StructuredFD2D::FACE_RIGHT;
+         return RowKind::DIRICHLET;
+      }
+      if (y_outside && y_bc == BCType::VACUUM) {
+         *dirichlet_face = (eta[a] > 0) ? StructuredFD2D::FACE_BOTTOM : StructuredFD2D::FACE_TOP;
+         return RowKind::DIRICHLET;
+      }
    }
 
    PetscInt ap = a;
@@ -261,6 +291,8 @@ PetscErrorCode StructuredFD2D::create(MPI_Comm comm, PhaseSpace &ps, PetscInt n_
    std::vector<PetscInt> is_bc_row(local_rows, 0);
    std::vector<PetscInt> reflect_slot(local_rows, -1);
    std::vector<PetscScalar> dirichlet_value(local_rows, 0.0);
+   std::vector<PetscScalar> ghost_inflow(local_rows, 0.0);
+   const PetscBool ghost = bcs.ghost_flux_vacuum();
 
    // A 2D face is a line, so it takes one tangential [lo, hi] pair. The
    // per-angle rhs value is the face's angle-integrated inflow shared out over
@@ -300,10 +332,33 @@ PetscErrorCode StructuredFD2D::create(MPI_Comm comm, PhaseSpace &ps, PetscInt n_
             // reflection condition psi(a) - psi(partner) = 0 on a reflective
             // one. Corner nodes classify through either axis
             Upwind upwind;
-            PetscInt partner = -1, dirichlet_face = -1;
+            PetscInt partner = -1, dirichlet_face = -1, ghost_face[2] = {-1, -1};
             const RowKind kind = ClassifyRow(i, j, a, mu, eta, n_cells_x, n_cells_y, \
-               left, right, bottom, top, reflect_mu, reflect_eta, &upwind, &partner, &dirichlet_face);
-            if (kind != RowKind::INTERIOR) is_bc_row[r] = 1;
+               left, right, bottom, top, reflect_mu, reflect_eta, &upwind, &partner, \
+               &dirichlet_face, ghost, ghost_face);
+            // A GHOST row is an ordinary unknown - it carries no boundary
+            // condition in the matrix, only a nulled slot per outside axis
+            if (kind != RowKind::INTERIOR && kind != RowKind::GHOST) is_bc_row[r] = 1;
+
+            if (kind == RowKind::GHOST)
+            {
+               // One rhs contribution per vacuum face this direction enters
+               // through - a corner cell gets both - each the axis coefficient
+               // |cosine| / h times that face's per-angle inflow, windowed by
+               // the cell's tangential centre coordinate the same way a
+               // Dirichlet row's is
+               const PetscScalar coef[2] = {PetscAbsScalar(mu[a]) / dx_, \
+                                            PetscAbsScalar(eta[a]) / dy_};
+               for (PetscInt axis = 0; axis < 2; axis++) {
+                  if (ghost_face[axis] < 0) continue;
+                  for (PetscInt f = 0; f < 4; f++) {
+                     if (face_id[f] != ghost_face[axis]) continue;
+                     const PetscScalar t = (axis == 0) ? ((PetscScalar)j + 0.5) * dy_ \
+                                                       : ((PetscScalar)i + 0.5) * dx_;
+                     if (InWindow(face_of[f], t)) ghost_inflow[r] += coef[axis] * face_value[f];
+                  }
+               }
+            }
 
             if (kind == RowKind::DIRICHLET)
             {
@@ -345,8 +400,18 @@ PetscErrorCode StructuredFD2D::create(MPI_Comm comm, PhaseSpace &ps, PetscInt n_
             }
             else
             {
-               const PetscBool null_x = (PetscBool)(kind == RowKind::DIRICHLET || !upwind.has_x);
-               const PetscBool null_y = (PetscBool)(kind == RowKind::DIRICHLET || !upwind.has_y);
+               // A Dirichlet row keeps only its diagonal. A GHOST row keeps
+               // every slot whose upwind neighbour is inside the domain and
+               // nulls the ones that point out of it - which is exactly the
+               // slot whose coefficient moved to the rhs above
+               const PetscBool x_out = (PetscBool)(upwind.has_x && \
+                  (upwind.upwind_i < 0 || upwind.upwind_i >= n_cells_x));
+               const PetscBool y_out = (PetscBool)(upwind.has_y && \
+                  (upwind.upwind_j < 0 || upwind.upwind_j >= n_cells_y));
+               const PetscBool null_x = (PetscBool)(kind == RowKind::DIRICHLET || !upwind.has_x || \
+                  (kind == RowKind::GHOST && x_out));
+               const PetscBool null_y = (PetscBool)(kind == RowKind::DIRICHLET || !upwind.has_y || \
+                  (kind == RowKind::GHOST && y_out));
 
                oor_[3 * r]     = null_x ? -1 : row;
                ooc_[3 * r]     = null_x ? -1 : \
@@ -378,7 +443,7 @@ PetscErrorCode StructuredFD2D::create(MPI_Comm comm, PhaseSpace &ps, PetscInt n_
 
    // Slot maps - row r owns COO slots 3r (upwind-x), 3r + 1 (upwind-y) and
    // 3r + 2 (diagonal)
-   PetscCall(set_uniform_pattern(3, is_bc_row, reflect_slot, dirichlet_value));
+   PetscCall(set_uniform_pattern(3, is_bc_row, reflect_slot, dirichlet_value, ghost_inflow, ghost));
 
    PetscFunctionReturn(PETSC_SUCCESS);
 }

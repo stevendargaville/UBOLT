@@ -21,6 +21,28 @@
 // prescribed, and prescribed to zero
 enum class BCType { VACUUM, REFLECT };
 
+// How a VACUUM face is discretised. Two treatments of the same physics - a
+// prescribed incoming flux - that differ in whether the boundary cell stays an
+// unknown
+//
+// DIRICHLET_CELL (the default, and everything UBOLT did before this existed):
+// the boundary cell's row for an incoming direction is REPLACED by the identity
+// and the rhs there carries the incoming flux. The cell is not an unknown for
+// that direction; its equation says psi = psi_in
+//
+// GHOST_FLUX: the boundary cell stays an ordinary unknown. Its row carries the
+// full upwind stencil - the same diagonal sum_a |Omega_a| / h_a every interior
+// row has - and the one off-diagonal whose upwind neighbour lies outside the
+// domain is simply absent, its contribution |Omega_a| / h_a * psi_in moved to
+// the rhs. That is the usual upwind flux with a ghost cell holding psi_in
+//
+// Why it is worth having: with no identity rows left, A_{-d} is the exact
+// transpose of A_d on EVERY row rather than only the interior ones, because a
+// row's stencil no longer depends on which direction it is for. See the
+// transposed-solve study for what that buys. It changes the discretisation at
+// the boundary cell by O(h), so it is opt-in and the default is untouched
+enum class VacuumTreatment { DIRICHLET_CELL, GHOST_FLUX };
+
 // One face's boundary condition: the family, the prescribed incoming flux on
 // a vacuum face (0.0 = a cold vacuum face, the default) - an ISOTROPIC,
 // ANGLE-INTEGRATED strength exactly like a material's Source, shared over the
@@ -55,6 +77,16 @@ public:
 
    BCType type(PetscInt label_id) const { return face(label_id).type; }
 
+   // How every vacuum face of this spec is discretised - see VacuumTreatment.
+   // A whole-spec setting rather than a per-face one: it is a choice about the
+   // discretisation, not about the physics of one face
+   void set_vacuum_treatment(VacuumTreatment treatment) { vacuum_treatment_ = treatment; }
+   VacuumTreatment vacuum_treatment() const { return vacuum_treatment_; }
+   PetscBool ghost_flux_vacuum() const
+   {
+      return (PetscBool)(vacuum_treatment_ == VacuumTreatment::GHOST_FLUX);
+   }
+
    BCFace face(PetscInt label_id) const
    {
       const auto found = map_.find(label_id);
@@ -63,6 +95,7 @@ public:
 
 private:
    std::map<PetscInt, BCFace> map_;
+   VacuumTreatment vacuum_treatment_ = VacuumTreatment::DIRICHLET_CELL;
 };
 
 #endif

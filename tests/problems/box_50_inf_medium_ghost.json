@@ -1,0 +1,30 @@
+{
+ "_comment": "2D box, box_50_inf_medium.json's material, reflective left + bottom and ghost-flux VACUUM right + top whose inflow is the infinite-medium flux (inflow = sum_weights * 1/(4 pi) = 1): the constant is still the exact discrete solution, checked by -check_inf_medium. The two mixed corners are where ghost-flux lets reflect win.",
+ "dimension": 2,
+ "mesh": {
+  "n_cells": [50, 50],
+  "lengths": [1.0, 1.0]
+ },
+ "sn_order": 2,
+ "materials": {
+  "n_groups": 1,
+  "materials": [
+   {
+    "id": 0,
+    "name": "st2_ss1",
+    "Sigma_t": [2.0],
+    "Sigma_s": [
+     [1.0]
+    ],
+    "Source": [1.0]
+   }
+  ]
+ },
+ "vacuum_treatment": "ghost_flux",
+ "boundary_conditions": {
+  "left": "reflect",
+  "right": {"type": "vacuum", "inflow": 1.0},
+  "bottom": "reflect",
+  "top": {"type": "vacuum", "inflow": 1.0}
+ }
+}

@@ -1,0 +1,28 @@
+{
+ "_comment": "1D slab, slab_inf_medium.json's material but ghost-flux VACUUM faces whose inflow is the infinite-medium flux (inflow = sum_weights * 1 = 2): the constant Source/(sum_weights*(sigma_t - sigma_s)) = 1 is still the exact discrete solution, checked by -check_inf_medium.",
+ "dimension": 1,
+ "mesh": {
+  "n_cells": [1000],
+  "lengths": [1.0]
+ },
+ "sn_order": 4,
+ "materials": {
+  "n_groups": 1,
+  "materials": [
+   {
+    "id": 0,
+    "name": "st2_ss1",
+    "Sigma_t": [2.0],
+    "Sigma_s": [
+     [1.0]
+    ],
+    "Source": [2.0]
+   }
+  ]
+ },
+ "vacuum_treatment": "ghost_flux",
+ "boundary_conditions": {
+  "left": {"type": "vacuum", "inflow": 2.0},
+  "right": {"type": "vacuum", "inflow": 2.0}
+ }
+}

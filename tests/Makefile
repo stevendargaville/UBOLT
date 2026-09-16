@@ -100,6 +100,8 @@ endif
 	./transportk -problem problems/box_50_st2.json -ksp_max_it 7
 	@echo "Check 2D box, reflective left + bottom faces"
 	./transportk -problem problems/box_50_reflect_lb.json -ksp_max_it 6
+	@echo "Check 2D box, ghost-flux vacuum + reflective faces against the infinite-medium solution"
+	./transportk -problem problems/box_50_inf_medium_ghost.json -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 12
 	@echo "Check 3D cube against the closed form and a reference matrix"
 	./verify_3dk
 	@echo "Check 3D cube streaming/removal + matrix-free scatter with AIRG"
@@ -152,6 +154,17 @@ run_tests_short_serial:
 	./transportk -problem problems/slab_st2_reflect_left.json -ksp_max_it 8 -ubolt_coo_two_call
 	@echo "Test 1D slab, matrix-free removal against the infinite-medium solution (all faces reflective)"
 	./transportk -problem problems/slab_inf_medium.json -matfree_removal -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 8
+#
+# The ghost-flux vacuum treatment (opt-in, "vacuum_treatment": "ghost_flux").
+# The *_inf_medium_ghost files swap some or all reflective faces for vacuum
+# faces whose inflow IS the infinite-medium flux, so the constant stays exact
+# and the same oracle checks the ghost rows AND the rhs they get through
+# UboltFillInflow; the 2D/3D files keep reflective faces too, so the mixed
+# corners, where ghost-flux lets reflect win, are in the solve
+	@echo "Test 1D slab, ghost-flux vacuum faces against the infinite-medium solution"
+	./transportk -problem problems/slab_inf_medium_ghost.json -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 8
+	@echo "Test 1D slab, ghost-flux vacuum faces, matrix-free removal against the infinite-medium solution"
+	./transportk -problem problems/slab_inf_medium_ghost.json -matfree_removal -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 17
 #
 # DSA. slab_diffusive.json is ten mean free paths per cell at a scattering
 # ratio of 0.99 - the regime nothing in the composite preconditioner addressed
@@ -282,6 +295,10 @@ run_tests_short_serial:
 	./transportk -problem problems/box_50_reflect_lb.json -check_matfree -ksp_max_it 6
 	@echo "Test 2D box, matrix-free removal against the infinite-medium solution (all faces reflective)"
 	./transportk -problem problems/box_50_inf_medium.json -matfree_removal -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 25
+	@echo "Test 2D box, ghost-flux vacuum + reflective faces against the infinite-medium solution"
+	./transportk -problem problems/box_50_inf_medium_ghost.json -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 12
+	@echo "Test 2D box, ghost-flux vacuum + reflective faces, matrix-free removal against the infinite-medium solution"
+	./transportk -problem problems/box_50_inf_medium_ghost.json -matfree_removal -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 25
 #
 # DSA in 2D. box_diffusive.json is slab_diffusive.json's twin - the same ten
 # mean free paths per cell at a scattering ratio of 0.99, on a 50x50 box - so
@@ -383,6 +400,10 @@ run_tests_short_serial:
 	./transportk -problem problems/cube_10_reflect_3faces.json -check_matfree -ksp_max_it 5
 	@echo "Test 3D cube, all faces reflective against the infinite-medium solution"
 	./transportk -problem problems/cube_10_inf_medium.json -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 10
+	@echo "Test 3D cube, ghost-flux vacuum + reflective faces against the infinite-medium solution"
+	./transportk -problem problems/cube_10_inf_medium_ghost.json -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 11
+	@echo "Test 3D cube, ghost-flux vacuum + reflective faces, matrix-free removal against the infinite-medium solution"
+	./transportk -problem problems/cube_10_inf_medium_ghost.json -matfree_removal -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 21
 #
 # DSA in 3D. cube_diffusive.json is the third twin of slab_diffusive.json -
 # the same ten mean free paths per cell at a scattering ratio of 0.99 - so it
@@ -439,6 +460,8 @@ run_tests_short_parallel:
 	$(MPIEXEC) -n 2 ./transportk -problem problems/slab_inf_medium.json -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 11
 	@echo "Test 1D slab, matrix-free removal against the infinite-medium solution in parallel"
 	$(MPIEXEC) -n 2 ./transportk -problem problems/slab_inf_medium.json -matfree_removal -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 9
+	@echo "Test 1D slab, ghost-flux vacuum faces against the infinite-medium solution in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/slab_inf_medium_ghost.json -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 8
 	@echo "Test 1D slab, diffusive regime without the DSA correction in parallel"
 	$(MPIEXEC) -n 2 ./transportk -problem problems/slab_diffusive.json -ksp_max_it 21
 	@echo "Test 1D slab, diffusive regime with the DSA correction in parallel"
@@ -481,6 +504,8 @@ run_tests_short_parallel:
 	$(MPIEXEC) -n 4 ./verify_2dk -skip_reference
 	@echo "Test 2D box, pure scattering in parallel"
 	$(MPIEXEC) -n 2 ./transportk -problem problems/box_50_st2.json -ksp_max_it 6
+	@echo "Test 2D box, ghost-flux vacuum + reflective faces against the infinite-medium solution in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/box_50_inf_medium_ghost.json -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 11
 	@echo "Test 2D box, scattering ratio 0.5 in parallel"
 	$(MPIEXEC) -n 2 ./transportk -problem problems/box_50_ratio05.json -ksp_max_it 5
 	@echo "Test 2D box, non-square grid in parallel"
@@ -572,6 +597,8 @@ run_tests_short_parallel:
 	$(MPIEXEC) -n 2 ./transportk -problem problems/cube_10_reflect_3faces.json -ksp_max_it 5
 	@echo "Test 3D cube, all faces reflective against the infinite-medium solution in parallel"
 	$(MPIEXEC) -n 2 ./transportk -problem problems/cube_10_inf_medium.json -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 10
+	@echo "Test 3D cube, ghost-flux vacuum + reflective faces against the infinite-medium solution in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/cube_10_inf_medium_ghost.json -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 11
 	@echo "Test 3D cube, diffusive regime without the DSA correction in parallel"
 	$(MPIEXEC) -n 2 ./transportk -problem problems/cube_diffusive.json -ksp_max_it 22
 	@echo "Test 3D cube, diffusive regime with the DSA correction in parallel"

@@ -161,7 +161,14 @@ PetscErrorCode StructuredFD1D::create(MPI_Comm comm, PhaseSpace &ps, PetscReal l
    std::vector<PetscInt> is_bc_row(local_rows, 0);
    std::vector<PetscInt> reflect_slot(local_rows, -1);
    std::vector<PetscScalar> dirichlet_value(local_rows, 0.0);
+   std::vector<PetscScalar> ghost_inflow(local_rows, 0.0);
    const PetscInt *reflect_mu = quad.reflect_mu_host();
+   // Under the ghost-flux treatment a vacuum inflow row is NOT a boundary row:
+   // it keeps the full stencil, its upwind slot is nulled because the
+   // neighbour is outside (exactly what the loop below already writes), and
+   // |mu|/dx times the face's inflow moves to the rhs. Reflective faces are
+   // untouched - see the header
+   const PetscBool ghost = bcs.ghost_flux_vacuum();
 
    const BCFace left_face = bcs.face(FACE_LEFT);
    const BCFace right_face = bcs.face(FACE_RIGHT);
@@ -177,6 +184,15 @@ PetscErrorCode StructuredFD1D::create(MPI_Comm comm, PhaseSpace &ps, PetscReal l
       for (PetscInt a = 0; a < n_angles; a++) {
          if (mu[a] > 0)
          {
+            if (ghost && left_bc == BCType::VACUUM)
+            {
+               // An ordinary unknown with one neighbour missing: null the
+               // upwind slot and move its coefficient to the rhs
+               oor_[a * 2] = -1;
+               ooc_[a * 2] = -1;
+               ghost_inflow[a] = PetscAbsScalar(mu[a]) / dx_ * left_value;
+               continue;
+            }
             is_bc_row[a] = 1;
             if (left_bc == BCType::REFLECT)
             {
@@ -206,6 +222,13 @@ PetscErrorCode StructuredFD1D::create(MPI_Comm comm, PhaseSpace &ps, PetscReal l
          if (mu[a] < 0)
          {
             const PetscInt r = (local_cells - 1) * n_angles + a;
+            if (ghost && right_bc == BCType::VACUUM)
+            {
+               oor_[r * 2] = -1;
+               ooc_[r * 2] = -1;
+               ghost_inflow[r] = PetscAbsScalar(mu[a]) / dx_ * right_value;
+               continue;
+            }
             is_bc_row[r] = 1;
             if (right_bc == BCType::REFLECT)
             {
@@ -226,7 +249,7 @@ PetscErrorCode StructuredFD1D::create(MPI_Comm comm, PhaseSpace &ps, PetscReal l
    }
 
    // Slot maps - row r owns COO slots 2r (upwind neighbour) and 2r + 1 (diagonal)
-   PetscCall(set_uniform_pattern(2, is_bc_row, reflect_slot, dirichlet_value));
+   PetscCall(set_uniform_pattern(2, is_bc_row, reflect_slot, dirichlet_value, ghost_inflow, ghost));
 
    PetscFunctionReturn(PETSC_SUCCESS);
 }
