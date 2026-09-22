@@ -305,15 +305,29 @@ previous one's verification has passed and been reviewed.
 - [ ] Follow-up: sweep the `-precon_ref_shift` pins over the CI arches (64-bit, OpenMP) —
       they are local opt-arch measurements, and a pin is the max over the arches.
 
-## Phase 6 — DMPlex FEM backends
-- [ ] DECISION POINT first: hand-written Kokkos DG/CG kernels over DMPlex (plan default)
-      vs MFEM as a Discretisation backend — see Research notes below. Recommended spike
-      before committing: assemble an MFEM DG advection matrix, convert to aijkokkos, feed
-      to PCAIR, measure the interop cost.
-- [ ] 6a DGUpwind: broken-PetscSection layout (cf. PFLARE tests/adv_dg_upwind.c) but
-      extraction-only — flattened device views (cell->dof offsets, face->(cell-,cell+),
-      normals/areas, volumes, boundary faces), variable-nnz COO pattern, Kokkos
-      volume + face kernels
+## Phase 6 — DMPlex backends
+- [x] DECISION POINT (22 Sep 2026): hand-written Kokkos kernels over DMPlex, NOT MFEM, and
+      no spike. Every MFEM friction in the research notes below (MATAIJ rather than
+      MATAIJKOKKOS out of its PETSc bridge, a second device runtime alongside Kokkos, the
+      per-group values-only refill needing plumbing across the hypre/PETSc boundary) fights
+      the COO + slot-map + refill architecture the library is built on, so the spike would
+      have measured what the notes already predict.
+- [ ] 6a `UnstructuredDG0`: DG0 (one dof per cell) upwind streaming on a DMPlex, 2D and 3D,
+      box meshes built in code (quads/hexes or triangles/tets) or a mesh file read by
+      PETSc (Gmsh). Broken section with n_angles dof per cell, so the row convention
+      `row = cell * n_angles + angle` is unchanged and everything dimension-independent
+      carries over untouched. Variable-nnz COO pattern: `n_faces(c) + 1` slots per row in
+      cone order, diagonal last, through a new `Discretisation::set_pattern` that
+      `set_uniform_pattern` now wraps. Geometry (cell volumes, outward area-weighted face
+      normals, centroids) extracted on the host once by `DMPlexComputeCellGeometryFVM`
+      into flat device views; `StreamingTermDG0` is the per-backend streaming sibling and
+      reads the ordinates off the backend, never a quadrature of its own. BCs: the
+      existing Dirichlet-cell contract, keyed by real "Face Sets" values (the box ids ARE
+      the structured `FACE_*` ids); reflection needs an axis-aligned face. Materials:
+      `paint_boxes` by centroid plus "Cell Sets" -> material. Output: `.vtu`. Not in this
+      cut: DSA (a DMDA operator), DG1+, the ghost-flux vacuum BC (see the note in the
+      transpose campaign memory: it is the natural DG0 BC and attaches to the boundary
+      face list this backend keeps).
 - [ ] 6b CGSUPG: PetscFE/PetscDS host-only for quadrature/tabulations copied to device
       once; volume kernels; Dirichlet via identity-row mechanism
 - BCs: consume the existing `BCSpec` with real "Face Sets" label values (the structured
@@ -323,8 +337,11 @@ previous one's verification has passed and been reviewed.
       decision point predicted. This item survives only as the point where a DMPlex
       backend would widen it: `set_uniform_pattern` is the part that will not carry over
       (DG has a variable-nnz COO pattern), while `create_matrix` and the accessors should.
-- Verify: DG0 on uniform mesh reproduces the FD upwind matrix; manufactured-solution
-  convergence rates; pinned iterations.
+- Verify: DG0 on uniform quad/hex box meshes reproduces the FD upwind matrix to rounding
+  (`tests/verify_plexk`, serial and parallel, the plex rows permuted onto the DMDA's by
+  centroid); the infinite-medium closed form on triangles and tets through reflective
+  faces; layout, geometry and error-path checks; pinned iterations on the plex twins of
+  the structured recipes and on a Gmsh file with Cell Sets and Face Sets.
 
 ## Phase 7 — deferred
 - [ ] CI: clone PFLARE's docker model + docs/dev/ci.md

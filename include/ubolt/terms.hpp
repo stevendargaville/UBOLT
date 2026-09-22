@@ -8,6 +8,7 @@
 #include "ubolt/structured_fd_1d.hpp"
 #include "ubolt/structured_fd_2d.hpp"
 #include "ubolt/structured_fd_3d.hpp"
+#include "ubolt/unstructured_dg0.hpp"
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -91,6 +92,44 @@ private:
    PetscScalarKokkosView mu_d_;
    PetscScalarKokkosView eta_d_;
    PetscScalarKokkosView xi_d_;
+   CooPattern pattern_;
+   BoundaryInfo boundary_;
+};
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+// Streaming on an unstructured mesh: Omega . grad psi as the DG0 upwind face
+// flux, sum_f (Omega . nA_f / V_c) psi_upwind(f)
+//
+// The sibling of the structured streaming terms for UnstructuredDG0, and the
+// owner of its slot convention: n_faces + 1 slots per row, one per face in cone
+// order, then the diagonal. Per face s = Omega_a . nA_f; an OUTFLOW face
+// (s > 0) adds s / V_c to the diagonal, an inflow face adds it (negative) to
+// that face's slot - which the backend has already pointed at the upwind
+// neighbour, or nulled on a boundary face, so the fill never branches on
+// anything but the sign of s. Same arithmetic as the structured stencil on a
+// quad/hex box, to rounding
+//
+// The quadrature is NOT a create argument: the ordinates the term needs are
+// disc.omega_d(), fixed when the backend classified the rows, so the two can
+// never disagree
+class PETSC_VISIBILITY_PUBLIC StreamingTermDG0 : public OperatorTerm {
+public:
+   PetscErrorCode create(const PhaseSpace &ps, const UnstructuredDG0 &disc);
+
+   PetscBool assembled() const override { return PETSC_TRUE; }
+   PetscErrorCode assemble_add(PetscScalarKokkosView &coo_v_d) const override;
+
+   PetscBool has_diagonal() const override { return PETSC_TRUE; }
+   PetscErrorCode add_diagonal(Vec d) const override;
+
+private:
+   PetscInt n_angles_ = 0;
+   PetscInt local_rows_ = 0;
+   PetscScalarKokkosView omega_d_;
+   PetscIntKokkosView cell_face_offset_d_;
+   PetscScalarKokkosView face_nA_d_;
+   PetscScalarKokkosView inv_volume_d_;
    CooPattern pattern_;
    BoundaryInfo boundary_;
 };

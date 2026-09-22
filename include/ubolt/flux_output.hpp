@@ -23,13 +23,17 @@ struct UboltCellField {
 // to find out what was solved
 //
 // The angular integral is UboltAngularIntegral - the same one the terms use -
-// and the result goes onto a dof-1 twin of the discretisation's DMDA
-// (DMDACreateCompatibleDMDA, which also carries over the mesh coordinates the
-// backend set), so PETSc's own VTK viewer does the parallel gather and the
-// writing. That makes the filename extension pick the format, and a DMDA is a
-// structured grid: .vts or .vtr. PETSc reserves .vtu for unstructured
-// (DMPlex) meshes, so it is not accepted here. Every field rides the same twin
-// DM, which is what lets them share one file
+// and the result goes onto a dof-1 twin of the discretisation's DM, so PETSc's
+// own VTK viewer does the parallel gather and the writing. That makes the
+// filename extension pick the format, and the format is the mesh's:
+// - a DMDA backend (the structured ones) is a structured grid: .vts or .vtr.
+//   The twin is DMDACreateCompatibleDMDA, which also carries over the mesh
+//   coordinates the backend set
+// - the DMPlex backend (UnstructuredDG0) is an unstructured grid: .vtu. The
+//   twin is a DMClone with one dof per cell, and only OWNED cells are written
+//   (PETSc's VTU writer would otherwise write the one-cell overlap twice)
+// The wrong extension for the backend is an error saying which one to use.
+// Every field rides the same twin DM, which is what lets them share one file
 //
 // Collective on psi's communicator. Allocates its own device scratch, so this
 // is for after a solve, not inside one

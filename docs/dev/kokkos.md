@@ -77,7 +77,16 @@ fill runs on device (MATAIJKOKKOS dispatches `MatSetValuesCOO` to the GPU):
   out of the DM's
   local-to-global map (which covers the ghost nodes, so a column can point into a
   neighbour's patch). Each backend asserts the layout property it actually relies on in its
-  own `CheckDALayout` — see `docs/dev/testing.md`.
+  own `CheckDALayout` — see `docs/dev/testing.md`. On a DMPlex the global numbering comes
+  from the DM's GLOBAL SECTION (n_angles dof on every height-0 point, overlap ghosts
+  included): `PetscSectionGetOffset` gives an owned cell's first row as `g >= 0` and an
+  overlap ghost's as `-(g + 1)`, so one lookup serves the owned cells and the ghost
+  neighbours a column points into. The mesh is distributed with face adjacency and a
+  one-cell overlap, which is exactly the set of neighbours an upwind face flux reads.
+  `CheckPlexLayout` (`src/unstructured_dg0k.kokkos.cxx`) is the layout assert there: the
+  section and the point SF agree on ownership, the owned cells sum to the phase space's,
+  and the owned cells in increasing POINT order sit at `rstart + k * n_angles` — which is
+  what makes "local cell k = the k-th owned cell in point order" the per-cell indexing.
 - Dirichlet trick: a `-1` row/col index in the preallocation means "ignore this entry", so
   Dirichlet boundary rows keep only their diagonal. The same `-1` covers a slot a row
   genuinely does not have — in 2D, a direction whose `mu` or `eta` is zero has no upwind
@@ -95,6 +104,20 @@ fill runs on device (MATAIJKOKKOS dispatches `MatSetValuesCOO` to the GPU):
   builds the slot maps from that convention, so a fixed-entries-per-row backend states it
   once — the backend hands it the BC row mask and the repurposed reflection slots along
   with the slot count.
+- The unstructured backend (`UnstructuredDG0`, DG0 on a DMPlex) does not have a fixed
+  count: a row of cell c carries `n_faces(c) + 1` slots — one per face in the cell's CONE
+  order, then the diagonal LAST — so a mesh with mixed cell shapes has rows of different
+  lengths. It builds its slot maps with the general `Discretisation::set_pattern(row_slot_offset,
+  diag_slot, is_bc_row, reflect_slot, dirichlet_value)` (CSR `row_slot_offset`, one
+  `diag_slot` per row); `set_uniform_pattern` is now a thin wrapper that computes those two
+  arrays and calls it, so both kinds of backend upload through one path. The -1 nulls do
+  the upwind selection exactly as in the structured backends: a face slot is live only on
+  an interior row, across an interior face, for an angle flowing IN through it
+  (`Omega . nA_f < 0`), so the sparsity is one neighbour per inflow face and
+  `StreamingTermDG0` never branches on which neighbour is upwind — only on the sign of
+  `s = Omega . nA_f`, outflow (s > 0) onto the diagonal, anything else onto the face's
+  slot (dropped if that slot was nulled). A reflective row repurposes the slot of its first
+  incoming reflective face in cone order, a Dirichlet row keeps only its diagonal.
 - Terms address entries through the `CooPattern` slot maps — `row_slot_offset_d`
   (CSR-shaped COO slot ranges per row) and `diag_slot_d` (which slot is the diagonal) —
   never through raw COO positions. With more than one off-diagonal a term has to address
@@ -151,7 +174,9 @@ fill runs on device (MATAIJKOKKOS dispatches `MatSetValuesCOO` to the GPU):
   a transient global vector to read the ownership range; the backends put mesh coordinates
   on their DMDA (a host vector held by the coordinate DM, read only by output); and the
   scalar flux VTK writer creates a host global vector from a dof-1 compatible DMDA purely
-  to hand to the viewer. If a later phase starts creating matrices or vectors through the
+  to hand to the viewer. The DMPlex backend is the same: `CheckPlexLayout` creates a
+  transient global vector off the backend's section only to read the ownership range, and
+  the `.vtu` path writes host global vectors on a dof-1 `DMClone` of the mesh. If a later phase starts creating matrices or vectors through the
   DM *for the solve*, it has to set the types on the DM (or run with
   `-dm_mat_type aijkokkos -dm_vec_type kokkos`) or pflare will silently fall back to the
   CPU paths.

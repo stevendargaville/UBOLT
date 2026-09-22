@@ -1,5 +1,6 @@
 #include "ubolt/flux_output.hpp"
 #include <petscdmda.h>
+#include <petscdmplex.h>
 #include <petscviewer.h>
 #include <vector>
 
@@ -33,16 +34,124 @@ static PetscErrorCode QueueCellFieldVTK(DM flux_da, PetscInt local_cells, const 
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
+// The DMPlex path: one dof-1 twin of the backend's mesh, every field a global
+// Vec on it, written as a .vtu
+//
+// Two things differ from the DMDA path. The backend's mesh carries a one-cell
+// overlap, and PETSc's VTU writer writes EVERY cell of each rank's local mesh
+// unless a "vtk" label marks the ones to write - so the twin labels its owned
+// cells, and each cell appears in the file exactly once. And the vector index
+// of a cell is read from the twin's own global section (offset - rstart)
+// rather than assumed: the backend's local cell k is the k-th owned cell in
+// point order (its CheckPlexLayout asserts the global numbering follows that),
+// and this map is what ties the two together here
+static PetscErrorCode WritePlexVTU(DM dm, PetscInt local_cells, PetscInt n_fields, \
+   const char *const names[], const PetscScalar *const values[], const char *filename)
+{
+   MPI_Comm comm = PetscObjectComm((PetscObject)dm);
+   DM flux_dm = NULL;
+   PetscSection sec = NULL, gsec = NULL;
+   DMLabel vtk_label = NULL;
+   PetscViewer viewer = NULL;
+   Vec probe = NULL;
+   PetscInt p_start = 0, p_end = 0, c_start = 0, c_end = 0, rstart = 0, k = 0;
+   std::vector<PetscInt> vec_index(local_cells, -1);
+   std::vector<Vec> fields(n_fields, NULL);
+
+   PetscFunctionBeginUser;
+
+   // A clone shares the topology and copies the labels and coordinates, so
+   // the twin's own section and "vtk" label never touch the backend's DM
+   PetscCall(DMClone(dm, &flux_dm));
+   PetscCall(DMPlexGetChart(flux_dm, &p_start, &p_end));
+   PetscCall(DMPlexGetHeightStratum(flux_dm, 0, &c_start, &c_end));
+   PetscCall(PetscSectionCreate(comm, &sec));
+   PetscCall(PetscSectionSetChart(sec, p_start, p_end));
+   for (PetscInt c = c_start; c < c_end; c++) PetscCall(PetscSectionSetDof(sec, c, 1));
+   PetscCall(PetscSectionSetUp(sec));
+   PetscCall(DMSetLocalSection(flux_dm, sec));
+   PetscCall(PetscSectionDestroy(&sec));
+   PetscCall(DMGetGlobalSection(flux_dm, &gsec));
+
+   PetscCall(DMCreateGlobalVector(flux_dm, &probe));
+   PetscCall(VecGetOwnershipRange(probe, &rstart, NULL));
+   PetscCall(VecDestroy(&probe));
+
+   PetscCall(DMCreateLabel(flux_dm, "vtk"));
+   PetscCall(DMGetLabel(flux_dm, "vtk", &vtk_label));
+   for (PetscInt c = c_start; c < c_end; c++) {
+      PetscInt g = 0;
+      PetscCall(PetscSectionGetOffset(gsec, c, &g));
+      // Overlap ghosts are encoded negative - someone else writes them
+      if (g < 0) continue;
+      PetscCheck(k < local_cells, PETSC_COMM_SELF, PETSC_ERR_ARG_INCOMP, \
+         "the mesh owns more cells than the phase space's %" PetscInt_FMT, local_cells);
+      vec_index[k++] = g - rstart;
+      PetscCall(DMLabelSetValue(vtk_label, c, 1));
+   }
+   PetscCheck(k == local_cells, PETSC_COMM_SELF, PETSC_ERR_ARG_INCOMP, "the mesh owns %" PetscInt_FMT \
+      " cells but the phase space has %" PetscInt_FMT, k, local_cells);
+
+   // The VTK viewer queues each Vec and writes them all as fields of the one
+   // file when it is destroyed, so the viewer goes first and the Vecs after
+   PetscCall(PetscViewerVTKOpen(comm, filename, FILE_MODE_WRITE, &viewer));
+   for (PetscInt f = 0; f < n_fields; f++) {
+      PetscScalar *field_a = nullptr;
+      PetscCall(DMCreateGlobalVector(flux_dm, &fields[f]));
+      PetscCall(PetscObjectSetName((PetscObject)fields[f], names[f]));
+      PetscCall(VecGetArray(fields[f], &field_a));
+      for (PetscInt c = 0; c < local_cells; c++) field_a[vec_index[c]] = values[f][c];
+      PetscCall(VecRestoreArray(fields[f], &field_a));
+      PetscCall(VecView(fields[f], viewer));
+   }
+
+   PetscCall(PetscViewerDestroy(&viewer));
+   for (auto &field : fields) PetscCall(VecDestroy(&field));
+   PetscCall(DMDestroy(&flux_dm));
+
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+// The DMDA path: a dof-1 twin of the backend's DMDA (DMDACreateCompatibleDMDA,
+// which carries the coordinates over, so the file gets the real mesh
+// positions), written as .vts or .vtr
+static PetscErrorCode WriteDAVTK(DM da, PetscInt local_cells, PetscInt n_fields, \
+   const char *const names[], const PetscScalar *const values[], const char *filename)
+{
+   MPI_Comm comm = PetscObjectComm((PetscObject)da);
+   DM flux_da = NULL;
+   PetscViewer viewer = NULL;
+   std::vector<Vec> fields(n_fields, NULL);
+
+   PetscFunctionBeginUser;
+
+   PetscCall(DMDACreateCompatibleDMDA(da, 1, &flux_da));
+
+   // The VTK viewer queues each Vec and writes them all as fields of the one
+   // file when it is destroyed, so the viewer goes first and the Vecs after
+   PetscCall(PetscViewerVTKOpen(comm, filename, FILE_MODE_WRITE, &viewer));
+   for (PetscInt f = 0; f < n_fields; f++) {
+      PetscCall(QueueCellFieldVTK(flux_da, local_cells, names[f], values[f], viewer, &fields[f]));
+   }
+
+   PetscCall(PetscViewerDestroy(&viewer));
+   for (auto &field : fields) PetscCall(VecDestroy(&field));
+   PetscCall(DMDestroy(&flux_da));
+
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
 PetscErrorCode UboltWriteScalarFluxVTK(const PhaseSpace &ps, \
    const Discretisation &disc, const AngularQuadrature &quad, Vec psi, PetscInt n_extra, \
    const UboltCellField *extra, const char *filename)
 {
    MPI_Comm comm = PetscObjectComm((PetscObject)psi);
-   DM flux_da = NULL;
-   PetscViewer viewer = NULL;
-   PetscBool is_vts = PETSC_FALSE, is_vtr = PETSC_FALSE;
+   PetscBool is_plex = PETSC_FALSE, is_vts = PETSC_FALSE, is_vtr = PETSC_FALSE, is_vtu = PETSC_FALSE;
    PetscInt local_rows = 0;
-   std::vector<Vec> fields(1 + n_extra, NULL);
 
    PetscFunctionBeginUser;
 
@@ -63,43 +172,45 @@ PetscErrorCode UboltWriteScalarFluxVTK(const PhaseSpace &ps, \
    }
 
    // The extension is what tells PETSc's VTK viewer which format to write, and
-   // a DMDA is a structured grid - fail up front with the reason rather than
+   // the format is the mesh's: fail up front with the reason rather than
    // letting the viewer refuse the file at destroy time
+   PetscCall(PetscObjectTypeCompare((PetscObject)disc.dm(), DMPLEX, &is_plex));
    PetscCall(PetscStrendswith(filename, ".vts", &is_vts));
    PetscCall(PetscStrendswith(filename, ".vtr", &is_vtr));
-   PetscCheck(is_vts || is_vtr, comm, PETSC_ERR_ARG_WRONG, \
-      "'%s': a scalar flux on a DMDA writes the VTK structured formats, so the " \
-      "filename must end in .vts or .vtr (.vtu is PETSc's unstructured/DMPlex format)", filename);
+   PetscCall(PetscStrendswith(filename, ".vtu", &is_vtu));
+   if (is_plex) {
+      PetscCheck(is_vtu, comm, PETSC_ERR_ARG_WRONG, \
+         "'%s': a scalar flux on the unstructured (DMPlex) backend writes the VTK unstructured " \
+         "format, so the filename must end in .vtu (.vts/.vtr are for the structured backends)", filename);
+   } else {
+      PetscCheck(is_vts || is_vtr, comm, PETSC_ERR_ARG_WRONG, \
+         "'%s': a scalar flux on a DMDA writes the VTK structured formats, so the " \
+         "filename must end in .vts or .vtr (.vtu is for the unstructured DMPlex backend)", filename);
+   }
 
    // The shared angular integral, so what gets written is bit-identical with
    // what the terms integrate
    PetscScalar2DKokkosView scalar_flux_d("scalar_flux_d", ps.local_cells, 1);
    PetscCall(UboltAngularIntegral(psi, ps.n_angles, quad.w_d(), scalar_flux_d));
 
-   // A dof-1 twin of the backend's DMDA: same grid, same decomposition, one
-   // value per cell. DMDACreateCompatibleDMDA carries the coordinates over from
-   // the backend's DM, so the file gets the real mesh positions
-   PetscCall(DMDACreateCompatibleDMDA(disc.dm(), 1, &flux_da));
-
-   // The VTK viewer queues each Vec and writes them all as fields of the one
-   // file when it is destroyed, so the viewer goes first and the Vecs after
-   PetscCall(PetscViewerVTKOpen(comm, filename, FILE_MODE_WRITE, &viewer));
-
    // The angular integral writes a (cells, 1) gemm output, the extra fields are
    // plain per-cell views; both are contiguous in cell on either backend, so
    // the mirror's data() is the field in local cell order in both cases
    auto flux_h = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), scalar_flux_d);
-   PetscCall(QueueCellFieldVTK(flux_da, ps.local_cells, "scalar_flux", flux_h.data(), viewer, \
-      &fields[0]));
+   std::vector<decltype(Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), extra[0].values))> extra_h;
+   std::vector<const char *> names(1 + n_extra);
+   std::vector<const PetscScalar *> values(1 + n_extra);
+   names[0] = "scalar_flux";
+   values[0] = flux_h.data();
    for (PetscInt f = 0; f < n_extra; f++) {
-      auto extra_h = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), extra[f].values);
-      PetscCall(QueueCellFieldVTK(flux_da, ps.local_cells, extra[f].name, extra_h.data(), viewer, \
-         &fields[1 + f]));
+      extra_h.push_back(Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), extra[f].values));
+      names[1 + f] = extra[f].name;
+      values[1 + f] = extra_h.back().data();
    }
 
-   PetscCall(PetscViewerDestroy(&viewer));
-   for (auto &field : fields) PetscCall(VecDestroy(&field));
-   PetscCall(DMDestroy(&flux_da));
+   // Every field rides the same twin DM, which is what lets them share one file
+   if (is_plex) PetscCall(WritePlexVTU(disc.dm(), ps.local_cells, 1 + n_extra, names.data(), values.data(), filename));
+   else PetscCall(WriteDAVTK(disc.dm(), ps.local_cells, 1 + n_extra, names.data(), values.data(), filename));
 
    PetscFunctionReturn(PETSC_SUCCESS);
 }
