@@ -312,7 +312,7 @@ previous one's verification has passed and been reviewed.
       per-group values-only refill needing plumbing across the hypre/PETSc boundary) fights
       the COO + slot-map + refill architecture the library is built on, so the spike would
       have measured what the notes already predict.
-- [ ] 6a `UnstructuredDG0`: DG0 (one dof per cell) upwind streaming on a DMPlex, 2D and 3D,
+- [x] 6a `UnstructuredDG0`: DG0 (one dof per cell) upwind streaming on a DMPlex, 2D and 3D,
       box meshes built in code (quads/hexes or triangles/tets) or a mesh file read by
       PETSc (Gmsh). Broken section with n_angles dof per cell, so the row convention
       `row = cell * n_angles + angle` is unchanged and everything dimension-independent
@@ -328,6 +328,20 @@ previous one's verification has passed and been reviewed.
       cut: DSA (a DMDA operator), DG1+, the ghost-flux vacuum BC (see the note in the
       transpose campaign memory: it is the natural DG0 BC and attaches to the boundary
       face list this backend keeps).
+  - Measured (22 Sep 2026, opt arch, pinned exactly pending the first CI sweep; table in
+    docs/dev/testing.md): the quad/hex twins match their structured counts (reflect_lb
+    6, cube 5, streaming-only pmat 9, ref-shift k=4 4/6/15/30) EXCEPT `plex_box_50_st2`,
+    7 against 6 — the matrices agree to ~1e-15 but the rows are permuted and PCAIR is
+    not permutation-invariant, and both solves sit on the rtol edge at iteration 6
+    (structured clears by 1.4%, plex misses by 0.4%); the partitioner moves the same
+    edge (parmetis gives 6 at np 2). Simplex: 1800 triangles S4 and 1296 tets S2, both
+    ratio 0.5, converge in 5, the 8-triangle Gmsh file in 4; np 2 equals np 1 on every
+    recipe but one group of the default-k ref-shift run. `-check_matfree` composes the
+    diagonal to exactly 0.0 on every plex file and `-ubolt_coo_two_call` is
+    history-identical.
+  - Found in the driver pass: the plex `.vtu` arrays were named `scalar_flux(null)` —
+    PETSc's writer appends the section's field name, and a section with no fields gives
+    it a null one. Fixed by giving the output twin's section one empty-named field.
 - [ ] 6b CGSUPG: PetscFE/PetscDS host-only for quadrature/tabulations copied to device
       once; volume kernels; Dirichlet via identity-row mechanism
 - BCs: consume the existing `BCSpec` with real "Face Sets" label values (the structured

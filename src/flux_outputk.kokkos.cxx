@@ -66,8 +66,16 @@ static PetscErrorCode WritePlexVTU(DM dm, PetscInt local_cells, PetscInt n_field
    PetscCall(DMPlexGetChart(flux_dm, &p_start, &p_end));
    PetscCall(DMPlexGetHeightStratum(flux_dm, 0, &c_start, &c_end));
    PetscCall(PetscSectionCreate(comm, &sec));
+   // One field with an EMPTY name: the writer names each array vec name +
+   // field name, and on a section with no fields at all it prints a null
+   // field name, so the arrays came out as "scalar_flux(null)"
+   PetscCall(PetscSectionSetNumFields(sec, 1));
+   PetscCall(PetscSectionSetFieldName(sec, 0, ""));
    PetscCall(PetscSectionSetChart(sec, p_start, p_end));
-   for (PetscInt c = c_start; c < c_end; c++) PetscCall(PetscSectionSetDof(sec, c, 1));
+   for (PetscInt c = c_start; c < c_end; c++) {
+      PetscCall(PetscSectionSetDof(sec, c, 1));
+      PetscCall(PetscSectionSetFieldDof(sec, c, 0, 1));
+   }
    PetscCall(PetscSectionSetUp(sec));
    PetscCall(DMSetLocalSection(flux_dm, sec));
    PetscCall(PetscSectionDestroy(&sec));

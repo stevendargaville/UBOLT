@@ -4,7 +4,7 @@ interface so assembly runs on device), apply scattering matrix-free (MatShell + 
 precondition with PCComposite = removal shell PC + PCAIR (pflare inverts streaming).
 Energy groups are solved one at a time in a group Gauss-Seidel sweep, so the sparsity is
 preallocated once and each group is a values-only refill of the same matrix.
-The discretisation is DM-backed (1D, 2D and 3D DMDAs): the DM owns the mesh (including its
+The discretisation is DM-backed (1D, 2D and 3D DMDAs, and a 2D/3D DMPlex): the DM owns the mesh (including its
 coordinates, set by the backend for output), the layout and the parallel decomposition,
 but deliberately creates no solver matrices or vectors itself.
 
@@ -25,6 +25,12 @@ Codebase map
   reference matrix (the 3D mixed config puts three reflective faces around one corner),
   each under both vacuum treatments, plus the library-built boundary rhs against a
   constant solution and, under ghost-flux, the opposite-ordinate identity `A^T = P A P`.
+  `tests/verify_plexk.kokkos.cxx`: the unstructured backend's check, serial and -n 2/4 —
+  the plex quad/hex box against its `StructuredFD2D`/`3D` twin to ROUNDING (matrix, BC
+  rows, rhs, scatter, a solve; rows matched by centroid, each side's row from its OWN
+  layout), the infinite medium on triangles/tets, geometry/Face Sets invariants, error
+  paths, and the `.vtu` writing each cell once. `tests/meshes/`: mesh files the problem
+  files name (a hand-written Gmsh 2.2 `.msh` today).
   `tests/verify_quadraturek.kokkos.cxx`: the quadrature sets themselves, against the
   moment conditions that define them — needed because they are generated, not tabulated.
   `tests/baselines/`: captured
@@ -68,15 +74,29 @@ Codebase map
   `src/external/nlohmann/json.hpp`, which must NEVER be included from
   `include/ubolt/`); `Discretisation` (the backend
   base: `create_matrix`, `coo_pattern`, `boundary_info`, `destroy`, `dm`, and
-  `set_uniform_pattern` for a fixed-entries-per-row backend) with `StructuredFD1D`,
+  `set_uniform_pattern` for a fixed-entries-per-row backend, a wrapper over the general
+  CSR-shaped `set_pattern` a variable-nnz one calls) with `StructuredFD1D`,
   `StructuredFD2D` and `StructuredFD3D` under it (each owns a DMDA and through it the
   mesh, the cell-based
   decomposition and the COO sparsity, and adds only its own geometry — `dx()`, `dy()`,
   `dz()`, and the material painting, `paint_intervals` / `paint_boxes` — NOTE the 3D
   `FACE_*` ids follow PETSc's convention, where bottom/top are the Z faces, not y as
-  in 2D);
-  `OperatorTerm` and the `Streaming`/`Streaming2D`/`Streaming3D`/`Removal`/`Scattering`
-  terms,
+  in 2D) and `UnstructuredDG0` beside them (cell-centred DG0 upwind on a DMPlex, 2D/3D,
+  any cell shape; the mesh from a `PlexMeshSpec` — a box built in code, quads/hexes or
+  `simplex` triangles/tets, or a file PETSc reads. Construction is TWO-STAGE because the
+  mesh decides the global cell count: `create_mesh`, then `PhaseSpace::create` off
+  `n_global_cells()` — never n_x * n_y, a simplex box has 2 or 6 cells per box cell —
+  then `create(ps, quad, bcs)`. Slots: `n_faces(c) + 1` per row, one per face in CONE
+  order then the diagonal LAST, through `set_pattern`; a face slot is live only on an
+  interior inflow face. Owned cells in point order are local cell k, asserted by
+  `CheckPlexLayout`; face-adjacency one-cell overlap, "simple" partitioner by default.
+  BCs are keyed by "Face Sets" values, which on a box ARE the `FACE_*` ids; a reflective
+  face must be AXIS-ALIGNED (PETSC_ERR_SUP otherwise); materials by centroid
+  `paint_boxes`, "Cell Sets" `paint_cell_sets`, or both layered via `paint_boxes_over`.
+  NO DSA — `DSAPrecon` is a DMDA operator, and the driver errors);
+  `OperatorTerm` and the `Streaming`/`Streaming2D`/`Streaming3D`/`StreamingDG0`/
+  `Removal`/`Scattering` terms (`StreamingTermDG0::create(ps, disc)` takes NO quadrature:
+  it reads the ordinates off the backend, so the two cannot disagree),
   `GroupXSections` + `GroupTransfer` (multigroup xsection tables and the group-to-group
   source), `TransportOperator` (assembled terms in one matrix + matrix-free terms behind a
   MatShell), `TransportSolver` (KSP + the composite PC, plus `refresh()` for what the PC
@@ -96,8 +116,8 @@ Codebase map
   solution, plus any extra per-cell fields the caller hands over as `UboltCellField`s —
   the driver passes the group's `sigma_t` and its `source`, the latter expanded onto the
   cells by `UboltFillCellSource` — written through PETSc's VTK viewer onto a dof-1 twin
-  of the backend's DMDA —
-  `.vts`/`.vtr` structured formats only; a problem file's `output.flux_vtk`, or
+  of the backend's DM, dispatched on its type: `.vts`/`.vtr` on a DMDA, `.vtu` on a
+  DMPlex (owned cells only, via a "vtk" label); a problem file's `output.flux_vtk`, or
   `-flux_vtk` as the override). `types.hpp` owns every Kokkos view typedef, `ubolt.hpp`
   is the umbrella header. Every translation unit is a Kokkos one, named `Xk.kokkos.cxx`
   (the suffix triggers PETSc's Kokkos build rules). See `TODO.md` for the roadmap and

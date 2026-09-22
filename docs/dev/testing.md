@@ -8,7 +8,9 @@
   count, so an iteration-count regression fails the run. The same recipes run on every
   CI arch (opt/debug/64-bit/OpenMP), so a pin is the max over those environments —
   today that differs from the reference count only for the two streaming-only pmat 2D
-  recipes, see the 2D table.
+  recipes, see the 2D table. The unstructured pins are the exception: measured on one
+  arch and pinned exactly, pending their first CI run (see "Unstructured iteration
+  counts").
 - Multigroup caveat: `-ksp_max_it` is one option for the whole group sweep, so a
   multigroup recipe pins the **max over the groups**. A single group getting slower
   without exceeding that max will not fail the recipe — the multigroup baselines below
@@ -555,6 +557,143 @@ block was eyeballed via `-flux_vtk` (sigma_t 10 painted mid-cube, flux ~3.3 over
 block against ~10 in the surrounding medium) — those numbers are from the 20^3 file,
 before the 2026-08-02 resize, and have not been re-measured at 10^3.
 
+## Unstructured DG0 verification
+The unstructured backend (`UnstructuredDG0` + `StreamingTermDG0`, Phase 6a) has no
+baselines either, for the 2D/3D reason: `tests/verify_plexk` compares the operator
+itself. It runs serially in `run_check` and at `-n 2` and `-n 4` in
+`run_tests_short_parallel`, and every comparison in it is parallel-safe — nothing assumes
+rank 0 owns anything, or that either backend numbers its rows naturally.
+
+1. **FD twin, 2D quads.** On a uniform quad box DG0 upwind IS the structured upwind
+   stencil (`|mu| dy / (dx dy) = |mu| / dx`), so each case is built on `StructuredFD2D`
+   and on the plex, and compared: (a) the assembled matrices, brought onto one ordering
+   by an explicit permutation matrix P (not `MatPermute`, which wants matching local
+   sizes and the two decompositions differ), `||A_plex - P^T A_fd P||_inf <= 1e-12
+   ||A_fd||_inf` (measured ~1e-15 to 3e-15); (b) the BC row mask and reflect flags **exactly** and the Dirichlet values to
+   1e-14; (c) the rhs (`UboltFillInflow` + `UboltFillSource` + `UboltZeroReflectRows`)
+   to 1e-14; (d) the matrix-free scatter on the same permuted random vector, 1e-14;
+   (e) the composed `TransportOperator::diagonal()` against the plex's own
+   `MatGetDiagonal`, **bitwise** (0.0); (f) a full solve at rtol 1e-13, the permuted
+   solutions to 1e-9 (two different Krylov histories, so no tighter). Cases: 4x3 S2 and
+   S4 vacuum, 5x4 S2 reflect left + bottom, 5x4 S4 mixed (reflect left + top, vacuum
+   right + bottom), 6x4 S2 with inflow 1.0 on the left windowed to y in [0.5, 1.5] and
+   0.3 on the bottom (the corner winning-face rule and the window), and a painted 4x3 S4
+   — painted by box on both sides, and again with the plex side painted through a
+   "Cell Sets" label written onto the same cells (the path a Gmsh physical group takes,
+   so `paint_cell_sets` is held to the same twin).
+2. **FD twin, 3D hexes**, the same (a)-(f) against `StructuredFD3D`: 3x2x2 S2 vacuum,
+   3x3x2 S4 reflect left + front + bottom (the three-face corner), 4x2x3 S2 with inflow
+   on the left windowed in (y, z).
+3. **Simplex meshes** (triangles 6^2 = 72 cells, tets 3^3 = 162 cells — a simplex box
+   has 2 triangles or 6 tets per box cell), which have no twin: (a) the infinite medium,
+   every face reflective, flat to 1e-10 at `1 / (sum_weights (sigma_t - sigma_s))`
+   (measured ~1e-14) — which pins reflection on the axis-aligned faces of triangles and
+   tets and the scatter reading BC rows; (b) vacuum, a pure absorber and a source only in
+   the central box [1/4, 3/4]^dim: converged, inside the exact discrete bounds
+   `0 <= psi <= q / (sum_weights sigma_t)` to 1e-12 (DG0 upwind is monotone and the
+   infinite medium is an upper solution), and the scalar flux integrated per unit source
+   within 25% of the quad/hex mesh's at the same nominal h (measured 3% in 2D, 5% in
+   3D). A sign or scaling error fails it; it is not a convergence claim.
+4. **Layout and geometry invariants** on every mesh: the volumes sum to the box's to
+   1e-12 relative, every cell's outward area-weighted normals close to 1e-12 (a normal
+   that failed to flip outward shows up as 2 nA), the cell count is the box's on
+   quads/hexes, and on the simplex boxes every "Face Sets" id sits on the box face the
+   structured `FACE_*` constant of that id names, exactly (simplex and tensor boxes get
+   the label from different PETSc code paths).
+5. **Error paths**, through `PetscReturnErrorHandler`: a reflection partner that is
+   itself a BC row (reflect on both x faces of a one-cell-wide box), `cell_sets` on a
+   mesh with no "Cell Sets" label, a 2D quadrature on a 3D mesh, and a `.vts` name on the
+   plex. All four must be rejected.
+6. **VTU output**: writes a `.vtu` into the current directory, reads it back on rank 0
+   after a barrier and requires the `<Piece NumberOfCells>` entries to sum to the global
+   cell count — PETSc's writer writes every cell of a rank's local mesh unless a "vtk"
+   label says otherwise, so an overlap cell written by two ranks would push it over —
+   then deletes it. The file is `verify_plexk_tmp_<size>.vtu`, so nothing is left behind.
+
+**Why the twin comparison is to rounding and not bitwise.** The two backends reach the
+same coefficient through different arithmetic — the FD stencil writes `|mu| / dx`, DG0
+writes `(Omega . nA_f) / V_c` with the area-weighted normal and the volume coming out of
+`DMPlexComputeCellGeometryFVM` — so `|mu| dy / (dx dy)` and `|mu| / dx` agree to the last
+bit or two, not exactly. The structure (which rows are BC rows, which slots are live) is
+exact, and is checked exactly.
+
+**The permutation, by centroid.** Neither backend's global numbering is assumed. The
+join key is each cell's natural lexicographic index — on the FD side from its (i, j[, k]),
+on the plex side `floor(x / dx)` etc. from its centroid — and it is used ONLY as a key:
+each side's row of its local cell c is its OWN `rstart + c * n_angles + a`, the property
+each backend's layout check asserts (`CheckDALayout`, `CheckPlexLayout`). The DMDA's row
+must come from its own layout rather than from the natural index, because a 2D/3D DMDA
+numbers patch-lexicographically in parallel (see "DMDA layout" below); the plex's global
+numbering comes from its global section and the simple partitioner, and is unrelated to
+either. The key goes through a Vec indexed by key — the plex ranks write their row base
+into it, the FD ranks read theirs back — and out of it come the permutation matrix and a
+`VecScatter` for the vectors, whatever the two decompositions are.
+
+**Parallel.** `-n 2` splits both twins, `-n 4` is the first run where the DMDA splits in
+two directions and the plex's simple partition cuts the cell points into four
+contiguous ranges; both pass with the same measured differences as serial.
+
+## Unstructured iteration counts
+Measured 2026-09-22 on the opt arch (`arch-linux-c-opt`), `-ksp_max_it 400
+-ksp_converged_reason`. **Pinned on the measured count, exactly**: the contract says a
+pin is the max over the CI arches, and these have not yet seen one — the first CI run is
+the sweep, and the hair-trigger rows below are where to expect a +1. The structured twin
+is the same file without `"type": "unstructured"`, run with the same options; its count
+is the measured one here, not its pin (several structured pins carry +1 of CI slack).
+
+| recipe | plex np=1 | plex np=2 | structured twin np=1 / np=2 | notes |
+|---|---|---|---|---|
+| `plex_box_50_st2` (50x50 quads, ratio 1) | 7 | 7 | `box_50_st2`: 6 / 6 | the twin difference, see below |
+| `plex_box_50_st2`, `-precon_stream -ksp_pc_side right` | 9 | 9 | 9 / 9 | hair-trigger (0.87 of rtol) |
+| `plex_box_50_st2`, `-matfree_removal -ksp_pc_side right` | 9 | 9 | 9 / 9 | identical history to the line above |
+| `plex_box_50_reflect_lb` | 6 | 6 | `box_50_reflect_lb`: 6 / 6 | |
+| `plex_tri_30_st2` (1800 triangles, S4, ratio 0.5) | 5 | 5 | — | |
+| `plex_cube_10_st2` (1000 hexes, ratio 1) | 5 | 5 | `cube_10_st2`: 5 / 5 | 0.76 of rtol |
+| `plex_tet_6_st2` (1296 tets, ratio 0.5) | 5 | 5 | — | |
+| `plex_square_msh` (8 Gmsh triangles) | 4 | 4 | — | |
+| `plex_decades4`, `-matfree_removal -precon_ref_shift -precon_ref_k 4` | 4, 6, 15, 30 | 4, 6, 15, 30 | `box_decades4`: 4, 6, 15, 30 both | hair-trigger (0.94 of rtol) |
+| `plex_decades4`, `-matfree_removal -precon_ref_shift` (default k = 2) | 7, 9, 24, 48 | 7, 8, 24, 48 | `box_decades4`: 7, 8, 24, 48 both | hair-trigger (0.94); group 1 differs |
+
+A multigroup row pins the max over its groups (30, 48), as everywhere else.
+
+**The twin difference is a finding, not a bug.** On a uniform quad/hex box the plex matrix
+IS the structured one to ~1e-15 (verify_plexk, above), but its rows are in a different
+order — plex point order under the simple partitioner, not DMDA order — and PCAIR is not
+permutation-invariant: its CF splitting and its approximate inverses depend on the order
+it walks the rows. So a twin can land an iteration away. Two do, both on the edge of
+rtol on BOTH sides:
+- `plex_box_50_st2`: the structured solve clears rtol at iteration 6 with 1.4% to spare
+  (5.30e-4 against a target of 5.38e-4); the plex one misses at iteration 6 by 0.4%
+  (5.398e-4 against 5.378e-4 — even the preconditioned `r_0` differs in the fourth
+  digit, which is the permutation acting on PCAIR) and converges at 7 with a wide margin
+  (0.07 of rtol). The pin of 7 is safe; another arch could see 6, which passes.
+- `plex_decades4` default k, group 1 serial: 9 against the structured 8, missing rtol at
+  8 by 9%; at np=2 the plex matches the structured 8 (0.94 of rtol). The recipe pins the
+  group max, 48, which is unaffected.
+
+The partitioner moves the same edge: `plex_box_50_st2` at `-n 2` is 7 under the default
+simple partitioner and 6 under `-petscpartitioner_type parmetis` (tri and tet: 5 under
+both). That is why the backend defaults to `simple` — deterministic, and available on
+every CI image, where ParMETIS may not be — and why no recipe passes a partitioner.
+
+**Hair-trigger pins**, the final residual as a fraction of rtol at the pinned iteration
+(np=1 / np=2), i.e. where another arch could need one more: the streaming-only pmat and
+matfree pair (0.87 / 0.71), the two `plex_decades4` group-3 solves (0.94 / 0.94, and
+group 1 of default k at np=2, 0.94), `plex_cube_10_st2` (0.76), `plex_square_msh`
+(0.60 / 0.64). The structured twins of the first two carry exactly that +1 in their
+pins (10, 31, 49), which is the strongest hint of what the CI sweep will ask for. The
+rest clear rtol by 6x or more.
+
+**Checked by hand, not recipes** (2026-09-22, np 1 and 2): every plex problem with
+`-check_matfree -matfree_removal` — matvec differences 2e-16 to 4e-16 against 1e-13,
+composed diagonal **0.0** against the assembled one on every file, triangles and tets
+included; `plex_box_50_st2` and `plex_tri_30_st2` with `-ubolt_coo_two_call` — the
+`-ksp_monitor` history is byte-identical to the one-call run at both rank counts; every
+plex problem with `-flux_vtk x.vtu` at np 1, 2, 4 — the file's `NumberOfCells` totals the
+global cell count (2500, 1800, 1000, 1296, 8, 900) and it carries `scalar_flux`,
+`sigma_t`, `source`; and `-precon_dsa` on a plex file fails with PETSC_ERR_SUP (the DSA
+correction is a DMDA diffusion operator).
+
 ## Matrix-free removal (`-matfree_removal`)
 
 `RemovalTerm` can be applied matrix-free instead of assembled
@@ -1057,6 +1196,11 @@ again, the next lever is `OMP_NUM_THREADS=1`, which trades the threading coverag
    `@echo` label plus the literal `./transportk -problem problems/<file> -options`
    line, serial and `-n 2` variants, with `-ksp_max_it` pinned to the observed
    converged count.
+   `mesh.type` picks the backend: `"structured"` (the default) is the DMDA finite
+   difference ones, `"unstructured"` the DG0 plex one (2D/3D, a box or a mesh file,
+   no `-precon_dsa`); an unstructured quad/hex box is the natural twin of a structured
+   file, and its count goes next to the structured one in "Unstructured iteration
+   counts".
 3. No output files from any recipe: `output.flux_vtk` (and the `-flux_vtk` override)
    are fine on a problem file you run by hand but must not appear in anything a `run_*`
    recipe names — a test run leaves nothing behind.

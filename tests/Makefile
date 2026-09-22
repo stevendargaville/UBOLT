@@ -104,8 +104,10 @@ endif
 	./transportk -problem problems/box_50_inf_medium_ghost.json -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 12
 	@echo "Check 3D cube against the closed form and a reference matrix"
 	./verify_3dk
-# UNSTRUCTURED (Phase 6a): the verify_plexk check and one plex box solve go HERE,
-# once pinned - they wait in run_plex_unpinned (below) until round 2 measures them
+	@echo "Check the unstructured DG0 backend against the structured twins and closed forms"
+	./verify_plexk
+	@echo "Check 2D unstructured quad box, the DG0 twin of box_50_st2"
+	./transportk -problem problems/plex_box_50_st2.json -ksp_max_it 7
 	@echo "Check 3D cube streaming/removal + matrix-free scatter with AIRG"
 	./transportk -problem problems/cube_10_st2.json -ksp_max_it 5
 	@echo "Check 3D cube, reflective left + front + bottom faces"
@@ -436,8 +438,33 @@ run_tests_short_serial:
 	./transportk -problem problems/cube_10_mg4_t05.json -ksp_max_it 5
 	@echo "Test 3D cube, cold cube: zero inflow, a central 0.1 x 0.1 x 0.1 source region and nothing else"
 	./transportk -problem problems/cube_10_cold.json -ksp_max_it 4
-# UNSTRUCTURED (Phase 6a): the serial plex recipes go HERE, once pinned - they
-# wait in run_plex_unpinned (below) until round 2 measures them
+# The unstructured DG0 backend (Phase 6a). The quad/hex files are the
+# structured recipes' twins with "type": "unstructured" added - the same
+# stencil to rounding, but the rows are permuted and PCAIR is not permutation
+# invariant, so a count can land one off the structured one (plex_box_50_st2
+# does); the simplex boxes and the mesh file have no structured twin. Pinned
+# on the measured count, which has not yet seen the CI arches - see
+# ../docs/dev/testing.md, "Unstructured iteration counts"
+	@echo "Test 2D unstructured quad box, pure scattering (ratio 1), twin of box_50_st2"
+	./transportk -problem problems/plex_box_50_st2.json -ksp_max_it 7
+	@echo "Test 2D unstructured quad box, streaming-only pmat"
+	./transportk -problem problems/plex_box_50_st2.json -precon_stream -ksp_pc_side right -ksp_max_it 9
+	@echo "Test 2D unstructured quad box, matrix-free removal (the twin of the line above)"
+	./transportk -problem problems/plex_box_50_st2.json -matfree_removal -ksp_pc_side right -ksp_max_it 9
+	@echo "Test 2D unstructured quad box, reflective left + bottom faces"
+	./transportk -problem problems/plex_box_50_reflect_lb.json -ksp_max_it 6
+	@echo "Test 2D unstructured triangles, S4, scattering ratio 0.5"
+	./transportk -problem problems/plex_tri_30_st2.json -ksp_max_it 5
+	@echo "Test 3D unstructured hex box, pure scattering (ratio 1), twin of cube_10_st2"
+	./transportk -problem problems/plex_cube_10_st2.json -ksp_max_it 5
+	@echo "Test 3D unstructured tetrahedra, scattering ratio 0.5"
+	./transportk -problem problems/plex_tet_6_st2.json -ksp_max_it 5
+	@echo "Test 2D unstructured Gmsh file, Cell Sets materials and Face Sets boundary conditions"
+	./transportk -problem problems/plex_square_msh.json -ksp_max_it 4
+	@echo "Test 2D unstructured reference-shifted pmat, one hierarchy per group (twin of box_decades4)"
+	./transportk -problem problems/plex_decades4.json -matfree_removal -precon_ref_shift -precon_ref_k 4 -ksp_max_it 30
+	@echo "Test 2D unstructured reference-shifted pmat, the default k"
+	./transportk -problem problems/plex_decades4.json -matfree_removal -precon_ref_shift -ksp_max_it 48
 
 # ~~~~~~~~~~~
 # ~~~~~~~~~~~
@@ -617,8 +644,34 @@ run_tests_short_parallel:
 	$(MPIEXEC) -n 2 ./transportk -problem problems/cube_10_mg4_t05.json -ksp_max_it 5
 	@echo "Test 3D cube, cold cube with a central source region in parallel"
 	$(MPIEXEC) -n 2 ./transportk -problem problems/cube_10_cold.json -ksp_max_it 4
-# UNSTRUCTURED (Phase 6a): the parallel verify_plexk runs and the -n 2 plex
-# twins go HERE, once pinned - they wait in run_plex_unpinned (below)
+# The unstructured DG0 backend (Phase 6a). The parallel lines pass nothing
+# extra: the backend's default partitioner is PETSc's "simple", deterministic
+# on every machine. verify_plexk at -n 4 is the first run where both twins
+# split in two directions
+	@echo "Test the unstructured DG0 backend against its structured twins in parallel"
+	$(MPIEXEC) -n 2 ./verify_plexk
+	@echo "Test the unstructured DG0 backend against its structured twins on 4 ranks"
+	$(MPIEXEC) -n 4 ./verify_plexk
+	@echo "Test 2D unstructured quad box, pure scattering in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_box_50_st2.json -ksp_max_it 7
+	@echo "Test 2D unstructured quad box, streaming-only pmat in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_box_50_st2.json -precon_stream -ksp_pc_side right -ksp_max_it 9
+	@echo "Test 2D unstructured quad box, matrix-free removal in parallel (the twin of the line above)"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_box_50_st2.json -matfree_removal -ksp_pc_side right -ksp_max_it 9
+	@echo "Test 2D unstructured quad box, reflective left + bottom faces in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_box_50_reflect_lb.json -ksp_max_it 6
+	@echo "Test 2D unstructured triangles, S4, in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_tri_30_st2.json -ksp_max_it 5
+	@echo "Test 3D unstructured hex box, pure scattering in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_cube_10_st2.json -ksp_max_it 5
+	@echo "Test 3D unstructured tetrahedra in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_tet_6_st2.json -ksp_max_it 5
+	@echo "Test 2D unstructured Gmsh file in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_square_msh.json -ksp_max_it 4
+	@echo "Test 2D unstructured reference-shifted pmat, one hierarchy per group, in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_decades4.json -matfree_removal -precon_ref_shift -precon_ref_k 4 -ksp_max_it 30
+	@echo "Test 2D unstructured reference-shifted pmat, the default k, in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_decades4.json -matfree_removal -precon_ref_shift -ksp_max_it 48
 
 # ~~~~~~~~~~~
 # ~~~~~~~~~~~
@@ -665,79 +718,6 @@ run_tests_parallel:
 	$(MPIEXEC) -n 2 ./transportk -problem problems/box_60_st2.json -ksp_max_it 7
 	@echo "Test 3D cube, three-halves as fine in parallel"
 	$(MPIEXEC) -n 2 ./transportk -problem problems/cube_15_st2.json -ksp_max_it 6
-
-# ~~~~~~~~~~~
-# The unstructured DG0 backend (Phase 6a), NOT YET PINNED
-#
-# Nothing calls this recipe: every -ksp_max_it below is the placeholder PIN_ME,
-# so it cannot run until the counts are measured. Round 2 (the driver wiring)
-# replaces PIN_ME with measured counts - the max over the CI arches, serial and
-# -n 2 separately - and moves each block into the recipe named above it, at
-# the "UNSTRUCTURED (Phase 6a)" marker there. Every plex_* file is the twin of a
-# structured recipe where one exists, so the structured count is the one to
-# compare against. The parallel lines pass nothing extra: the backend's default
-# partitioner is PETSc's "simple", deterministic on every machine
-# ~~~~~~~~~~~
-run_plex_unpinned:
-#
-# -> run_check
-	@echo "Check the unstructured DG0 backend against the structured twins and closed forms"
-	./verify_plexk
-	@echo "Check 2D unstructured quad box, the DG0 twin of box_50_st2"
-	./transportk -problem problems/plex_box_50_st2.json -ksp_max_it PIN_ME
-#
-# -> run_tests_short_serial. The quad/hex files are the structured recipes'
-# twins with "type": "unstructured" added (same stencil to rounding, so the
-# counts should land on the structured ones); the simplex boxes and the mesh
-# file have no structured twin
-	@echo "Test 2D unstructured quad box, pure scattering (ratio 1), twin of box_50_st2"
-	./transportk -problem problems/plex_box_50_st2.json -ksp_max_it PIN_ME
-	@echo "Test 2D unstructured quad box, streaming-only pmat"
-	./transportk -problem problems/plex_box_50_st2.json -precon_stream -ksp_pc_side right -ksp_max_it PIN_ME
-	@echo "Test 2D unstructured quad box, matrix-free removal (the twin of the line above)"
-	./transportk -problem problems/plex_box_50_st2.json -matfree_removal -ksp_pc_side right -ksp_max_it PIN_ME
-	@echo "Test 2D unstructured quad box, reflective left + bottom faces"
-	./transportk -problem problems/plex_box_50_reflect_lb.json -ksp_max_it PIN_ME
-	@echo "Test 2D unstructured triangles, S4, scattering ratio 0.5"
-	./transportk -problem problems/plex_tri_30_st2.json -ksp_max_it PIN_ME
-	@echo "Test 3D unstructured hex box, pure scattering (ratio 1), twin of cube_10_st2"
-	./transportk -problem problems/plex_cube_10_st2.json -ksp_max_it PIN_ME
-	@echo "Test 3D unstructured tetrahedra, scattering ratio 0.5"
-	./transportk -problem problems/plex_tet_6_st2.json -ksp_max_it PIN_ME
-	@echo "Test 2D unstructured Gmsh file, Cell Sets materials and Face Sets boundary conditions"
-	./transportk -problem problems/plex_square_msh.json -ksp_max_it PIN_ME
-	@echo "Test 2D unstructured reference-shifted pmat, one hierarchy per group (twin of box_decades4)"
-	./transportk -problem problems/plex_decades4.json -matfree_removal -precon_ref_shift -precon_ref_k 4 -ksp_max_it PIN_ME
-	@echo "Test 2D unstructured reference-shifted pmat, the default k"
-	./transportk -problem problems/plex_decades4.json -matfree_removal -precon_ref_shift -ksp_max_it PIN_ME
-#
-# -> run_tests_short_parallel
-ifeq ($(PETSC_HAVE_MPIUNI),0)
-	@echo "Test the unstructured DG0 backend against its structured twins in parallel"
-	$(MPIEXEC) -n 2 ./verify_plexk
-	@echo "Test the unstructured DG0 backend against its structured twins on 4 ranks"
-	$(MPIEXEC) -n 4 ./verify_plexk
-	@echo "Test 2D unstructured quad box, pure scattering in parallel"
-	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_box_50_st2.json -ksp_max_it PIN_ME
-	@echo "Test 2D unstructured quad box, streaming-only pmat in parallel"
-	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_box_50_st2.json -precon_stream -ksp_pc_side right -ksp_max_it PIN_ME
-	@echo "Test 2D unstructured quad box, matrix-free removal in parallel (the twin of the line above)"
-	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_box_50_st2.json -matfree_removal -ksp_pc_side right -ksp_max_it PIN_ME
-	@echo "Test 2D unstructured quad box, reflective left + bottom faces in parallel"
-	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_box_50_reflect_lb.json -ksp_max_it PIN_ME
-	@echo "Test 2D unstructured triangles, S4, in parallel"
-	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_tri_30_st2.json -ksp_max_it PIN_ME
-	@echo "Test 3D unstructured hex box, pure scattering in parallel"
-	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_cube_10_st2.json -ksp_max_it PIN_ME
-	@echo "Test 3D unstructured tetrahedra in parallel"
-	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_tet_6_st2.json -ksp_max_it PIN_ME
-	@echo "Test 2D unstructured Gmsh file in parallel"
-	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_square_msh.json -ksp_max_it PIN_ME
-	@echo "Test 2D unstructured reference-shifted pmat, one hierarchy per group, in parallel"
-	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_decades4.json -matfree_removal -precon_ref_shift -precon_ref_k 4 -ksp_max_it PIN_ME
-	@echo "Test 2D unstructured reference-shifted pmat, the default k, in parallel"
-	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_decades4.json -matfree_removal -precon_ref_shift -ksp_max_it PIN_ME
-endif
 
 # ~~~~~~~~~~~
 # Re-capture reference baselines into baselines/
