@@ -1,0 +1,44 @@
+{
+ "_comment": "Unstructured DG0 on a mesh FILE: tests/meshes/square_2x2_tri.msh, the unit square as 8 hand-written Gmsh triangles. Materials by \"Cell Sets\" (1 = the x < 0.5 half, scatterer; 2 = the x >= 0.5 half, absorber) and BCs by \"Face Sets\" value (10 bottom, 11 right, 12 top, 13 left): unit isotropic inflow through the left face, the top reflective (axis-aligned, as reflection requires), the rest cold vacuum. Pins the file reader, cell_sets painting and integer-keyed BCs end to end.",
+ "dimension": 2,
+ "mesh": {
+  "type": "unstructured",
+  "file": "../meshes/square_2x2_tri.msh"
+ },
+ "sn_order": 4,
+ "materials": {
+  "n_groups": 1,
+  "materials": [
+   {
+    "id": 0,
+    "name": "scatterer",
+    "Sigma_t": [2.0],
+    "Sigma_s": [
+     [1.0]
+    ],
+    "Source": [1.0]
+   },
+   {
+    "id": 1,
+    "name": "absorber",
+    "Sigma_t": [10.0],
+    "Sigma_s": [
+     [1.0]
+    ],
+    "Source": [0.0]
+   }
+  ]
+ },
+ "regions": {
+  "cell_sets": {
+   "1": "scatterer",
+   "2": "absorber"
+  }
+ },
+ "boundary_conditions": {
+  "13": {"type": "vacuum", "inflow": 1.0},
+  "12": "reflect",
+  "10": "vacuum",
+  "11": "vacuum"
+ }
+}

@@ -1,0 +1,30 @@
+{
+ "_comment": "The unstructured DG0 twin of box_50_st2.json: the same 50x50 quad box, materials, S2 and 4 pi inflow on every face, only \"type\": \"unstructured\" added - the face names are PETSc's box \"Face Sets\" ids on both backends. DG0 upwind on uniform quads IS the structured FD stencil (to rounding), so this pins the plex count against the structured one.",
+ "dimension": 2,
+ "mesh": {
+  "type": "unstructured",
+  "n_cells": [50, 50],
+  "lengths": [1.0, 1.0]
+ },
+ "sn_order": 2,
+ "materials": {
+  "n_groups": 1,
+  "materials": [
+   {
+    "id": 0,
+    "name": "st2",
+    "Sigma_t": [2.0],
+    "Sigma_s": [
+     [2.0]
+    ],
+    "Source": [1.0]
+   }
+  ]
+ },
+ "boundary_conditions": {
+  "left": {"type": "vacuum", "inflow": 12.566370614359172},
+  "right": {"type": "vacuum", "inflow": 12.566370614359172},
+  "bottom": {"type": "vacuum", "inflow": 12.566370614359172},
+  "top": {"type": "vacuum", "inflow": 12.566370614359172}
+ }
+}

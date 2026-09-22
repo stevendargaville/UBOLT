@@ -41,6 +41,32 @@ per dimension. UBOLT is unitless — the lengths are in whatever unit your cross
 sections are per (a materials file may state `length_unit`; UBOLT does not
 convert, it just trusts you to be consistent).
 
+#### Structured or unstructured?
+`mesh.type` is `"structured"` by default: the DMDA finite-difference backends,
+a box of equal cells per axis. `"unstructured"` is the DG0 upwind backend on a
+DMPlex (2D and 3D only; schema in `docs/problem_files.md`, "Unstructured
+meshes"). Reach for it when the geometry is not a box of boxes:
+- **the geometry needs a mesh file** — curved or slanted material interfaces,
+  a domain that is not a rectangle, a mesh from Gmsh with its physical groups
+  as "Cell Sets" (materials, `regions.cell_sets`) and "Face Sets" (boundary
+  conditions, keyed by integer);
+- **you want triangles/tets** on a box (`"simplex": true`), e.g. to see how the
+  solver behaves on cells whose faces are not axis-aligned.
+
+What it costs: it is **first order, like the FD** — one flux per cell, upwind
+faces — so it resolves nothing a structured box of the same cell size would
+not; on a uniform quad/hex box the two are the same stencil, which is how it
+is verified. It carries more per-row bookkeeping (a face list per cell instead
+of a fixed stencil). **No DSA yet** (`-precon_dsa` errors), so diffusive
+problems stay on the structured backends for now. And reflective faces must be
+axis-aligned: a mesh file can only reflect on the straight x/y/z parts of its
+boundary.
+
+Converting is one line: a structured 2D/3D problem becomes its unstructured
+twin by adding `"type": "unstructured"` to `mesh` — the face names are the
+same "Face Sets" ids on both backends, the paint boxes are tested at the cell
+centroid, and only the output extension changes (`.vtu`).
+
 ### 2. Angles
 `sn_order` is the SN order N, always positive and even. How many ordinates that
 is, is the quadrature's business and differs by dimension: N in 1D, N(N+2)/2 in
@@ -159,7 +185,8 @@ Sigma_t[g]`, so keep a vacuum face in that case regardless of the other
 groups.
 
 ### 6. Output
-`output.flux_vtk` writes the scalar flux (`.vts`/`.vtr`) when the solve
+`output.flux_vtk` writes the scalar flux (`.vts`/`.vtr`, or `.vtu` on an
+unstructured mesh) when the solve
 converges; `-flux_vtk` on the command line overrides it, which is the better
 habit — keep files that are test recipes output-free (a test run leaves
 nothing behind) and opt in from the command line when you want to look:
@@ -231,3 +258,6 @@ your machine.
 | 3D with reflective faces (three-face corner) | `cube_10_reflect_3faces.json` |
 | Heterogeneous 3D (absorber block) | `cube_10_absorber.json` |
 | 3D multigroup | `cube_10_mg4_t05.json` |
+| Unstructured twin of a structured box (one added line) | `plex_box_50_st2.json` (2D), `plex_cube_10_st2.json` (3D) |
+| Unstructured triangles / tets on a box | `plex_tri_30_st2.json` (2D), `plex_tet_6_st2.json` (3D) |
+| Unstructured mesh file, Cell Sets materials, integer-keyed BCs | `plex_square_msh.json` (+ `../meshes/square_2x2_tri.msh`) |
