@@ -88,8 +88,10 @@ public:
    // PETSc's box "Face Sets" values) and integer keys are "Face Sets" values
    // stored as given, so an id is an id whichever way the file spelled it.
    // n_reflect_faces lets a driver ask "all faces reflective?" (the
-   // infinite-medium check) without re-walking the spec - it counts reflective
-   // label ids, so on a file mesh it is only a face count if the ids are
+   // infinite-medium check) without re-walking the spec. It counts reflective
+   // LABEL IDS, which is a face count on a box (one id per face) but not
+   // necessarily on a file mesh, where one "Face Sets" value can cover any
+   // number of boundary faces
    BCSpec bcs;
    PetscInt n_reflect_faces = 0;
 
