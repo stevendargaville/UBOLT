@@ -348,8 +348,8 @@ previous one's verification has passed and been reviewed.
     boundary treatment costs nothing visible in L2 (1.5% at n = 8, 0.05% at n = 256).
     Two things to watch: (i) the triangle L-INFINITY error converges below first order
     (0.72-0.91 between the finest levels), largest along the reflective walls —
-    unverified guess: every square split along the same diagonal, with S4 directions
-    parallel to it; (ii) tets on the pure absorber at rtol 1e-12 take 6 -> 19 -> 22
+    unexplained (a guess that every square is split along the same diagonal is refuted:
+    PETSc's simplex box mixes the two diagonal directions); (ii) tets on the pure absorber at rtol 1e-12 take 6 -> 19 -> 22
     iterations for n = 8 -> 32 where hexes take 5 -> 7 (at the default rtol the counts
     are normal, 5-6). Iteration counts on simplices creep up ~1 per 4x refinement (2D
     ratio 1: 6, 7, 7, 8 at n = 30..240; tets 6, 7, 8) where quads/hexes match the
@@ -359,6 +359,15 @@ previous one's verification has passed and been reviewed.
     costs ~4% of a serial run in host-side create and 8-13% more peak memory than the
     DMDA on the same mesh; PCAIR setup is 85-95% of both. Debug-arch sweep: every count
     equals the opt pin at np 1 and 2, no leaks under -malloc_dump.
+  - Seen in the report figures (23 Sep 2026): a quarter box with reflective faces differs
+    from the full box's quadrant by O(h) — max 0.080 / 0.037 / 0.018 at n = 25 / 50 / 100
+    on a flux of order 10, unchanged by rtol — on the STRUCTURED and the unstructured
+    backend alike (the two agree to 2e-10 on the quarter problem). The reflective row
+    equates the two ordinates INSIDE the boundary cell where the full box sees the
+    mirror image one cell away: a first-order boundary approximation of the same kind
+    as the Dirichlet-cell vacuum row, and the same ghost-flux treatment would remove
+    both. Not a Phase 6a defect; recorded because "reflect = symmetry to solver
+    tolerance" is the natural test to reach for and it is not true of this convention.
   - Found by the debug sweep and fixed (23 Sep 2026): the first cut rejected a reflective
     axis plane wherever it met a slanted vacuum face (the partner row is Dirichlet there,
     which is fine; only a REFLECTIVE partner is the unsupported single-cell-wide case),
