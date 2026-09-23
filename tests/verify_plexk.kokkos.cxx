@@ -1072,13 +1072,146 @@ static PetscErrorCode CheckErrorPaths(PetscBool *ok)
       if (VecDestroy(&psi) || MatDestroy(&A) || disc.destroy()) *ok = PETSC_FALSE;
    }
 
+   // A mesh file whose boundary is not all axis-aligned: the right triangle
+   // meshes/tri_slanted.msh (4 cells; Face Sets 10 bottom, 13 left, 12 the
+   // hypotenuse). Reflecting on the hypotenuse must be rejected (its mirror of
+   // an ordinate is not an ordinate), and a boundary condition on a "Face
+   // Sets" value no face carries must be rejected (a mistyped id, not a
+   // silently cold face). Reflecting on the axis-aligned bottom with the
+   // hypotenuse a vacuum face must be ACCEPTED even though some reflection
+   // partners come in through the hypotenuse - those partners are Dirichlet
+   // rows, a perfectly good pair of equations - which is the symmetry-reduced
+   // geometry a file mesh exists for; that positive case is below
+   {
+      SNQuadrature2D quad;
+      PlexMeshSpec mesh;
+      mesh.dimension = 2;
+      mesh.file = "meshes/tri_slanted.msh";
+
+      {
+         PhaseSpace ps;
+         UnstructuredDG0 disc;
+         BCSpec bcs;
+         bcs.set(12, BCType::REFLECT);
+         n_cases++;
+         if (quad.create(2) || disc.create_mesh(PETSC_COMM_WORLD, mesh) || \
+             ps.create(PETSC_COMM_WORLD, disc.n_global_cells(), quad.n_angles())) *ok = PETSC_FALSE;
+         else if (disc.create(ps, quad, bcs)) n_rejected++;
+         if (disc.destroy()) *ok = PETSC_FALSE;
+      }
+      {
+         PhaseSpace ps;
+         UnstructuredDG0 disc;
+         BCSpec bcs;
+         bcs.set(99, BCType::REFLECT);
+         n_cases++;
+         if (disc.create_mesh(PETSC_COMM_WORLD, mesh) || \
+             ps.create(PETSC_COMM_WORLD, disc.n_global_cells(), quad.n_angles())) *ok = PETSC_FALSE;
+         else if (disc.create(ps, quad, bcs)) n_rejected++;
+         if (disc.destroy()) *ok = PETSC_FALSE;
+      }
+   }
+
    PetscCall(PetscPopErrorHandler());
 
    if (n_rejected != n_cases) *ok = PETSC_FALSE;
    PetscCall(PetscPrintf(PETSC_COMM_WORLD, \
-      "  error paths (reflection partner on a BC row, cell sets without the label, 2D quadrature on a 3D " \
-      "mesh, .vts on the plex): %" \
+      "  error paths (reflection partner on a reflective row, cell sets without the label, 2D quadrature on " \
+      "a 3D mesh, .vts on the plex, reflect on a slanted face, a Face Sets value no face carries): %" \
       PetscInt_FMT " of %" PetscInt_FMT " rejected\n", n_rejected, n_cases));
+
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+// The symmetry-reduced case a mesh file exists for: a reflective axis plane
+// meeting a slanted vacuum boundary. On meshes/tri_slanted.msh the bottom
+// (Face Sets 10) reflects and the hypotenuse (12) and the left face (13) are
+// vacuum, the left one driven. In the cell at the right-angle corner and the
+// two cells along the hypotenuse, some reflection partners come in through
+// the hypotenuse and are therefore Dirichlet rows - the configuration the
+// backend must accept (its rejection is the reflective-partner case above).
+// Checked: create succeeds, the row classes are what the geometry says (a
+// reflective row's partner column is a Dirichlet row for at least one row),
+// the solve converges, and the solution is inside the discrete bounds
+static PetscErrorCode CheckSlantedReflect(PetscBool *ok)
+{
+   SNQuadrature2D quad;
+   MaterialSpec mats;
+   PhaseSpace ps;
+   UnstructuredDG0 disc;
+   StreamingTermDG0 streaming;
+   PetscIntKokkosView mat_id_d;
+   BCSpec bcs;
+   PlexMeshSpec mesh;
+   Solve s;
+   Vec b = NULL, psi = NULL;
+   std::map<PetscInt, PetscInt> no_cell_sets;
+   PetscBool converged = PETSC_FALSE;
+   PetscReal psi_min = 0.0, psi_max = 0.0;
+   PetscInt n_reflect = 0, n_dirichlet = 0;
+
+   PetscFunctionBeginUser;
+
+   mesh.dimension = 2;
+   mesh.file = "meshes/tri_slanted.msh";
+   bcs.set(10, BCType::REFLECT);
+   bcs.set(13, BCType::VACUUM);
+   bcs.set_inflow(13, 1.0);
+   bcs.set(12, BCType::VACUUM);
+
+   PetscCall(quad.create(4));
+   PetscCall(mats.create(1, 1));
+   PetscCall(mats.set_sigma_t(0, 0, 1.0));
+   PetscCall(mats.set_sigma_s(0, 0, 0, 0.0));
+   PetscCall(mats.set_source(0, 0, 0.0));
+
+   PetscCall(disc.create_mesh(PETSC_COMM_WORLD, mesh));
+   PetscCall(ps.create(PETSC_COMM_WORLD, disc.n_global_cells(), quad.n_angles()));
+   PetscCall(disc.create(ps, quad, bcs));
+   PetscCall(streaming.create(ps, disc));
+   PetscCall(disc.paint_cell_sets(0, no_cell_sets, mat_id_d));
+
+   // Count the row classes off the boundary info
+   {
+      auto is_bc_h = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), disc.boundary_info().is_bc_row_d);
+      auto reflect_h = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), disc.boundary_info().reflect_slot_d);
+      PetscInt local[2] = {0, 0}, global[2] = {0, 0};
+      for (PetscInt r = 0; r < ps.local_rows(); r++) {
+         if (!is_bc_h(r)) continue;
+         if (reflect_h(r) >= 0) local[0]++;
+         else local[1]++;
+      }
+      PetscCallMPI(MPI_Allreduce(local, global, 2, MPIU_INT, MPI_SUM, PETSC_COMM_WORLD));
+      n_reflect = global[0];
+      n_dirichlet = global[1];
+   }
+
+   PetscCall(BuildSolve(ps, disc, streaming, quad, mats, mat_id_d, s));
+   PetscCall(MatCreateVecs(s.op.assembled_mat(), &psi, &b));
+   PetscCall(FillRhs(ps, disc, quad, mats, mat_id_d, b));
+   PetscCall(SolveTight(s, b, psi, &converged));
+   PetscCall(VecMin(psi, NULL, &psi_min));
+   PetscCall(VecMax(psi, NULL, &psi_max));
+
+   // No source, unit isotropic inflow shared over the ordinates: every angular
+   // flux lies in [0, 1 / sum_weights]
+   const PetscReal bound = 1.0 / PetscRealPart(quad.sum_weights());
+   const PetscBool in_bounds = (PetscBool)(psi_min >= -1e-12 && psi_max <= bound * (1.0 + 1e-12));
+   // The right-angle corner cell has the reflective bottom AND the driven
+   // left face, the two hypotenuse cells the reflective bottom or the vacuum
+   // hypotenuse: reflective rows and Dirichlet rows must both exist
+   if (!converged || !in_bounds || n_reflect == 0 || n_dirichlet == 0) *ok = PETSC_FALSE;
+   PetscCall(PetscPrintf(PETSC_COMM_WORLD, "  reflective plane meeting a slanted vacuum face (meshes/tri_slanted.msh, S4): " \
+      "%" PetscInt_FMT " reflective and %" PetscInt_FMT " Dirichlet rows, %s, psi in [%.3e, %.3e] against " \
+      "[0, %.6f]\n", n_reflect, n_dirichlet, converged ? "converged" : "DID NOT CONVERGE", (double)psi_min, \
+      (double)psi_max, (double)bound));
+
+   PetscCall(VecDestroy(&psi));
+   PetscCall(VecDestroy(&b));
+   PetscCall(DestroySolve(s));
+   PetscCall(disc.destroy());
 
    PetscFunctionReturn(PETSC_SUCCESS);
 }
@@ -1182,6 +1315,7 @@ int main(int argc, char **args) {
    // ~~~~~~~~~~
    // 5. Error paths
    // ~~~~~~~~~~
+   PetscCall(CheckSlantedReflect(&ok));
    PetscCall(CheckErrorPaths(&ok));
 
    if (!ok) PetscCall(PetscFPrintf(PETSC_COMM_WORLD, stderr, "Unstructured DG0 verification FAILED\n"));

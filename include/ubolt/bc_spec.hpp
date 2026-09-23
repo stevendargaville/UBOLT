@@ -93,6 +93,11 @@ public:
       return found == map_.end() ? BCFace() : found->second;
    }
 
+   // Every label id the spec was given something for. A backend checks these
+   // against the faces its mesh actually has, so a boundary condition on a
+   // label no face carries is an error rather than a silently cold face
+   const std::map<PetscInt, BCFace> &faces() const { return map_; }
+
 private:
    std::map<PetscInt, BCFace> map_;
    VacuumTreatment vacuum_treatment_ = VacuumTreatment::DIRICHLET_CELL;

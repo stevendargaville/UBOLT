@@ -601,9 +601,16 @@ rank 0 owns anything, or that either backend numbers its rows naturally.
    structured `FACE_*` constant of that id names, exactly (simplex and tensor boxes get
    the label from different PETSc code paths).
 5. **Error paths**, through `PetscReturnErrorHandler`: a reflection partner that is
-   itself a BC row (reflect on both x faces of a one-cell-wide box), `cell_sets` on a
-   mesh with no "Cell Sets" label, a 2D quadrature on a 3D mesh, and a `.vts` name on the
-   plex. All four must be rejected.
+   itself a REFLECTIVE row (reflect on both x faces of a one-cell-wide box), `cell_sets`
+   on a mesh with no "Cell Sets" label, a 2D quadrature on a 3D mesh, a `.vts` name on
+   the plex, reflect on the slanted hypotenuse of `tests/meshes/tri_slanted.msh` (a
+   4-triangle right triangle), and a boundary condition on a "Face Sets" value no face
+   carries. All six must be rejected. The POSITIVE twin of the slanted case is checked
+   too: reflect on that mesh's axis-aligned bottom with the hypotenuse a vacuum face
+   must be accepted (some reflection partners there are Dirichlet rows, the
+   symmetry-reduced geometry a file mesh exists for), converge, and stay inside the
+   discrete bounds - found by the debug-arch sweep of 23 Sep 2026, which the first cut
+   rejected with a misleading "single-cell-wide" message.
 6. **VTU output**: writes a `.vtu` into the current directory, reads it back on rank 0
    after a barrier and requires the `<Piece NumberOfCells>` entries to sum to the global
    cell count — PETSc's writer writes every cell of a rank's local mesh unless a "vtk"
@@ -683,6 +690,14 @@ group 1 of default k at np=2, 0.94), `plex_cube_10_st2` (0.76), `plex_square_msh
 (0.60 / 0.64). The structured twins of the first two carry exactly that +1 in their
 pins (10, 31, 49), which is the strongest hint of what the CI sweep will ask for. The
 rest clear rtol by 6x or more.
+
+**Second-arch sweep** (2026-09-23, `arch-linux-c-debug` against a debug-built PFLARE
+main): build with `-Wall -Werror`, `check`, `tests_short` and `tests` all exit 0; every
+plex recipe and every structured twin converges in EXACTLY the opt count above at np 1
+and np 2 (per group too), with the same rtol margins to three digits; `-malloc_dump`
+reports nothing unfreed on `verify_plexk` (np 1, 2, 3) and on the plex solves with and
+without `.vtu` output. One structured recipe is the sharpest edge in the whole suite:
+`box_50_st2` at np 2 clears rtol at its pin of 6 by 0.013%.
 
 **Checked by hand, not recipes** (2026-09-22, np 1 and 2): every plex problem with
 `-check_matfree -matfree_removal` — matvec differences 2e-16 to 4e-16 against 1e-13,

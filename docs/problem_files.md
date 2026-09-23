@@ -211,7 +211,10 @@ ids are named. The value is the same bare string or `{"type", "inflow",
 "window"}` object. A name and an integer reaching the same id (`"left"` and
 `"4"` in 2D) is an error, and an integer key on a structured mesh is an error.
 Boundary faces with no "Face Sets" value, or a value the file does not list,
-are cold vacuum - the same default as an unset face name.
+are cold vacuum - the same default as an unset face name. The other way round
+is an error: a boundary condition on a "Face Sets" value that NO boundary face
+of the mesh carries (a mistyped id) is rejected when the backend classifies
+the faces, rather than leaving the face you meant silently cold.
 
 Per face, what the rows do is the structured rule transplanted:
 - **reflect needs an axis-aligned face.** The mirrored direction of an
@@ -219,7 +222,18 @@ Per face, what the rows do is the structured rule transplanted:
   face whose outward normal is not along x, y or z is an error when the
   backend classifies it. Boxes of either cell shape have only axis-aligned
   boundary faces; a file mesh can reflect on the straight axis-aligned parts
-  of its boundary.
+  of its boundary, INCLUDING where such a plane meets a slanted or curved
+  vacuum boundary (the symmetry-reduced quarter geometry): the reflection
+  partner of a direction there may itself be a Dirichlet row, which is fine.
+  What is rejected is a partner that is itself reflective - a single-cell-wide
+  direction between two reflective faces.
+- **a direction with nowhere to come from.** With the Dirichlet-cell BC
+  convention every row whose direction enters through a vacuum face is
+  prescribed, so a mesh that is one cell wide in a direction with vacuum on
+  both sides prescribes EVERY row of EVERY angle that has a component along
+  it; a 1 x N box with vacuum everywhere "solves" to its inflow (zero on cold
+  faces) in zero iterations. That is the convention, not a bug, and the
+  structured backends do the same - keep at least two cells per direction.
 - **a `window` is tested at the face centroid**: its coordinates along the
   face's tangential axes - the axes other than the dominant axis of the
   outward normal, ascending axis order - inclusive at both ends. On a quad/hex
@@ -230,7 +244,8 @@ Per face, what the rows do is the structured rule transplanted:
   incoming face in axis order" rule.
 
 Output is `.vtu` (an unstructured grid), with the same `scalar_flux`,
-`sigma_t` and `source` cell fields as the structured files.
+`sigma_t` and `source` cell fields as the structured files, plus a `Rank`
+cell field PETSc's writer always adds (which rank owned the cell).
 
 Parallel: the mesh is distributed by PETSc's **`simple`** partitioner by
 default - deterministic on every machine and CI image, so iteration counts

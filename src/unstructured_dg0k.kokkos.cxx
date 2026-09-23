@@ -480,6 +480,20 @@ PetscErrorCode UnstructuredDG0::create_common(PhaseSpace &ps, PetscInt quad_dim,
    }
    PetscCall(CollectiveFailure(comm_, failed, message));
 
+   // Every label the BCSpec names has to be on some boundary face of the mesh,
+   // somewhere: a boundary condition on a "Face Sets" value no face carries is
+   // a mistyped id, and the alternative is a face the user meant to drive or
+   // reflect silently going cold. Collective - a rank may own no faces at all
+   for (const auto &entry : bcs.faces()) {
+      PetscMPIInt seen = 0, any = 0;
+      for (const PetscInt value : face_label_h_) {
+         if (value == entry.first) seen = 1;
+      }
+      PetscCallMPI(MPI_Allreduce(&seen, &any, 1, MPI_INT, MPI_MAX, comm_));
+      PetscCheck(any, comm_, PETSC_ERR_ARG_WRONG, "a boundary condition was given for \"Face Sets\" value %" \
+         PetscInt_FMT " but no boundary face of the mesh carries it", entry.first);
+   }
+
    // ~~~~~~~~~~
    // The ordinates, flattened (a * 3 + d) - the layout the device view has,
    // so the host classification reads them exactly as the fill does
@@ -582,17 +596,25 @@ PetscErrorCode UnstructuredDG0::create_common(PhaseSpace &ps, PetscInt quad_dim,
             }
 
             // The partner is outgoing through every face this direction came
-            // in through, so its row is a real unknown - unless the cell has
-            // boundary faces on both sides of an axis (a single-cell-wide
-            // direction), which there is no sensible matrix for
+            // in through. Its row may still be a boundary row: coming in
+            // through a VACUUM face - a cell where a reflective axis plane
+            // meets a slanted or curved vacuum boundary, the usual
+            // symmetry-reduced geometry - makes it a Dirichlet row, and
+            // psi(a) = psi(partner) = the inflow is a perfectly good pair of
+            // equations. Coming in through another REFLECTIVE face is not: the
+            // two rows would each define the other (a single-cell-wide
+            // direction between two reflective faces), and there is no
+            // sensible matrix for that
             for (PetscInt lf = 0; lf < n_faces; lf++) {
                const PetscInt kf = k0 + lf;
                if (face_neighbour_row_h_[kf] >= 0) continue;
+               if (bcs.type(face_label_h_[kf]) != BCType::REFLECT) continue;
                if (PetscRealPart(FaceFlux(omega.data(), partner, face_nA_h_.data(), kf)) < 0.0 && !failed) {
                   failed = PETSC_TRUE;
                   PetscCall(PetscSNPrintf(message, sizeof(message), "the reflection partner of cell %" \
-                     PetscInt_FMT " angle %" PetscInt_FMT " is itself a boundary row - a reflective " \
-                     "face on a single-cell-wide direction is not supported", cell_of_local_[k], a));
+                     PetscInt_FMT " angle %" PetscInt_FMT " is itself a reflective boundary row - a " \
+                     "reflective face on a single-cell-wide direction between two reflective faces is not " \
+                     "supported", cell_of_local_[k], a));
                }
             }
 

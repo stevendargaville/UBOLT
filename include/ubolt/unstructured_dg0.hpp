@@ -55,10 +55,15 @@ struct PETSC_VISIBILITY_PUBLIC PlexMeshSpec {
 // The partner composes the quadrature's per-axis reflection maps over the axes
 // of the incoming reflective faces, so a reflective face must be AXIS-ALIGNED
 // (the mirror of an ordinate in a general plane is not an ordinate): anything
-// else is PETSC_ERR_SUP. The winning face at a Dirichlet corner is the incoming
-// vacuum face with the lowest DOMINANT axis of its normal (x < y < z), ties by
-// face point number - on a box that is the structured "first vacuum incoming
-// face in axis order x, y, z". A window is tested on the face CENTROID's
+// else is PETSC_ERR_SUP. The partner's own row may be Dirichlet - a cell where
+// a reflective plane meets a slanted vacuum face - but not itself reflective
+// (a single-cell-wide direction between two reflective faces), which is also
+// PETSC_ERR_SUP. A label the BCSpec names that no boundary face carries is an
+// error too, so a mistyped "Face Sets" id cannot silently leave a face cold.
+// The winning face at a Dirichlet corner is the incoming vacuum face with the
+// lowest DOMINANT axis of its normal (x < y < z), ties by face point number -
+// on a box that is the structured "first vacuum incoming face in axis order
+// x, y, z". A window is tested on the face CENTROID's
 // coordinates along the non-dominant axes in ascending axis order, inclusive -
 // the boundary cell's centre on a quad/hex box, as in the structured backends
 //
