@@ -1005,21 +1005,25 @@ like the most arch-sensitive thing in the suite; CI ran green with it. The ghost
 re-pin put them on the local opt count like every other pin, so a DSA recipe is the
 first place to look if CI asks for +1.
 
-**`-precon_stream` + `-precon_dsa` is not supported and no recipe combines
-them.** In 1D and 2D the combination does not converge in 300 iterations — but
+**`-precon_stream` + `-precon_dsa` buys nothing, but no longer breaks
+anything.** In 1D and 2D the combination does not converge in 300 iterations — but
 neither does `-precon_stream` alone on those files. A streaming-only pmat
 against `Sigma_t 100` is the pre-existing strong-removal problem (the Phase 5
 open question in `TODO.md`), not something DSA made worse or was expected to
 fix; the correction is being added to a preconditioner that is already failing
 on the hyperbolic part. 3D is the one case where the two can be told apart, and
-it is worth knowing about: `cube_diffusive.json` with `-precon_stream` alone
-converges in 47, and adding `-precon_dsa` to it does **not** converge in 300.
-That is a genuine interaction rather than an inherited failure. The obvious
-suspect is that a DSA present switches the composite's residual updates onto
-the amat (see below), so the stages after index 0 are handed a residual built
-with the full operator while PCAIR is still set up on a streaming-only pmat —
-but that has not been established, and the combination is unsupported either
-way. Open, and recorded in `TODO.md`.
+it was worth knowing about: under Dirichlet-cell vacuum `cube_diffusive.json`
+with `-precon_stream` alone converges in 35 (47 before the isotropic-source
+change), and adding `-precon_dsa` to it does **not** converge in 300. Under the
+ghost-flux default both take **44** (serial and `-n 2`), with different residual
+histories — the DSA stage is active, it just does not pay on a pmat with no
+removal to attach to. The interaction was a Dirichlet-cell artefact, most likely
+the DSA BC mask: every inflow boundary cell has its inflow ordinates masked out
+of the restriction and the prolongation, so the diffusion solve sees a partial
+moment there and corrects only half the angles, and a streaming-only pmat
+cannot absorb that. Ghost-flux leaves the mask empty on an all-vacuum problem.
+The 3D run is pinned (`-ksp_max_it 44`) as the regression test for it; the
+1D/2D files are not, since they fail without DSA too.
 
 **`-diag_scale` + `-precon_dsa` is not special-cased and not recommended.** The
 two are mechanically compatible — nothing errors — but scaling the assembled
@@ -1190,14 +1194,36 @@ every table above, which is the re-attachment claim.
 
 On a MISMATCHED shifted pmat it was fragile under Dirichlet-cell: 1D at k = 2 was
 fine (13 on the thick group against the 42 it took without DSA) while 2D at k = 2
-took **179** on the group where `-precon_ref_k 4` takes 11. **The DSA recipes
-therefore pin exact coverage only.** Under the ghost-flux default the fragility is
-gone on these files — 10 on the thick group in 1D (against 44 without DSA) and 10 in
-2D (np 1 and 2), i.e. slightly better than exact coverage — which says the 179 lived
-in the Dirichlet boundary rows rather than in the mismatch itself. That is one
-problem pair, not a claim; the recipes still pin exact coverage only, and the
-amat/pmat interaction recorded for `-precon_stream -precon_dsa` in `TODO.md` is
-still open.
+took **179** on the group where `-precon_ref_k 4` takes 11, so the DSA recipes
+pinned exact coverage only. Under the ghost-flux default the fragility is gone,
+and the sweep below (2026-09-25, local opt, with the pins lifted) is why the
+default-k + DSA runs are now recipes too (1D pinned at 11, 2D at 10, serial and
+`-n 2`). Per-group iterations, `-n 2` in brackets where it differs:
+
+| file | k (worst mismatch) | no DSA | `-precon_dsa` |
+|---|---|---|---|
+| `slab_decades4` | 1 (31.6) | 94, 21, 21, 68 | 52, 12, 9, 16 |
+| `slab_decades4` | 2, the default (3.16) | 13, 11, 28, 44 | 11, 11, 7, 10 |
+| `slab_decades4` | 3 (3.16) | 4, 8, 28, 44 | 4, 4, 7, 10 |
+| `slab_decades4` | 4 (exact) | 4, 8, 14, 22 | 4, 4, 5, 11 |
+| `box_decades4` | 1 (31.6) | 27, 15, 21, 83 (82) | 20, 11, 10, 19 |
+| `box_decades4` | 2, the default (3.16) | 7, 8, 27, 51 | 7, 8, 9, 10 (7, 8, 8, 10) |
+| `box_decades4` | 3 (3.16) | 4, 6, 27, 51 (7, 8, 15, 29) | 4, 4, 9, 10 (7, 8, 6, 11) |
+| `box_decades4` | 4 (exact) | 4, 6, 15, 29 | 4, 4, 6, 11 |
+
+Every mismatched DSA run converges, even one shared pmat at a mismatch of 31.6,
+and on the thick group mismatched + DSA matches or beats exact coverage + DSA.
+(The 2D k = 3 rows are not the same pmats serial and at `-n 2`: the decades
+log-alphas are exactly equally spaced, so at k = 3 any adjacent pair can share
+the one two-group bin at the same worst mismatch, and which pair gets it is
+decided by last-bit rounding in the parallel log-mean. Serial pairs the thick
+groups, `-n 2` the thin ones. A tie in `RefShiftPmats::bin_alphas`, not a DSA
+effect, and why no recipe pins k = 3.) The `mg4_t05` files have at most a 1.12
+mismatch and DSA takes 5-6 in 1D and 4-5 in 3D at every k. The 179 lived in
+the Dirichlet-cell boundary rows, the same DSA-mask artefact as the
+`-precon_stream -precon_dsa` divergence (see the DSA section).
+`slab_decades4_stream0` + DSA is a clean error by design (a void group has no
+`D = 1/(3 Sigma_t)`).
 
 ### Streaming-only groups
 A group whose `Sigma_t` is identically zero has no ratio to any reference — and
