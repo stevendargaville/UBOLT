@@ -551,7 +551,10 @@ Every other recipe measures its Dirichlet-cell count, including every all-reflec
   unaccelerated serial/parallel gap, 123 against 95, is gone: 113 / 114), random8
   11 -> 8, `cube_diffusive` 10 -> 8, and the additive composite 23 -> 14 — but worse on
   `cube_diffusive_yreflect`, 10 -> 12. Off the recipes, the mismatched 2D ref-shift +
-  DSA that took 179 on its thick group now takes 10 (see "DSA on a shifted pmat").
+  DSA that took 179 on its thick group now takes 10 (see "DSA on a shifted pmat"),
+  and `cube_diffusive -precon_stream -precon_dsa` converges in 44 where it diverged
+  in 300 — both were Dirichlet-cell artefacts of the DSA boundary mask, and both are
+  now pinned.
 - DSA needed no change to its Marshak face for the switch: scaling that coefficient over
   0.25-1.0 moved no DSA count by more than 1.
 
@@ -865,10 +868,12 @@ Because the assembled matrix already *is* a streaming-only pmat, this mode **imp
 ignored (it would build a second copy of the same values). `-diag_scale` is a checked
 error in this mode — it scales the assembled operator, which here is the streaming part
 alone, so the matrix-free removal and scatter would stay unscaled. And because it
-implies `-precon_stream`, it inherits that flag's unsupported combination with
-`-precon_dsa` (see the DSA section below) — measured identical on
-`cube_diffusive.json`: 35 iterations either way alone, neither converging in 300 with
-`-precon_dsa` added. No recipe combines them, as none does for `-precon_stream`.
+implies `-precon_stream`, it inherits that flag's behaviour with `-precon_dsa`
+(see the DSA section below) — measured identical on `cube_diffusive.json`. Under
+Dirichlet-cell vacuum that was 35 iterations either way alone, and neither converged
+in 300 with `-precon_dsa` added. Under the ghost-flux default it is 44 either way,
+with or without `-precon_dsa`, serial and `-n 2`. The `-precon_stream -precon_dsa`
+recipe pins that; this mode has no recipe of its own.
 
 **The counts are the `-precon_stream` counts; the residual histories are not.** Same
 operator, same pmat, same Jacobi diagonal — but the assembled path sums streaming and
@@ -1186,9 +1191,11 @@ mismatched group on a homogeneous problem where these have two mismatched groups
 at once on a heterogeneous one at 10 mean free paths per cell.
 
 ### DSA on a shifted pmat
-DSA cannot attach to a bare streaming pmat — structurally, not by degree. Both
-`-matfree_removal -precon_dsa` rows above diverge, as `-precon_stream
--precon_dsa` already does (see the DSA section). On an EXACTLY covered shifted
+DSA cannot attach to a bare streaming pmat — structurally, not by degree. The
+bare-L + DSA row above diverges. Where a bare streaming pmat does converge
+(`cube_diffusive`, 44), adding DSA leaves it at 44: it no longer breaks the solve
+as it did under Dirichlet-cell, but it has nothing to attach to (see the DSA
+section). On an EXACTLY covered shifted
 pmat it lands on the full-pmat-plus-DSA counts exactly, 11 on the thick group in
 every table above, which is the re-attachment claim.
 
