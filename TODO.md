@@ -943,6 +943,18 @@ experiments stay on the campaign branch until PFLARE's PCAIR `PCApplyTranspose` 
       default by O(h) at the boundary cell, and is what DG does anyway. It changes every
       solution at boundary cells, so: regenerate all 24 baselines deliberately, re-pin
       every recipe, and rewrite `DSAPrecon`'s Marshak face. Its own commit series.
+- [ ] Linear DG (DG1) upwind on the DMPlex backend — after ghost-flux is the default,
+      because a DG face flux IS the ghost-flux inflow and there is no Dirichlet-cell
+      analogue for a multi-dof cell. Phase 6a left it out ("DG1+" in the not-in-this-cut
+      list). The broken section and the variable-nnz COO (`Discretisation::set_pattern`)
+      carry over; `row = cell * n_angles + angle` does NOT, since a DG1 cell has
+      `n_basis` dofs. Decide the layout first — `(cell, basis, angle)` rows vs a per-cell
+      dof block — because it reaches everything that goes through the slot maps
+      (removal, scattering, `UboltAngularIntegral`, `GroupTransfer`, the BC masks,
+      output). New work: volume + face quadrature kernels, per-cell mass matrices,
+      reflective faces at the same order. Verify: second order against the exact
+      discrete-ordinates solution DG0 was measured on (DG0 is first order on every cell
+      shape), and pinned iterations on the plex recipes.
 - [ ] The half-quadrature preconditioner and an `-adjoint` path — blocked on PFLARE's
       PCAIR `PCApplyTranspose`; see the campaign branch. On the DG0 backend the
       transposed half needs the cell-volume similarity (`unstructured_dg0.hpp`):
