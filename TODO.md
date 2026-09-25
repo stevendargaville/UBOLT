@@ -4,6 +4,14 @@ Full plan and architecture rationale: see the approved plan (design discussion J
 Each phase is a reviewable unit with its own verification. Do not start a phase before the
 previous one's verification has passed and been reviewed.
 
+## Current state (updated 2026-09-25)
+Last landed: Phase 6a (DG0 on DMPlex, PR #2) and the ghost-flux vacuum treatment as the
+default (PR #4, Phase 5 postscript). Next up: **linear DG (DG1) on the plex backend** —
+the item under the ghost-flux postscript; decide the row layout first. Other open items:
+DSA on the plex backend and 6b CG-SUPG (Phase 6), the mismatched ref-shift + DSA
+follow-up (Phase 5, likely closed by ghost-flux), and the half-quadrature transposed PC
+(blocked on PFLARE's PCAIR `PCApplyTranspose`).
+
 ## Phase 0 — Scaffolding + baseline capture (no behavior change)
 - [x] Directory tree, top Makefile (library skeleton), tests/Makefile (PFLARE-style recipes)
 - [x] Bookkeeping: CLAUDE.md, AGENTS.md, TODO.md, docs/dev/{testing,kokkos}.md
@@ -330,8 +338,10 @@ previous one's verification has passed and been reviewed.
       `paint_boxes` by centroid plus "Cell Sets" -> material. Output: `.vtu`. Not in this
       cut: DSA (a DMDA operator), DG1+. The ghost-flux vacuum BC landed afterwards, on
       top of the structured ghost-flux commit (see the postscript below).
-  - Measured (22 Sep 2026, opt arch, pinned exactly pending the first CI sweep; table in
-    docs/dev/testing.md): the quad/hex twins match their structured counts (reflect_lb
+  - Measured (22 Sep 2026, opt arch, under the then-default Dirichlet-cell treatment;
+    the pins have since run green on every CI arch, and were re-pinned for the
+    ghost-flux default — the plex_box_50_st2 gap below closed there, both boxes take 7;
+    table in docs/dev/testing.md): the quad/hex twins match their structured counts (reflect_lb
     6, cube 5, streaming-only pmat 9, ref-shift k=4 4/6/15/30) EXCEPT `plex_box_50_st2`,
     7 against 6 — the matrices agree to ~1e-15 but the rows are permuted and PCAIR is
     not permutation-invariant, and both solves sit on the rtol edge at iteration 6
@@ -378,6 +388,11 @@ previous one's verification has passed and been reviewed.
   - Found in the driver pass: the plex `.vtu` arrays were named `scalar_flux(null)` —
     PETSc's writer appends the section's field name, and a section with no fields gives
     it a null one. Fixed by giving the output twin's section one empty-named field.
+- [ ] DSA on the plex backend. 6a left it out (`DSAPrecon` is a DMDA operator), and it is
+      the biggest gap that cut left: without it a diffusive problem costs simplices
+      3.3-3.5x the structured+DSA count, quads/hexes 2.6x (see the 6a measurements
+      above). Needs a cell-centred diffusion operator on the plex (two-point flux across
+      each face, harmonic-mean D, Marshak on vacuum faces) behind the same R/P.
 - [ ] 6b CGSUPG: PetscFE/PetscDS host-only for quadrature/tabulations copied to device
       once; volume kernels; Dirichlet via identity-row mechanism
 - BCs: consume the existing `BCSpec` with real "Face Sets" label values (the structured

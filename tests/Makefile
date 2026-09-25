@@ -464,9 +464,11 @@ run_tests_short_serial:
 # structured recipes' twins with "type": "unstructured" added - the same
 # stencil to rounding, but the rows are permuted and PCAIR is not permutation
 # invariant, so a count can land one off the structured one (plex_box_50_st2
-# does); the simplex boxes and the mesh file have no structured twin. Pinned
-# on the measured count, which has not yet seen the CI arches - see
-# ../docs/dev/testing.md, "Unstructured iteration counts"
+# did under the old Dirichlet-cell default; under ghost-flux both take 7, and
+# its _dirichlet_cell twin still shows the old gap); the simplex boxes and the
+# mesh file have no structured twin. Pinned on the local count, green on every
+# CI arch since Sep 2026 - see ../docs/dev/testing.md, "Unstructured iteration
+# counts"
 	@echo "Test 2D unstructured quad box, pure scattering (ratio 1), twin of box_50_st2"
 	./transportk -problem problems/plex_box_50_st2.json -ksp_max_it 7
 	@echo "Test 2D unstructured quad box, streaming-only pmat"
