@@ -10,7 +10,10 @@ postscript: `UnstructuredDG` at `order` 1, rows `(cell, basis, angle)`, second o
 every cell shape), on top of Phase 6a (DG0 on DMPlex, PR #2) and the ghost-flux vacuum
 treatment as the default (PR #4). Next up: DSA on the plex backend (the biggest gap both
 orders share), then 6b CG-SUPG (Phase 6); the half-quadrature transposed PC stays
-blocked on PFLARE's PCAIR `PCApplyTranspose`. The DG1 pins await a CI-image sweep.
+blocked on PFLARE's PCAIR `PCApplyTranspose`. The DG1 pins await a CI-image sweep. Two
+findings from regenerating the Phase 6a report sit under the ghost-flux postscript: DG1
+needs element-block-inverse scaling (or a lower strong threshold) for PCAIR to coarsen,
+and DG0's ghost-flux reflect-wins rule leaves an O(1) error at reflect/vacuum corners.
 
 ## Phase 0 — Scaffolding + baseline capture (no behavior change)
 - [x] Directory tree, top Makefile (library skeleton), tests/Makefile (PFLARE-style recipes)
@@ -1022,6 +1025,33 @@ experiments stay on the campaign branch until PFLARE's PCAIR `PCApplyTranspose` 
       against the exact SN solution DG0 is first order on. Pinned: every plex recipe's
       DG1 twin, serial and np 2 (docs/dev/testing.md, "Unstructured iteration counts" —
       DG1 costs 0 to 3 iterations more than DG0 at the default rtol).
+- [ ] DG1 + PCAIR: scale the streaming operator by the inverse of each element's block
+      before PCAIR (DEFERRED, the user's call, 25 Sep 2026 - for linear DG advection that
+      block-inverse scaling has typically been needed for scalability, and the same is
+      expected here). The block is the n_basis x n_basis (cell, angle) coupling - under
+      layout A its rows are STRIDED by n_angles, so this is a block map of our own, not
+      PETSc's contiguous-block MatInvertBlockDiagonal. The symptom it should cure, measured
+      on DG1 quads (plex_box_50_st2_dg1 physics, S2, rtol 1e-10): at PCAIR's default
+      strong threshold 0.5 the coarsening stalls - 28 / 58 / 119 AIR levels at n = 25 / 50
+      / 100 (14 / 16 / 17 iterations), so setup grows like N^1.5 - where DG0 on the same
+      meshes takes 12 / 14 / 19 levels (12 iterations). `-sub_1_pc_air_strong_threshold
+      0.25` restores slow growth (25 / 30 / 35 levels, 13 / 14 / 14 iterations); the
+      Phase 6 report's DG1 runs use it, the pinned recipes keep the default (small enough
+      not to care). Levels and iterations only - the machine was shared, timings are noise.
+- [ ] DG0 ghost-flux mixed corners (found regenerating the Phase 6a report, 25 Sep 2026):
+      where a reflective face meets a vacuum face, the ghost-flux "reflect wins" rule
+      mirrors a direction coming in through both over both axes, so the corner cell never
+      sees the vacuum face's inflow. On the quarter box (reflect left + bottom) against
+      the full box's quadrant the error sits at the two mixed corners and does NOT shrink
+      with h - max 2.07 / 2.15 / 2.19 at n = 25 / 50 / 100 on a flux of ~10 - and the
+      deficit streams across the domain along the ordinates leaving the corner, while
+      the mean halves (L2 still first order).
+      Structured and plex agree to 1e-10, so it is the shared rule, not the plex backend.
+      Under Dirichlet-cell the corner took the vacuum inflow (vacuum wins) and the error
+      was O(h) everywhere. DG1 has no such rule (per-face couplings) and its quarter box
+      equals the full box to solver tolerance. Candidate fix for DG0: mirror only over the
+      reflective axes and add the incoming vacuum faces' inflow to the rhs - check the FD
+      twin identity and the 1D baselines before changing it.
 - [ ] The half-quadrature preconditioner and an `-adjoint` path — blocked on PFLARE's
       PCAIR `PCApplyTranspose`; see the campaign branch. On the DG backend (either
       order) the transposed half needs the cell-volume similarity (`unstructured_dg.hpp`):
