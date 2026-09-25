@@ -528,9 +528,9 @@ PetscErrorCode ProblemSpec::create(MPI_Comm comm, const char *problem_path)
    // quadrature's business, so only the obvious nonsense is caught here
    PetscCall(JsonGetInt(root, "sn_order", problem_path, &sn_order));
 
-   // How every vacuum face is discretised - "dirichlet_cell" (the default, the
-   // boundary cell's row replaced by the identity) or "ghost_flux" (the cell
-   // stays an unknown and the inflow enters through the upwind flux). See
+   // How every vacuum face is discretised - "ghost_flux" (the default, the cell
+   // stays an unknown and the inflow enters through the upwind flux) or
+   // "dirichlet_cell" (the boundary cell's row replaced by the identity). See
    // VacuumTreatment in bc_spec.hpp and docs/problem_files.md
    if (root.contains("vacuum_treatment")) {
       PetscCheck(root.at("vacuum_treatment").is_string(), PETSC_COMM_SELF, PETSC_ERR_ARG_WRONG, \

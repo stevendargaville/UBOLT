@@ -51,15 +51,17 @@ Codebase map
   weights are NOT equal within a set), plus
   `UboltAngularIntegral`, the shared angular integral; `BCSpec` (boundary label id →
   BC family {vacuum, reflect}, plus the vacuum face's prescribed inflow and optional
-  tangential window, plus the `VacuumTreatment` — `DIRICHLET_CELL`, the default: an
-  inflow boundary cell is an identity row carrying the inflow; or `GHOST_FLUX`, opt-in
-  via the problem file's `vacuum_treatment`: the cell keeps its full stencil, the
-  outside-pointing slot is nulled and the inflow enters the rhs through the face flux
+  tangential window, plus the `VacuumTreatment` — `GHOST_FLUX`, the default since Sep
+  2026: the inflow boundary cell keeps its full stencil, the outside-pointing slot is
+  nulled and the inflow enters the rhs through the face flux
   (`BoundaryInfo::ghost_inflow_d`, added by `UboltFillInflow`; `UboltFillSource` ADDS
-  for that reason). Ghost-flux is what makes the streaming/removal block for `-Omega_d`
-  exactly the transpose of the block for `Omega_d` on every row (the groundwork for
-  transposed half-quadrature preconditioning); reflect wins over vacuum at a corner,
-  and `DSAPrecon` refuses the mode. Keyed the way DMPlex "Face Sets" ids are — the structured
+  for that reason); or `DIRICHLET_CELL`, opt-in via the problem file's
+  `vacuum_treatment` (and the default before Sep 2026): an inflow boundary cell is an
+  identity row carrying the inflow. Ghost-flux is what makes the streaming/removal block
+  for `-Omega_d` exactly the transpose of the block for `Omega_d` on every row (the
+  groundwork for transposed half-quadrature preconditioning); under it reflect wins over
+  vacuum at a corner, under Dirichlet-cell vacuum wins, and `DSAPrecon` takes either.
+  Keyed the way DMPlex "Face Sets" ids are — the structured
   backends' `FACE_*` constants match PETSc's box-mesh convention, and a problem file's
   `boundary_conditions` names faces onto them); `MaterialSpec` (BCSpec's sibling
   for cell data: per-material, per-group xsections + external source — an isotropic

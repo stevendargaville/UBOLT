@@ -1,0 +1,32 @@
+{
+ "_comment": "cube_10_st2.json with the opt-in Dirichlet-cell vacuum treatment - the default until Sep 2026 - so the recipes keep that path covered and reproduce the pre-ghost-flux-default counts.",
+ "dimension": 3,
+ "mesh": {
+  "n_cells": [10, 10, 10],
+  "lengths": [1.0, 1.0, 1.0]
+ },
+ "sn_order": 2,
+ "materials": {
+  "n_groups": 1,
+  "materials": [
+   {
+    "id": 0,
+    "name": "st2",
+    "Sigma_t": [2.0],
+    "Sigma_s": [
+     [2.0]
+    ],
+    "Source": [1.0]
+   }
+  ]
+ },
+ "vacuum_treatment": "dirichlet_cell",
+ "boundary_conditions": {
+  "left": {"type": "vacuum", "inflow": 12.566370614359172},
+  "right": {"type": "vacuum", "inflow": 12.566370614359172},
+  "front": {"type": "vacuum", "inflow": 12.566370614359172},
+  "back": {"type": "vacuum", "inflow": 12.566370614359172},
+  "bottom": {"type": "vacuum", "inflow": 12.566370614359172},
+  "top": {"type": "vacuum", "inflow": 12.566370614359172}
+ }
+}

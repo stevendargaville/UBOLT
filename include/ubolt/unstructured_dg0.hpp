@@ -46,7 +46,7 @@ struct PETSC_VISIBILITY_PUBLIC PlexMeshSpec {
 // the slot count varies with the cell shape, this backend uses the general
 // Discretisation::set_pattern rather than set_uniform_pattern
 //
-// BC rows under the default VacuumTreatment::DIRICHLET_CELL are the library's
+// BC rows under the opt-in VacuumTreatment::DIRICHLET_CELL are the library's
 // Dirichlet-cell rows: a row is a BC row
 // iff some BOUNDARY face (support size 1) of its cell has s_f < 0. If any such
 // incoming face is vacuum the row is Dirichlet (identity, rhs = the winning
@@ -68,9 +68,10 @@ struct PETSC_VISIBILITY_PUBLIC PlexMeshSpec {
 // coordinates along the non-dominant axes in ascending axis order, inclusive -
 // the boundary cell's centre on a quad/hex box, as in the structured backends
 //
-// Under VacuumTreatment::GHOST_FLUX - the natural DG0 vacuum condition - a
-// row that comes in only through vacuum faces is NOT a BC row: it keeps its
-// physical row (full diagonal, the boundary inflow faces' slots nulled) and
+// Under VacuumTreatment::GHOST_FLUX - the default, and the natural DG0 vacuum
+// condition - a row that comes in only through vacuum faces is NOT a BC row: it
+// keeps its physical row (full diagonal, the boundary inflow faces' slots
+// nulled) and
 // BoundaryInfo::ghost_inflow_d carries sum_f |Omega . nA_f| / V_c times each
 // incoming vacuum face's per-angle inflow, windowed per face by its centroid.
 // A row that comes in through any reflective face stays reflective (reflect

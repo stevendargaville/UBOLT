@@ -25,6 +25,11 @@ struct PETSC_VISIBILITY_PUBLIC MaterialInterval1D {
 // hands terms - the CooPattern, the BoundaryInfo, the preallocated matrices -
 // is on the Discretisation base; what is 1D about it is the mesh it builds and
 // its geometry - dx(), and the painting below
+//
+// That Dirichlet row is VacuumTreatment::DIRICHLET_CELL, now opt-in. Under the
+// default GHOST_FLUX a vacuum inflow row is not a BC row at all: it keeps its
+// diagonal, loses only the upwind slot, and the |mu|/dx-weighted inflow goes
+// into BoundaryInfo::ghost_inflow_d instead
 class PETSC_VISIBILITY_PUBLIC StructuredFD1D : public Discretisation {
 public:
    // The boundary label ids this backend hands to the BCSpec - the ids

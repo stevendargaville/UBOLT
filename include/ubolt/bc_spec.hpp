@@ -25,22 +25,23 @@ enum class BCType { VACUUM, REFLECT };
 // prescribed incoming flux - that differ in whether the boundary cell stays an
 // unknown
 //
-// DIRICHLET_CELL (the default, and everything UBOLT did before this existed):
-// the boundary cell's row for an incoming direction is REPLACED by the identity
-// and the rhs there carries the incoming flux. The cell is not an unknown for
-// that direction; its equation says psi = psi_in
+// GHOST_FLUX (the default since Sep 2026): the boundary cell stays an ordinary
+// unknown. Its row carries the full upwind stencil - the same diagonal
+// sum_a |Omega_a| / h_a every interior row has - and the one off-diagonal whose
+// upwind neighbour lies outside the domain is simply absent, its contribution
+// |Omega_a| / h_a * psi_in moved to the rhs. That is the usual upwind flux with
+// a ghost cell holding psi_in, and what a DG face flux does anyway
 //
-// GHOST_FLUX: the boundary cell stays an ordinary unknown. Its row carries the
-// full upwind stencil - the same diagonal sum_a |Omega_a| / h_a every interior
-// row has - and the one off-diagonal whose upwind neighbour lies outside the
-// domain is simply absent, its contribution |Omega_a| / h_a * psi_in moved to
-// the rhs. That is the usual upwind flux with a ghost cell holding psi_in
-//
-// Why it is worth having: with no identity rows left, A_{-d} is the exact
+// Why it is the default: with no identity rows left, A_{-d} is the exact
 // transpose of A_d on EVERY row rather than only the interior ones, because a
 // row's stencil no longer depends on which direction it is for. See the
-// transposed-solve study for what that buys. It changes the discretisation at
-// the boundary cell by O(h), so it is opt-in and the default is untouched
+// transposed-solve study for what that buys
+//
+// DIRICHLET_CELL (opt-in, and everything UBOLT did before Sep 2026): the
+// boundary cell's row for an incoming direction is REPLACED by the identity
+// and the rhs there carries the incoming flux. The cell is not an unknown for
+// that direction; its equation says psi = psi_in. It puts the boundary at the
+// boundary cell's centre rather than its face, so the two differ by O(h) there
 enum class VacuumTreatment { DIRICHLET_CELL, GHOST_FLUX };
 
 // One face's boundary condition: the family, the prescribed incoming flux on
@@ -100,7 +101,7 @@ public:
 
 private:
    std::map<PetscInt, BCFace> map_;
-   VacuumTreatment vacuum_treatment_ = VacuumTreatment::DIRICHLET_CELL;
+   VacuumTreatment vacuum_treatment_ = VacuumTreatment::GHOST_FLUX;
 };
 
 #endif

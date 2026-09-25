@@ -145,14 +145,10 @@ PetscErrorCode DSAPrecon::create_common(MPI_Comm comm, const PhaseSpace &ps, \
    PetscCheck(quad.n_angles() == ps.n_angles, comm, PETSC_ERR_ARG_INCOMP, \
       "quadrature has %" PetscInt_FMT " angles but the phase space has %" PetscInt_FMT, \
       quad.n_angles(), ps.n_angles);
-   // The diffusion operator's vacuum face is a Marshak condition written
-   // against the DIRICHLET_CELL transport boundary it is correcting. The
-   // ghost-flux treatment moves the boundary cell back into the unknowns and
-   // the two no longer describe the same boundary, so refuse rather than
-   // silently precondition with the wrong correction
-   PetscCheck(!disc.boundary_info().ghost_flux_vacuum, comm, PETSC_ERR_SUP, \
-      "the DSA correction has no ghost-flux vacuum boundary yet - run the transport with the " \
-      "default vacuum treatment, or without -precon_dsa");
+   // Either vacuum treatment is fine here. Under ghost-flux the vacuum inflow
+   // rows are not BC rows, so the restriction sums them and the prolongation
+   // corrects them like any interior row; under Dirichlet-cell they are masked
+   // out of both halves as before
 
    comm_ = comm;
    n_angles_ = ps.n_angles;

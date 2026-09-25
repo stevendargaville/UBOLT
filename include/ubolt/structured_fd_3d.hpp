@@ -40,6 +40,12 @@ struct PETSC_VISIBILITY_PUBLIC MaterialBox3D {
 // reflective faces meet - and is Dirichlet if any of those faces is vacuum:
 // vacuum wins, and the inflow value and window such a row takes are the first
 // vacuum incoming face's in axis order x, y, z
+//
+// Those Dirichlet rows are VacuumTreatment::DIRICHLET_CELL, now opt-in. Under
+// the default GHOST_FLUX a row incoming only through vacuum faces keeps its
+// physical stencil with the outside-pointing slots nulled, the inflow of every
+// incoming vacuum face summed into BoundaryInfo::ghost_inflow_d, and REFLECT
+// wins wherever a reflective face meets a vacuum one (see the 2D backend)
 class PETSC_VISIBILITY_PUBLIC StructuredFD3D : public Discretisation {
 public:
    // The boundary label ids this backend hands to the BCSpec - the ids

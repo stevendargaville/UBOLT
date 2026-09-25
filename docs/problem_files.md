@@ -44,7 +44,7 @@ ignored everywhere (JSON has no comments), holding provenance prose.
 | `materials` | string or object | yes | a path to a materials file, resolved relative to the problem file's own directory, or the same schema inline |
 | `regions` | object | no | which cells are which material - see below; absent = uniform background. An unstructured mesh may also paint by `"Cell Sets"` label value, `regions.cell_sets` |
 | `boundary_conditions` | object | no | per-face `"vacuum"`/`"reflect"`, or an object `{"type", "inflow", "window"}` - see below; unset faces are vacuum with inflow 0. An unstructured mesh may also key faces by `"Face Sets"` label value (`"13": "reflect"`) |
-| `vacuum_treatment` | string | no | how every VACUUM face is discretised: `"dirichlet_cell"` (default) or `"ghost_flux"` - see below. Reflective faces are unaffected |
+| `vacuum_treatment` | string | no | how every VACUUM face is discretised: `"ghost_flux"` (default) or `"dirichlet_cell"` - see below. Reflective faces are unaffected |
 | `output.flux_vtk` | string | no | output path: `.vts` or `.vtr` on a structured mesh, `.vtu` on an unstructured one (the parser checks the extension against `mesh.type`); `-flux_vtk` on the command line overrides it. A single-group problem writes the filename as given, multigroup writes one file per group (`flux.vts` becomes `flux_g0.vts`, ...). Each file carries three per-cell fields for its group: `scalar_flux`, `sigma_t` and `source` (the isotropic strength as written here, not the per-ordinate share) |
 
 ### Vacuum treatment
@@ -52,25 +52,29 @@ ignored everywhere (JSON has no comments), holding provenance prose.
 Two discretisations of the same physics - a prescribed incoming flux on a
 vacuum face - differing in whether the boundary cell stays an unknown.
 
-`"dirichlet_cell"` (the default, and what UBOLT did before the key existed):
-for a direction that enters through the face, the boundary cell's row is
-REPLACED by the identity and the rhs there carries the incoming flux. The cell
-is not an unknown for that direction.
+`"ghost_flux"` (the default since Sep 2026): the boundary cell stays an
+ordinary unknown. Its row carries the full upwind stencil - the same diagonal
+`sum_a |Omega_a| / h_a` an interior row has - and the one off-diagonal per axis
+whose upwind neighbour lies outside the domain is simply absent, its
+coefficient `|Omega_a| / h_a` times the face's per-angle inflow moved to the
+rhs. That is the usual upwind flux with a ghost cell holding the prescribed
+inflow, and what a DG face flux does. A corner cell fed through two vacuum
+faces gets a contribution from each.
 
-`"ghost_flux"`: the boundary cell stays an ordinary unknown. Its row carries
-the full upwind stencil - the same diagonal `sum_a |Omega_a| / h_a` an interior
-row has - and the one off-diagonal per axis whose upwind neighbour lies outside
-the domain is simply absent, its coefficient `|Omega_a| / h_a` times the face's
-per-angle inflow moved to the rhs. That is the usual upwind flux with a ghost
-cell holding the prescribed inflow. Per-face inflows and tangential windows
-work exactly as they do under the default, and a corner cell fed through two
-vacuum faces gets a contribution from each (the default takes only the first
-vacuum face in axis order x, y, z).
+`"dirichlet_cell"` (opt-in, and the default until Sep 2026): for a direction
+that enters through the face, the boundary cell's row is REPLACED by the
+identity and the rhs there carries the incoming flux. The cell is not an
+unknown for that direction, so the boundary effectively sits at the boundary
+cell's centre. Per-face inflows and tangential windows work exactly as they do
+under ghost-flux, but a corner cell fed through two vacuum faces takes only
+the first vacuum face in axis order x, y, z.
 
 The two differ at the boundary cell by O(h) and converge to the same solution
 under mesh refinement. `"ghost_flux"` leaves no identity rows in the operator,
 which is what makes the upwind operator for `-Omega` the exact transpose of the
-one for `+Omega` on every row rather than only the interior ones.
+one for `+Omega` on every row rather than only the interior ones. A problem
+file written before the switch that wants its old numbers back adds
+`"vacuum_treatment": "dirichlet_cell"`.
 
 Restrictions:
 
@@ -78,9 +82,10 @@ Restrictions:
   `psi(a) - psi(mirror a) = 0`. Where a direction enters through BOTH a vacuum
   and a reflective face - a mixed corner or edge - the REFLECTIVE treatment
   wins under `"ghost_flux"` and the row is mirrored over every axis it enters
-  through, the opposite precedence to the default's "vacuum wins".
-- The DSA correction (`-precon_dsa`) has no ghost-flux vacuum boundary yet and
-  errors if the two are combined.
+  through, the opposite precedence to `"dirichlet_cell"`'s "vacuum wins".
+- The DSA correction (`-precon_dsa`) works under either: its Marshak face sits
+  on the domain boundary, which is where ghost-flux puts the transport
+  boundary too.
 - On an unstructured mesh the same key works (see "Unstructured meshes"): the
   coefficient is `|Omega . nA_f| / V_c` for each incoming vacuum face, whatever
   its orientation, and the window is tested on the face centroid.
@@ -230,7 +235,7 @@ Per face, what the rows do is the structured rule transplanted:
   partner of a direction there may itself be a Dirichlet row, which is fine.
   What is rejected is a partner that is itself reflective - a single-cell-wide
   direction between two reflective faces.
-- **`"vacuum_treatment": "ghost_flux"`** is the natural DG0 vacuum condition:
+- **`"vacuum_treatment": "ghost_flux"`** (the default) is the natural DG0 vacuum condition:
   a direction coming in only through vacuum faces keeps its physical row and
   the face flux `|Omega . nA_f| / V_c` times the inflow goes on the rhs, for
   every incoming vacuum face (slanted ones included). Reflect wins where a
@@ -242,7 +247,8 @@ Per face, what the rows do is the structured rule transplanted:
   transpose of the one for `+Omega` after weighting the rows by cell volume
   (see `unstructured_dg0.hpp`) - exactly the transpose only where the cells
   have equal volumes.
-- **a direction with nowhere to come from.** With the Dirichlet-cell BC
+- **a direction with nowhere to come from** (`"dirichlet_cell"` only - under
+  the default ghost-flux those rows stay unknowns). With the Dirichlet-cell BC
   convention every row whose direction enters through a vacuum face is
   prescribed, so a mesh that is one cell wide in a direction with vacuum on
   both sides prescribes EVERY row of EVERY angle that has a component along
@@ -253,10 +259,11 @@ Per face, what the rows do is the structured rule transplanted:
   face's tangential axes - the axes other than the dominant axis of the
   outward normal, ascending axis order - inclusive at both ends. On a quad/hex
   box that is the structured boundary-cell-centre test exactly.
-- **a direction incoming through several vacuum faces** of one cell takes the
-  face whose outward normal's dominant axis comes first in x, y, z order (ties
-  by the faces' mesh point numbers) - on a box, the structured "first vacuum
-  incoming face in axis order" rule.
+- **a direction incoming through several vacuum faces** of one cell takes an
+  inflow from each of them under the default ghost-flux; under
+  `"dirichlet_cell"` it takes the face whose outward normal's dominant axis
+  comes first in x, y, z order (ties by the faces' mesh point numbers) - on a
+  box, the structured "first vacuum incoming face in axis order" rule.
 
 Output is `.vtu` (an unstructured grid), with the same `scalar_flux`,
 `sigma_t` and `source` cell fields as the structured files, plus a `Rank`

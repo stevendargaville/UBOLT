@@ -95,7 +95,11 @@ fill runs on device (MATAIJKOKKOS dispatches `MatSetValuesCOO` to the GPU):
   row instead repurposes one of those otherwise-nulled slots: the backend points its
   column at (same cell, mirrored angle) — always rank-local, so no ghost exchange — and
   records the slot in `BoundaryInfo::reflect_slot_d`, and the assembly writes the -1.0
-  coupling there. No sparsity growth, and `slots_per_row` stays uniform.
+  coupling there. No sparsity growth, and `slots_per_row` stays uniform. Under the
+  default ghost-flux vacuum treatment (`VacuumTreatment::GHOST_FLUX`) there are no
+  Dirichlet rows at all: a vacuum inflow row is an ordinary physical row whose
+  outside-pointing slot is the one nulled, and its boundary value goes to the rhs
+  instead. The Dirichlet rows above are the opt-in `DIRICHLET_CELL`.
 - The ordering of entries per row is fixed at preallocation time, off-diagonals first and
   the diagonal LAST — 1D: upwind, diagonal; 2D: upwind-x, upwind-y, diagonal; 3D:
   upwind-x, upwind-y, upwind-z, diagonal — every row
@@ -138,7 +142,10 @@ fill runs on device (MATAIJKOKKOS dispatches `MatSetValuesCOO` to the GPU):
   precision). The rhs owes the same rows the boundary value: the per-row incoming flux
   on Dirichlet rows (`UboltFillInflow` — the winning face's angle-integrated inflow
   divided by `sum_weights`, zeroed outside its window, computed on the host at create
-  time), zero on reflective ones (`UboltZeroReflectRows`).
+  time), zero on reflective ones (`UboltZeroReflectRows`). Under the default ghost-flux
+  treatment the vacuum inflow is not a BC row's value but a physical row's face flux:
+  `UboltFillInflow` ADDS `BoundaryInfo::ghost_inflow_d` onto those rows, and
+  `UboltFillSource` adds rather than assigns so the external source does not wipe it.
 - All the assembled terms add into ONE shared values array and go in with a single
   `MatSetValuesCOO(INSERT_VALUES)`. `-ubolt_coo_two_call` is the debug fallback: one call
   per term, the first INSERTing and the rest ADDing. Same per-entry arithmetic in the same

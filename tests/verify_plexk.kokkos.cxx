@@ -1169,7 +1169,7 @@ static PetscErrorCode CheckSlantedReflect(PetscBool ghost, PetscBool *ok)
    bcs.set(13, BCType::VACUUM);
    bcs.set_inflow(13, 1.0);
    bcs.set(12, BCType::VACUUM);
-   if (ghost) bcs.set_vacuum_treatment(VacuumTreatment::GHOST_FLUX);
+   bcs.set_vacuum_treatment(ghost ? VacuumTreatment::GHOST_FLUX : VacuumTreatment::DIRICHLET_CELL);
 
    PetscCall(quad.create(4));
    PetscCall(mats.create(1, 1));

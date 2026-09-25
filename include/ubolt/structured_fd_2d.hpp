@@ -40,6 +40,12 @@ struct PETSC_VISIBILITY_PUBLIC MaterialBox2D {
 // either is vacuum - vacuum wins at mixed corners; the inflow value and window
 // such a row takes are the X face's, the first vacuum incoming face in axis
 // order
+//
+// Those Dirichlet rows are VacuumTreatment::DIRICHLET_CELL, now opt-in. Under
+// the default GHOST_FLUX a row incoming only through vacuum faces keeps its
+// physical stencil with the outside-pointing slots nulled, the inflow of every
+// incoming vacuum face summed into BoundaryInfo::ghost_inflow_d, and REFLECT
+// wins at a mixed corner instead (see RowKind::GHOST in the .cxx)
 class PETSC_VISIBILITY_PUBLIC StructuredFD2D : public Discretisation {
 public:
    // The boundary label ids this backend hands to the BCSpec - the ids

@@ -30,6 +30,12 @@
 //   inverted INEXACTLY - the paper used one BoomerAMG V-cycle, this defaults to
 //   KSPPREONLY + PCGAMG (no hypre in the CI images) under the options prefix
 //   "dsa_", so -dsa_pc_type hypre and friends select anything at runtime.
+//   The Marshak face sits ON the domain boundary, which is where the default
+//   ghost-flux vacuum treatment puts the transport boundary too; under the
+//   opt-in Dirichlet-cell treatment the transport boundary is the boundary
+//   cell's centre instead, and the same face serves both (measured Sep 2026:
+//   scaling its coefficient anywhere in 0.25-1.0 moves no count by more than 1
+//   on the diffusive recipes under ghost-flux).
 // - P_angle broadcasts the scalar correction back isotropically,
 //   delta_psi(c, a) = delta_phi(c) / sum_weights, writing zero on the BC rows.
 //   That scaling is what makes the two operators consistent: A applied to an
