@@ -836,15 +836,16 @@ A multigroup row pins the max over its groups (29, 51), as everywhere else.
 `-sub_1_pc_air_strong_threshold 0.25`: at PCAIR's default 0.5 the coarsening stalls on
 DG1 (AIR levels grow linearly with n; TODO.md), which made the 50x50 DG1 boxes the
 slowest lines in the suite and more than doubled the debug CI job. At 0.25 they are 3-6x
-cheaper and take 1-3 fewer iterations - the box and reflect counts equal DG0's. Measured
-2026-09-25 on the opt arch and pinned on that count; not yet swept in the CI images. The
-DG0 column is the table above, for scale.
+cheaper and take 1-3 fewer iterations. Measured 2026-09-25 on the opt arch; the first CI
+run went red on two rows, so every DG1 line was then swept in the opt, 64-bit and
+OpenMP CI images (2026-09-26) and pinned on the max - the brackets are the CI-image
+counts where they differ from local opt. The DG0 column is the table above, for scale.
 
 | recipe | DG1 np=1 | DG1 np=2 | DG0 np=1 |
 |---|---|---|---|
-| `plex_box_50_st2_dg1` (also `-ubolt_coo_two_call`, `-check_matfree`) | 7 | 7 | 7 |
-| the same, `-precon_stream -ksp_pc_side right` | 10 | - | 7 |
-| the same, `-matfree_removal -ksp_pc_side right` | 10 | 9 | 7 |
+| `plex_box_50_st2_dg1` (also `-ubolt_coo_two_call`, `-check_matfree`) | 7 (8 on 64-bit and OpenMP) | 7 | 7 |
+| the same, `-precon_stream -ksp_pc_side right` | 10 (9 in every CI image) | - | 7 |
+| the same, `-matfree_removal -ksp_pc_side right` | 10 (9 in every CI image) | 9 (10 in every CI image) | 7 |
 | `plex_box_50_reflect_lb_dg1` | 6 | 6 | 6 |
 | `plex_tri_30_st2_dg1` | 5 | 5 | 5 |
 | `plex_cube_10_st2_dg1` | 7 | 7 | 6 |

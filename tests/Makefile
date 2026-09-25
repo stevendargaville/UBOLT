@@ -115,7 +115,7 @@ endif
 	@echo "Check 2D unstructured quad box, the DG0 twin of box_50_st2"
 	./transportk -problem problems/plex_box_50_st2.json -ksp_max_it 7
 	@echo "Check 2D unstructured quad box at DG1"
-	./transportk -problem problems/plex_box_50_st2_dg1.json -sub_1_pc_air_strong_threshold 0.25 -ksp_max_it 7
+	./transportk -problem problems/plex_box_50_st2_dg1.json -sub_1_pc_air_strong_threshold 0.25 -ksp_max_it 8
 	@echo "Check 3D cube streaming/removal + matrix-free scatter with AIRG"
 	./transportk -problem problems/cube_10_st2.json -ksp_max_it 6
 	@echo "Check 3D cube, reflective left + front + bottom faces"
@@ -537,15 +537,15 @@ endif
 # suite, 3-6x slower and 1-3 iterations worse. A stopgap until the streaming
 # operator is scaled by its element-block inverses - see TODO.md
 	@echo "Test 2D unstructured quad box at DG1, pure scattering"
-	./transportk -problem problems/plex_box_50_st2_dg1.json -sub_1_pc_air_strong_threshold 0.25 -ksp_max_it 7
+	./transportk -problem problems/plex_box_50_st2_dg1.json -sub_1_pc_air_strong_threshold 0.25 -ksp_max_it 8
 	@echo "Test 2D unstructured quad box at DG1, one MatSetValuesCOO per term"
-	./transportk -problem problems/plex_box_50_st2_dg1.json -ubolt_coo_two_call -sub_1_pc_air_strong_threshold 0.25 -ksp_max_it 7
+	./transportk -problem problems/plex_box_50_st2_dg1.json -ubolt_coo_two_call -sub_1_pc_air_strong_threshold 0.25 -ksp_max_it 8
 	@echo "Test 2D unstructured quad box at DG1, streaming-only pmat"
 	./transportk -problem problems/plex_box_50_st2_dg1.json -precon_stream -ksp_pc_side right -sub_1_pc_air_strong_threshold 0.25 -ksp_max_it 10
 	@echo "Test 2D unstructured quad box at DG1, matrix-free removal (the twin of the line above)"
 	./transportk -problem problems/plex_box_50_st2_dg1.json -matfree_removal -ksp_pc_side right -sub_1_pc_air_strong_threshold 0.25 -ksp_max_it 10
 	@echo "Test 2D unstructured quad box at DG1, the matrix-free removal is the same operator and diagonal"
-	./transportk -problem problems/plex_box_50_st2_dg1.json -check_matfree -sub_1_pc_air_strong_threshold 0.25 -ksp_max_it 7
+	./transportk -problem problems/plex_box_50_st2_dg1.json -check_matfree -sub_1_pc_air_strong_threshold 0.25 -ksp_max_it 8
 	@echo "Test 2D unstructured quad box at DG1, reflective left + bottom faces"
 	./transportk -problem problems/plex_box_50_reflect_lb_dg1.json -sub_1_pc_air_strong_threshold 0.25 -ksp_max_it 6
 ifeq ($(PETSC_HAVE_TRIANGLE),1)
@@ -810,7 +810,7 @@ endif
 	@echo "Test 2D unstructured quad box at DG1 in parallel"
 	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_box_50_st2_dg1.json -sub_1_pc_air_strong_threshold 0.25 -ksp_max_it 7
 	@echo "Test 2D unstructured quad box at DG1, matrix-free removal in parallel"
-	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_box_50_st2_dg1.json -matfree_removal -ksp_pc_side right -sub_1_pc_air_strong_threshold 0.25 -ksp_max_it 9
+	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_box_50_st2_dg1.json -matfree_removal -ksp_pc_side right -sub_1_pc_air_strong_threshold 0.25 -ksp_max_it 10
 	@echo "Test 2D unstructured quad box at DG1, reflective left + bottom faces in parallel"
 	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_box_50_reflect_lb_dg1.json -sub_1_pc_air_strong_threshold 0.25 -ksp_max_it 6
 ifeq ($(PETSC_HAVE_TRIANGLE),1)
