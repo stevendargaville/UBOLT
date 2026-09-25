@@ -770,9 +770,10 @@ rank 0 owns anything, or that either backend numbers its rows naturally.
    left, reflective top and bottom (the solution does not depend on y, so reflecting it
    is exact) and a cold right face, whose exact discrete-ordinates solution is
    `psi_in exp(-sigma x / mu)`. The cell averages against the exact scalar flux at the
-   centroids, volume-weighted RMS, at n = 8, 16, 32, S4: the observed order between the
-   last two must be at least 1.8. Measured 2.02 on quads (8.6e-4, 2.1e-4, 5.2e-5) and
-   2.01 on triangles (6.1e-4, 1.5e-4, 3.7e-5). The measure itself is O(h^2) even for
+   centroids, volume-weighted RMS, at n = 4, 8, 16, S4: the observed order between the
+   last two must be at least 1.8. Measured 2.03 on quads (3.5e-3, 8.6e-4, 2.1e-4) and
+   2.01 on triangles (2.4e-3, 6.1e-4, 1.5e-4). Kept this small because the check runs
+   three times in the suite, on the debug arch too. The measure itself is O(h^2) even for
    the exact solution (average against centroid value), so this cannot see anything
    better than second order - it is there to catch a first-order DG1.
 
@@ -831,27 +832,30 @@ with the same options.
 A multigroup row pins the max over its groups (29, 51), as everywhere else.
 
 **DG1** (`*_dg1.json`: the DG0 file with `"order": 1` in `mesh`, and no
-`vacuum_treatment` — DG1 is ghost-flux only). Measured 2026-09-25 on the opt arch and
-pinned on that count; not yet swept in the CI images. The DG0 column is the table
-above, for scale: DG1 costs one to three more iterations, and a few more on the tight
-infinite-medium solves.
+`vacuum_treatment` - DG1 is ghost-flux only). Every DG1 line passes
+`-sub_1_pc_air_strong_threshold 0.25`: at PCAIR's default 0.5 the coarsening stalls on
+DG1 (AIR levels grow linearly with n; TODO.md), which made the 50x50 DG1 boxes the
+slowest lines in the suite and more than doubled the debug CI job. At 0.25 they are 3-6x
+cheaper and take 1-3 fewer iterations - the box and reflect counts equal DG0's. Measured
+2026-09-25 on the opt arch and pinned on that count; not yet swept in the CI images. The
+DG0 column is the table above, for scale.
 
 | recipe | DG1 np=1 | DG1 np=2 | DG0 np=1 |
 |---|---|---|---|
-| `plex_box_50_st2_dg1` (also `-ubolt_coo_two_call`, `-check_matfree`) | 9 | 9 | 7 |
-| the same, `-precon_stream -ksp_pc_side right` | 12 | 12 | 7 |
-| the same, `-matfree_removal -ksp_pc_side right` | 12 | 12 | 7 |
-| `plex_box_50_reflect_lb_dg1` | 8 | 8 | 6 |
-| `plex_tri_30_st2_dg1` | 8 | 7 | 5 |
+| `plex_box_50_st2_dg1` (also `-ubolt_coo_two_call`, `-check_matfree`) | 7 | 7 | 7 |
+| the same, `-precon_stream -ksp_pc_side right` | 10 | - | 7 |
+| the same, `-matfree_removal -ksp_pc_side right` | 10 | 9 | 7 |
+| `plex_box_50_reflect_lb_dg1` | 6 | 6 | 6 |
+| `plex_tri_30_st2_dg1` | 5 | 5 | 5 |
 | `plex_cube_10_st2_dg1` | 7 | 7 | 6 |
 | `plex_tet_6_st2_dg1` | 5 | 5 | 5 |
 | `plex_square_msh_dg1` | 5 | 5 | 5 |
-| `plex_box_30_inf_medium_dg1`, `-check_inf_medium -ksp_rtol 1e-12` (quads, so it runs in CI) | 15 | 15 | — |
-| the same, `-matfree_removal` | 43 | 42 | — |
-| `plex_tri_30_inf_medium_dg1`, `-check_inf_medium -ksp_rtol 1e-12` | 18 | 18 | 12 |
-| `plex_tet_6_inf_medium_dg1`, `-check_inf_medium -ksp_rtol 1e-12` | 13 | 13 | 11 |
-| `plex_decades4_dg1`, `-matfree_removal -precon_ref_shift -precon_ref_k 4` | 6, 8, 17, 37 | 6, 8, 17, 37 | 4, 6, 15, 29 |
-| `plex_decades4_dg1`, `-matfree_removal -precon_ref_shift` (default k) | 8, 11, 41, 66 | 8, 11, 41, 66 | 7, 8, 27, 51 |
+| `plex_box_30_inf_medium_dg1`, `-check_inf_medium -ksp_rtol 1e-12` (quads, so it runs in CI) | 13 | 13 | - |
+| the same, `-matfree_removal` | 42 | - | - |
+| `plex_tri_30_inf_medium_dg1`, `-check_inf_medium -ksp_rtol 1e-12` | 13 | - | 12 |
+| `plex_tet_6_inf_medium_dg1`, `-check_inf_medium -ksp_rtol 1e-12` | 12 | 12 | 11 |
+| `plex_decades4_dg1`, `-matfree_removal -precon_ref_shift -precon_ref_k 4` | 4, 7, 17, 36 | 4, 7, 17, 36 | 4, 6, 15, 29 |
+| `plex_decades4_dg1`, `-matfree_removal -precon_ref_shift` (default k) | 8, 10, 41, 66 | - | 7, 8, 27, 51 |
 
 The infinite-medium DG1 solves land at ~1e-13 against the 1e-9 tolerance, the slopes
 included (the check wants the constant on basis 0 and zero on the rest).

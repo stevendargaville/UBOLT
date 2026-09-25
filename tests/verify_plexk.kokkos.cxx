@@ -47,8 +47,8 @@
 //     the streaming matrix giving exactly Omega . b in every interior cell
 //     (the volume term and both face matrices across differing bases)
 //  9. DG1 is second order: a pure absorber with left inflow and reflective
-//     top/bottom against its exact discrete-ordinates solution, at n = 8, 16,
-//     32, on quads (and triangles where available)
+//     top/bottom against its exact discrete-ordinates solution, at n = 4, 8,
+//     16, on quads (and triangles where available)
 //  Plus two DG1 error paths in 5: Dirichlet-cell vacuum, and the DG0
 //  streaming term on a DG1 backend
 //
@@ -1775,13 +1775,14 @@ static PetscErrorCode CheckDG1(const char *where, const PlexMeshSpec &mesh, cons
 // otherwise. Measured on the cell averages (basis 0) against the exact scalar
 // flux at the centroids - the two differ by O(h^2) even for the exact
 // solution, so this is a second-order measure and no better - in the
-// volume-weighted RMS, at n = 8, 16, 32. DG0 on the same measure is first
+// volume-weighted RMS, at n = 4, 8, 16. DG0 on the same measure is first
 // order (the Phase 6a campaign)
 template <class Quad>
 static PetscErrorCode CheckDG1Order(const char *where, PetscBool simplex, PetscInt sn_order, PetscBool *ok)
 {
    const PetscInt n_levels = 3;
-   const PetscInt n_base = 8;
+   // Small on purpose: this runs three times in the suite, and on the debug arch
+   const PetscInt n_base = 4;
    const PetscReal sigma = 1.0, inflow = 1.0, min_order = 1.8;
    PetscReal err[n_levels];
    PetscBool converged_all = PETSC_TRUE;

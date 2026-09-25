@@ -1036,8 +1036,8 @@ experiments stay on the campaign branch until PFLARE's PCAIR `PCApplyTranspose` 
       / 100 (14 / 16 / 17 iterations), so setup grows like N^1.5 - where DG0 on the same
       meshes takes 12 / 14 / 19 levels (12 iterations). `-sub_1_pc_air_strong_threshold
       0.25` restores slow growth (25 / 30 / 35 levels, 13 / 14 / 14 iterations); the
-      Phase 6 report's DG1 runs use it, the pinned recipes keep the default (small enough
-      not to care). Levels and iterations only - the machine was shared, timings are noise.
+      Phase 6 report's DG1 runs and every pinned DG1 recipe use it (at the default the
+      DG1 recipes more than doubled the debug CI job). Levels and iterations only - the machine was shared, timings are noise.
 - [ ] DG0 ghost-flux mixed corners (found regenerating the Phase 6a report, 25 Sep 2026):
       where a reflective face meets a vacuum face, the ghost-flux "reflect wins" rule
       mirrors a direction coming in through both over both axes, so the corner cell never
