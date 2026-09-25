@@ -325,9 +325,8 @@ previous one's verification has passed and been reviewed.
       existing Dirichlet-cell contract, keyed by real "Face Sets" values (the box ids ARE
       the structured `FACE_*` ids); reflection needs an axis-aligned face. Materials:
       `paint_boxes` by centroid plus "Cell Sets" -> material. Output: `.vtu`. Not in this
-      cut: DSA (a DMDA operator), DG1+, the ghost-flux vacuum BC (see the note in the
-      transpose campaign memory: it is the natural DG0 BC and attaches to the boundary
-      face list this backend keeps).
+      cut: DSA (a DMDA operator), DG1+. The ghost-flux vacuum BC landed afterwards, on
+      top of the structured ghost-flux commit (see the postscript below).
   - Measured (22 Sep 2026, opt arch, pinned exactly pending the first CI sweep; table in
     docs/dev/testing.md): the quad/hex twins match their structured counts (reflect_lb
     6, cube 5, streaming-only pmat 9, ref-shift k=4 4/6/15/30) EXCEPT `plex_box_50_st2`,
@@ -385,6 +384,17 @@ previous one's verification has passed and been reviewed.
       decision point predicted. This item survives only as the point where a DMPlex
       backend would widen it: `set_uniform_pattern` is the part that will not carry over
       (DG has a variable-nnz COO pattern), while `create_matrix` and the accessors should.
+- [x] Ghost-flux vacuum BC on the DG0 backend (Sep 2026, rebased onto the structured
+      ghost-flux commit): a direction coming in only through vacuum faces keeps its
+      physical row, the rhs takes `|Omega . nA_f| / V_c` times each incoming vacuum
+      face's inflow; reflect wins mixed corners, mirrored over the reflective axes and
+      any axis-aligned incoming vacuum face (so the box still matches its twin). The
+      transpose groundwork: with V the cell volumes, `(V A)^T = P (V A) P` to rounding
+      on any mesh (checked on triangles, tets and a perturbed-node mesh where the
+      unweighted identity is off by 7%), so a half-quadrature PC built on `+Omega` serves
+      `-Omega` on DG as `y = V^{-1} M^{-T} (V x)` - the only DG-specific piece that PC
+      will need. Verified in `verify_plexk` check 7 and the `plex_*_inf_medium_ghost`
+      recipes.
 - Verify: DG0 on uniform quad/hex box meshes reproduces the FD upwind matrix to rounding
   (`tests/verify_plexk`, serial and parallel, the plex rows permuted onto the DMDA's by
   centroid); the infinite-medium closed form on triangles and tets through reflective
@@ -934,4 +944,6 @@ experiments stay on the campaign branch until PFLARE's PCAIR `PCApplyTranspose` 
       solution at boundary cells, so: regenerate all 24 baselines deliberately, re-pin
       every recipe, and rewrite `DSAPrecon`'s Marshak face. Its own commit series.
 - [ ] The half-quadrature preconditioner and an `-adjoint` path — blocked on PFLARE's
-      PCAIR `PCApplyTranspose`; see the campaign branch.
+      PCAIR `PCApplyTranspose`; see the campaign branch. On the DG0 backend the
+      transposed half needs the cell-volume similarity (`unstructured_dg0.hpp`):
+      `y = V^{-1} M^{-T} (V x)`, which reduces to the plain transpose on a uniform mesh.

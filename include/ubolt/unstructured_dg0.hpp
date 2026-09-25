@@ -46,7 +46,8 @@ struct PETSC_VISIBILITY_PUBLIC PlexMeshSpec {
 // the slot count varies with the cell shape, this backend uses the general
 // Discretisation::set_pattern rather than set_uniform_pattern
 //
-// BC rows are the library's Dirichlet-cell rows, unchanged: a row is a BC row
+// BC rows under the default VacuumTreatment::DIRICHLET_CELL are the library's
+// Dirichlet-cell rows: a row is a BC row
 // iff some BOUNDARY face (support size 1) of its cell has s_f < 0. If any such
 // incoming face is vacuum the row is Dirichlet (identity, rhs = the winning
 // face's inflow / sum_weights inside its window); else every incoming face is
@@ -67,10 +68,27 @@ struct PETSC_VISIBILITY_PUBLIC PlexMeshSpec {
 // coordinates along the non-dominant axes in ascending axis order, inclusive -
 // the boundary cell's centre on a quad/hex box, as in the structured backends
 //
-// The natural DG0 vacuum BC is the ghost-flux one (the boundary cell keeps its
-// physical row and the inflow enters through the face term on the rhs). That
-// is NOT this cut, but the per-(cell, face) boundary data it would attach to is
-// kept on the host for it
+// Under VacuumTreatment::GHOST_FLUX - the natural DG0 vacuum condition - a
+// row that comes in only through vacuum faces is NOT a BC row: it keeps its
+// physical row (full diagonal, the boundary inflow faces' slots nulled) and
+// BoundaryInfo::ghost_inflow_d carries sum_f |Omega . nA_f| / V_c times each
+// incoming vacuum face's per-angle inflow, windowed per face by its centroid.
+// A row that comes in through any reflective face stays reflective (reflect
+// wins), mirrored over the reflective axes and the axes of its axis-aligned
+// incoming vacuum faces - the structured backends' rule, so a box still
+// matches its FD twin
+//
+// The opposite-ordinate symmetry under GHOST_FLUX (what a half-quadrature
+// preconditioner applied transposed on the other half rests on): with P
+// swapping (cell, Omega) and (cell, -Omega) and V the cell volumes expanded to
+// rows, the VOLUME-WEIGHTED operator S = V A satisfies S^T = P S P - exactly
+// off the diagonal, to rounding on it (a cell's outward nA_f sum to zero only
+// to rounding). The rows here are per unit volume, so A itself satisfies only
+// the similarity A^T = V (P A P) V^{-1}: on a mesh with unequal volumes the
+// transposed apply of a hierarchy built for one half has to be wrapped in the
+// V scalings, y = V^{-1} M^{-T} (V x) (V commutes with P). On a uniform box V
+// is a multiple of the identity and A^T = P A P as in the structured backends.
+// volume_host() is V
 //
 // Construction is two-stage, because the MESH decides the global cell count:
 // create_mesh, then PhaseSpace::create off n_global_cells(), then create

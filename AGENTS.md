@@ -28,7 +28,10 @@ Codebase map
   `tests/verify_plexk.kokkos.cxx`: the unstructured backend's check, serial and -n 2/4 —
   the plex quad/hex box against its `StructuredFD2D`/`3D` twin to ROUNDING (matrix, BC
   rows, rhs, scatter, a solve; rows matched by centroid, each side's row from its OWN
-  layout), the infinite medium on triangles/tets, geometry/Face Sets invariants, error
+  layout, in both vacuum treatments), the infinite medium on triangles/tets, the
+  ghost-flux opposite-ordinate identity `(VA)^T = P(VA)P` (V = cell volumes; DG0 rows are
+  per unit volume, so only the volume-weighted operator is exactly symmetric this way),
+  geometry/Face Sets invariants, error
   paths, and the `.vtu` writing each cell once. `tests/meshes/`: mesh files the problem
   files name (a hand-written Gmsh 2.2 `.msh` today).
   `tests/verify_quadraturek.kokkos.cxx`: the quadrature sets themselves, against the

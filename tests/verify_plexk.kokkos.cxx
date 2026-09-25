@@ -30,6 +30,15 @@
 //     2D quadrature on a 3D mesh
 //  6. The .vtu writer writes each cell exactly once in parallel (the overlap
 //     must not appear in the file)
+//  7. The ghost-flux vacuum treatment: every FD twin case of 1 and 2 again
+//     under it (matrix, flags and the rhs, which carries the ghost inflow),
+//     and on triangles/tets, which have no twin, (a) the opposite-ordinate
+//     symmetry of the VOLUME-WEIGHTED operator, (V A)^T = P (V A) P, with
+//     heterogeneous sigma_t - the property a half-quadrature preconditioner
+//     applied transposed on the other half rests on - and (b) inflow psi_in
+//     on every face with a source sigma_t psi_in, whose exact discrete
+//     solution is psi = psi_in, through the library-built rhs. Plus the
+//     slanted-face mesh of 5 in ghost mode: no Dirichlet rows left
 //
 // The FD twin comparison is exact in structure (the flags, which rows are
 // which) and to rounding in value: the two backends reach the same
@@ -1135,7 +1144,7 @@ static PetscErrorCode CheckErrorPaths(PetscBool *ok)
 // Checked: create succeeds, the row classes are what the geometry says (a
 // reflective row's partner column is a Dirichlet row for at least one row),
 // the solve converges, and the solution is inside the discrete bounds
-static PetscErrorCode CheckSlantedReflect(PetscBool *ok)
+static PetscErrorCode CheckSlantedReflect(PetscBool ghost, PetscBool *ok)
 {
    SNQuadrature2D quad;
    MaterialSpec mats;
@@ -1160,6 +1169,7 @@ static PetscErrorCode CheckSlantedReflect(PetscBool *ok)
    bcs.set(13, BCType::VACUUM);
    bcs.set_inflow(13, 1.0);
    bcs.set(12, BCType::VACUUM);
+   if (ghost) bcs.set_vacuum_treatment(VacuumTreatment::GHOST_FLUX);
 
    PetscCall(quad.create(4));
    PetscCall(mats.create(1, 1));
@@ -1202,15 +1212,224 @@ static PetscErrorCode CheckSlantedReflect(PetscBool *ok)
    // The right-angle corner cell has the reflective bottom AND the driven
    // left face, the two hypotenuse cells the reflective bottom or the vacuum
    // hypotenuse: reflective rows and Dirichlet rows must both exist
-   if (!converged || !in_bounds || n_reflect == 0 || n_dirichlet == 0) *ok = PETSC_FALSE;
-   PetscCall(PetscPrintf(PETSC_COMM_WORLD, "  reflective plane meeting a slanted vacuum face (meshes/tri_slanted.msh, S4): " \
-      "%" PetscInt_FMT " reflective and %" PetscInt_FMT " Dirichlet rows, %s, psi in [%.3e, %.3e] against " \
-      "[0, %.6f]\n", n_reflect, n_dirichlet, converged ? "converged" : "DID NOT CONVERGE", (double)psi_min, \
-      (double)psi_max, (double)bound));
+   // Under ghost-flux there are no Dirichlet rows left: the hypotenuse is
+   // not axis-aligned, so a reflective row coming in through it too is not
+   // mirrored over it, and its partner comes in through it as a ghost row
+   const PetscBool rows_ok = ghost ? (PetscBool)(n_reflect > 0 && n_dirichlet == 0) : \
+                                     (PetscBool)(n_reflect > 0 && n_dirichlet > 0);
+   if (!converged || !in_bounds || !rows_ok) *ok = PETSC_FALSE;
+   PetscCall(PetscPrintf(PETSC_COMM_WORLD, "  reflective plane meeting a slanted vacuum face (meshes/tri_slanted.msh, S4, " \
+      "%s): %" PetscInt_FMT " reflective and %" PetscInt_FMT " Dirichlet rows, %s, psi in [%.3e, %.3e] against " \
+      "[0, %.6f]\n", ghost ? "ghost-flux" : "dirichlet-cell", n_reflect, n_dirichlet, \
+      converged ? "converged" : "DID NOT CONVERGE", (double)psi_min, (double)psi_max, (double)bound));
 
    PetscCall(VecDestroy(&psi));
    PetscCall(VecDestroy(&b));
    PetscCall(DestroySolve(s));
+   PetscCall(disc.destroy());
+
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+// The third cosine of a 3D set; a 2D set has none (the caller only asks in 3D)
+static const PetscScalar *quad_xi(const SNQuadrature2D &) { return nullptr; }
+static const PetscScalar *quad_xi(const SNQuadrature3D &quad) { return quad.xi_host(); }
+
+// The same spec with every vacuum face under the ghost-flux treatment
+static BCSpec GhostFlux(BCSpec bcs)
+{
+   bcs.set_vacuum_treatment(VacuumTreatment::GHOST_FLUX);
+   return bcs;
+}
+
+// Check 7 (a) + (b): the ghost-flux treatment on a simplex mesh, which has no
+// FD twin - a generated box (Face Sets 1 .. 2 * dim), or with file a mesh file
+// whose boundary faces carry Face Sets 10 .. 13. All faces vacuum and driven
+// by the same inflow
+//  (a) S = V A on streaming + removal, sigma_t varying cell to cell, against
+//      P S P, P swapping (cell, Omega) and (cell, -Omega) - the opposite
+//      ordinate found by this file's own cosine search. Off the diagonal the
+//      two are the same numbers; on it the outflow sum of one direction is
+//      the inflow sum of the other only because a cell's outward nA_f close,
+//      which is to rounding - hence 1e-13, not 0. The UNWEIGHTED A is printed
+//      too: on unequal volumes it is not symmetric this way, which is why a
+//      transposed half-quadrature preconditioner needs the V scalings. A
+//      generated simplex box has equal volumes, so there the two agree;
+//      meshes/square_irregular_tri.msh does not, and there the unweighted
+//      residue is REQUIRED to be large - otherwise this check could not tell
+//      the weighted identity from the unweighted one
+//  (b) psi = psi_in everywhere against b from UboltFillInflow +
+//      UboltFillSource, with the source sigma_t psi_in: the streamed flux of
+//      a constant through a closed cell is zero, so this pins the ghost rows'
+//      |Omega . nA_f| / V_c inflow weights on faces of every orientation
+template <class Quad>
+static PetscErrorCode CheckGhostSimplex(PetscInt dim, PetscInt n, const char *file, PetscInt sn_order, PetscBool *ok)
+{
+   Quad quad;
+   PhaseSpace ps;
+   UnstructuredDG0 disc;
+   StreamingTermDG0 streaming;
+   RemovalTerm removal;
+   TransportOperator op;
+   MaterialSpec mats;
+   PlexMeshSpec mesh;
+   BCSpec bcs;
+   Mat A = NULL, S = NULL, St = NULL, PSP = NULL, At = NULL, PAP = NULL;
+   IS perm = NULL;
+   Vec vol = NULL, psi = NULL, b = NULL, work = NULL;
+   PetscReal norm_s = 0.0, diff_s = 0.0, norm_a = 0.0, diff_a = 0.0, resid = 0.0;
+   const PetscReal sym_tol = 1e-13, resid_tol = 1e-12;
+   const PetscReal inflow = 2.5, sigma_t = 1.3;
+   const char *shape = (dim == 2) ? "triangles" : "tets";
+   char where[128];
+
+   PetscFunctionBeginUser;
+
+   mesh.dimension = dim;
+   if (file) {
+      mesh.file = file;
+      for (PetscInt f = 10; f <= 13; f++) {
+         bcs.set(f, BCType::VACUUM);
+         bcs.set_inflow(f, inflow);
+      }
+      PetscCall(PetscSNPrintf(where, sizeof(where), "%s", file));
+   } else {
+      mesh.simplex = PETSC_TRUE;
+      for (PetscInt d = 0; d < dim; d++) {
+         mesh.n_cells[d] = n;
+         mesh.lengths[d] = 1.0 + 0.5 * d;
+      }
+      for (PetscInt f = 1; f <= 2 * dim; f++) {
+         bcs.set(f, BCType::VACUUM);
+         bcs.set_inflow(f, inflow);
+      }
+      PetscCall(PetscSNPrintf(where, sizeof(where), "%" PetscInt_FMT "D %s %" PetscInt_FMT "^%" PetscInt_FMT, \
+         dim, shape, n, dim));
+   }
+   bcs.set_vacuum_treatment(VacuumTreatment::GHOST_FLUX);
+
+   PetscCall(quad.create(sn_order));
+   const PetscInt n_angles = quad.n_angles();
+   PetscCall(disc.create_mesh(PETSC_COMM_WORLD, mesh));
+   PetscCall(ps.create(PETSC_COMM_WORLD, disc.n_global_cells(), n_angles));
+   PetscCall(disc.create(ps, quad, bcs));
+   PetscCall(streaming.create(ps, disc));
+
+   // (a) sigma_t varying cell to cell, streaming + removal only
+   {
+      PetscScalarKokkosView sigma_t_d("sigma_t_d", ps.local_cells);
+      auto sigma_t_h = Kokkos::create_mirror_view(sigma_t_d);
+      for (PetscInt c = 0; c < ps.local_cells; c++) sigma_t_h(c) = 1.0 + 0.25 * (PetscScalar)(c % 7);
+      Kokkos::deep_copy(sigma_t_d, sigma_t_h);
+      PetscCall(removal.create(ps, disc, sigma_t_d));
+      PetscCall(op.create(PETSC_COMM_WORLD, ps, disc));
+      PetscCall(op.add_term(&streaming));
+      PetscCall(op.add_term(&removal));
+      PetscCall(op.assemble());
+
+      std::vector<PetscInt> opp(n_angles, -1);
+      const PetscScalar *mu = quad.mu_host();
+      const PetscScalar *eta = quad.eta_host();
+      const PetscScalar *xi = (dim == 3) ? quad_xi(quad) : nullptr;
+      for (PetscInt a = 0; a < n_angles; a++)
+         for (PetscInt c = 0; c < n_angles; c++)
+            if (mu[c] == -mu[a] && eta[c] == -eta[a] && (!xi || xi[c] == -xi[a])) { opp[a] = c; break; }
+      for (PetscInt a = 0; a < n_angles; a++)
+         PetscCheck(opp[a] >= 0, PETSC_COMM_WORLD, PETSC_ERR_PLIB, "no opposite ordinate for angle %" \
+            PetscInt_FMT, a);
+
+      PetscCall(MatConvert(op.assembled_mat(), MATAIJ, MAT_INITIAL_MATRIX, &A));
+      PetscInt rstart, rend;
+      PetscCall(MatGetOwnershipRange(A, &rstart, &rend));
+      std::vector<PetscInt> idx;
+      for (PetscInt r = rstart; r < rend; r++) idx.push_back(r - r % n_angles + opp[r % n_angles]);
+      PetscCall(ISCreateGeneral(PETSC_COMM_WORLD, (PetscInt)idx.size(), idx.data(), PETSC_COPY_VALUES, &perm));
+
+      PetscCall(MatCreateVecs(A, NULL, &vol));
+      {
+         PetscScalar *v;
+         PetscCall(VecGetArray(vol, &v));
+         for (PetscInt r = 0; r < rend - rstart; r++) v[r] = disc.volume_host()[r / n_angles];
+         PetscCall(VecRestoreArray(vol, &v));
+      }
+      PetscCall(MatDuplicate(A, MAT_COPY_VALUES, &S));
+      PetscCall(MatDiagonalScale(S, vol, NULL));
+
+      PetscCall(MatTranspose(S, MAT_INITIAL_MATRIX, &St));
+      PetscCall(MatPermute(S, perm, perm, &PSP));
+      PetscCall(MatNorm(S, NORM_FROBENIUS, &norm_s));
+      PetscCall(MatAXPY(St, -1.0, PSP, DIFFERENT_NONZERO_PATTERN));
+      PetscCall(MatNorm(St, NORM_FROBENIUS, &diff_s));
+
+      PetscCall(MatTranspose(A, MAT_INITIAL_MATRIX, &At));
+      PetscCall(MatPermute(A, perm, perm, &PAP));
+      PetscCall(MatNorm(A, NORM_FROBENIUS, &norm_a));
+      PetscCall(MatAXPY(At, -1.0, PAP, DIFFERENT_NONZERO_PATTERN));
+      PetscCall(MatNorm(At, NORM_FROBENIUS, &diff_a));
+
+      const PetscReal rel_s = diff_s / norm_s, rel_a = diff_a / norm_a;
+      // On the irregular file the unweighted residue has to be O(the volume
+      // spread), not rounding
+      const PetscBool pass = (PetscBool)(rel_s <= sym_tol && (!file || rel_a > 1e-3));
+      if (!pass) *ok = PETSC_FALSE;
+      PetscCall(PetscPrintf(PETSC_COMM_WORLD, "  ghost-flux, %s, S%" PetscInt_FMT ", heterogeneous sigma_t: " \
+         "||(VA)^T - P(VA)P|| / ||VA|| %.3e (tol %.0e); unweighted ||A^T - PAP|| / ||A|| %.3e (%s)%s\n", where, \
+         sn_order, (double)rel_s, (double)sym_tol, (double)rel_a, file ? "unequal volumes: must be > 1e-3" : \
+         "equal volumes: not checked", pass ? "" : " FAILED"));
+
+      PetscCall(op.destroy());
+   }
+
+   // (b) uniform sigma_t, streaming + removal, the library-built rhs
+   {
+      TransportOperator op_b;
+      RemovalTerm removal_b;
+      PetscScalarKokkosView sigma_t_d("sigma_t_d", ps.local_cells);
+      Kokkos::deep_copy(sigma_t_d, (PetscScalar)sigma_t);
+      PetscCall(removal_b.create(ps, disc, sigma_t_d));
+      PetscCall(op_b.create(PETSC_COMM_WORLD, ps, disc));
+      PetscCall(op_b.add_term(&streaming));
+      PetscCall(op_b.add_term(&removal_b));
+      PetscCall(op_b.assemble());
+
+      PetscCall(mats.create(1, 1));
+      PetscCall(mats.set_sigma_t(0, 0, sigma_t));
+      PetscCall(mats.set_source(0, 0, sigma_t * inflow));
+      PetscIntKokkosView mat_id_d("mat_id_d", ps.local_cells);
+
+      const PetscScalar psi_in = inflow / quad.sum_weights();
+      PetscCall(MatCreateVecs(op_b.assembled_mat(), &psi, &b));
+      PetscCall(VecDuplicate(psi, &work));
+      PetscCall(VecSet(psi, psi_in));
+      PetscCall(FillRhs(ps, disc, quad, mats, mat_id_d, b));
+      PetscCall(MatMult(op_b.mat(), psi, work));
+      PetscCall(VecAXPY(work, -1.0, b));
+      PetscCall(VecNorm(work, NORM_INFINITY, &resid));
+      PetscReal scale = 0.0;
+      PetscCall(VecNorm(b, NORM_INFINITY, &scale));
+
+      const PetscBool pass = (PetscBool)(resid <= resid_tol * scale);
+      if (!pass) *ok = PETSC_FALSE;
+      PetscCall(PetscPrintf(PETSC_COMM_WORLD, "  ghost-flux, %s, S%" PetscInt_FMT ", inflow on every face against " \
+         "psi = psi_in: residual %.3e (tol %.0e x ||b|| %.3e)%s\n", where, sn_order, (double)resid, \
+         (double)resid_tol, (double)scale, pass ? "" : " FAILED"));
+
+      PetscCall(op_b.destroy());
+   }
+
+   PetscCall(MatDestroy(&A));
+   PetscCall(MatDestroy(&S));
+   PetscCall(MatDestroy(&St));
+   PetscCall(MatDestroy(&PSP));
+   PetscCall(MatDestroy(&At));
+   PetscCall(MatDestroy(&PAP));
+   PetscCall(ISDestroy(&perm));
+   PetscCall(VecDestroy(&vol));
+   PetscCall(VecDestroy(&psi));
+   PetscCall(VecDestroy(&b));
+   PetscCall(VecDestroy(&work));
    PetscCall(disc.destroy());
 
    PetscFunctionReturn(PETSC_SUCCESS);
@@ -1277,6 +1496,19 @@ int main(int argc, char **args) {
       boxes[0].material = 1;
       PetscCall(CheckTwin2D(4, 3, 4, vacuum, boxes, PETSC_FALSE, "vacuum, painted box", &ok));
       PetscCall(CheckTwin2D(4, 3, 4, vacuum, boxes, PETSC_TRUE, "vacuum, the same box as a \"Cell Sets\" label", &ok));
+
+      // 7. The same cases under ghost-flux: the rhs comparison now carries
+      // the ghost inflow (both corner faces feed the origin cell, each
+      // windowed on its own), and the mixed configs the reflect-wins corners
+      PetscCall(CheckTwin2D(4, 3, 2, GhostFlux(vacuum), no_boxes, PETSC_FALSE, "vacuum, ghost-flux", &ok));
+      PetscCall(CheckTwin2D(4, 3, 4, GhostFlux(vacuum), no_boxes, PETSC_FALSE, "vacuum, ghost-flux", &ok));
+      PetscCall(CheckTwin2D(5, 4, 2, GhostFlux(reflect_lb), no_boxes, PETSC_FALSE, "reflect left + bottom, ghost-flux", \
+         &ok));
+      PetscCall(CheckTwin2D(5, 4, 4, GhostFlux(mixed), no_boxes, PETSC_FALSE, \
+         "reflect left + top, vacuum right + bottom, ghost-flux", &ok));
+      PetscCall(CheckTwin2D(6, 4, 2, GhostFlux(inflow), no_boxes, PETSC_FALSE, \
+         "inflow 1.0 on left in y [0.5, 1.5], 0.3 on bottom, ghost-flux", &ok));
+      PetscCall(CheckTwin2D(4, 3, 4, GhostFlux(vacuum), boxes, PETSC_FALSE, "vacuum, painted box, ghost-flux", &ok));
    }
 
    // ~~~~~~~~~~
@@ -1298,6 +1530,12 @@ int main(int argc, char **args) {
       inflow.set_inflow(StructuredFD3D::FACE_LEFT, 1.0);
       inflow.set_window(StructuredFD3D::FACE_LEFT, 2, window);
       PetscCall(CheckTwin3D(4, 2, 3, 2, inflow, "inflow 1.0 on left in y [0, 1] x z [0.5, 1.5]", &ok));
+
+      // 7. Under ghost-flux
+      PetscCall(CheckTwin3D(3, 2, 2, 2, GhostFlux(vacuum), "vacuum, ghost-flux", &ok));
+      PetscCall(CheckTwin3D(3, 3, 2, 4, GhostFlux(corner), "reflect left + front + bottom, ghost-flux", &ok));
+      PetscCall(CheckTwin3D(4, 2, 3, 2, GhostFlux(inflow), "inflow 1.0 on left in y [0, 1] x z [0.5, 1.5], ghost-flux", \
+         &ok));
    }
 
    // ~~~~~~~~~~
@@ -1305,8 +1543,11 @@ int main(int argc, char **args) {
    // ~~~~~~~~~~
    PetscCall(PetscSNPrintf(vtu, sizeof(vtu), "verify_plexk_tmp_%d.vtu", (int)size));
    PetscCall(CheckSimplex<SNQuadrature2D>(2, 6, 4, 4, vtu, &ok));
+   PetscCall(CheckGhostSimplex<SNQuadrature2D>(2, 6, NULL, 2, &ok));
+   PetscCall(CheckGhostSimplex<SNQuadrature2D>(2, 0, "meshes/square_irregular_tri.msh", 6, &ok));
 #if defined(PETSC_HAVE_CTETGEN) || defined(PETSC_HAVE_TETGEN)
    PetscCall(CheckSimplex<SNQuadrature3D>(3, 3, 2, 2, NULL, &ok));
+   PetscCall(CheckGhostSimplex<SNQuadrature3D>(3, 3, NULL, 4, &ok));
 #else
    PetscCall(PetscPrintf(PETSC_COMM_WORLD, "  3D tets skipped: PETSc was configured without a tet mesher " \
       "(--download-ctetgen)\n"));
@@ -1315,7 +1556,8 @@ int main(int argc, char **args) {
    // ~~~~~~~~~~
    // 5. Error paths
    // ~~~~~~~~~~
-   PetscCall(CheckSlantedReflect(&ok));
+   PetscCall(CheckSlantedReflect(PETSC_FALSE, &ok));
+   PetscCall(CheckSlantedReflect(PETSC_TRUE, &ok));
    PetscCall(CheckErrorPaths(&ok));
 
    if (!ok) PetscCall(PetscFPrintf(PETSC_COMM_WORLD, stderr, "Unstructured DG0 verification FAILED\n"));

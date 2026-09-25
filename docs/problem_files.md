@@ -81,6 +81,9 @@ Restrictions:
   through, the opposite precedence to the default's "vacuum wins".
 - The DSA correction (`-precon_dsa`) has no ghost-flux vacuum boundary yet and
   errors if the two are combined.
+- On an unstructured mesh the same key works (see "Unstructured meshes"): the
+  coefficient is `|Omega . nA_f| / V_c` for each incoming vacuum face, whatever
+  its orientation, and the window is tested on the face centroid.
 
 ### Regions
 
@@ -227,6 +230,18 @@ Per face, what the rows do is the structured rule transplanted:
   partner of a direction there may itself be a Dirichlet row, which is fine.
   What is rejected is a partner that is itself reflective - a single-cell-wide
   direction between two reflective faces.
+- **`"vacuum_treatment": "ghost_flux"`** is the natural DG0 vacuum condition:
+  a direction coming in only through vacuum faces keeps its physical row and
+  the face flux `|Omega . nA_f| / V_c` times the inflow goes on the rhs, for
+  every incoming vacuum face (slanted ones included). Reflect wins where a
+  direction also comes in through a reflective face; the row is then mirrored
+  over the reflective axes and any AXIS-ALIGNED incoming vacuum face (the
+  structured rule, so a box still matches its structured twin), while a slanted
+  incoming vacuum face is not mirrored over and the partner comes in through it
+  as an ordinary ghost-flux row. The upwind operator for `-Omega` is then the
+  transpose of the one for `+Omega` after weighting the rows by cell volume
+  (see `unstructured_dg0.hpp`) - exactly the transpose only where the cells
+  have equal volumes.
 - **a direction with nowhere to come from.** With the Dirichlet-cell BC
   convention every row whose direction enters through a vacuum face is
   prescribed, so a mesh that is one cell wide in a direction with vacuum on

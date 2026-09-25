@@ -461,6 +461,12 @@ run_tests_short_serial:
 	./transportk -problem problems/plex_tet_6_st2.json -ksp_max_it 5
 	@echo "Test 2D unstructured Gmsh file, Cell Sets materials and Face Sets boundary conditions"
 	./transportk -problem problems/plex_square_msh.json -ksp_max_it 4
+	@echo "Test 2D unstructured triangles, ghost-flux vacuum + reflective faces against the infinite-medium solution"
+	./transportk -problem problems/plex_tri_30_inf_medium_ghost.json -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 12
+	@echo "Test 2D unstructured triangles, ghost-flux, matrix-free removal against the infinite-medium solution"
+	./transportk -problem problems/plex_tri_30_inf_medium_ghost.json -matfree_removal -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 33
+	@echo "Test 3D unstructured tetrahedra, ghost-flux vacuum + reflective faces against the infinite-medium solution"
+	./transportk -problem problems/plex_tet_6_inf_medium_ghost.json -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 11
 	@echo "Test 2D unstructured reference-shifted pmat, one hierarchy per group (twin of box_decades4)"
 	./transportk -problem problems/plex_decades4.json -matfree_removal -precon_ref_shift -precon_ref_k 4 -ksp_max_it 30
 	@echo "Test 2D unstructured reference-shifted pmat, the default k"
@@ -668,6 +674,10 @@ run_tests_short_parallel:
 	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_tet_6_st2.json -ksp_max_it 5
 	@echo "Test 2D unstructured Gmsh file in parallel"
 	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_square_msh.json -ksp_max_it 4
+	@echo "Test 2D unstructured triangles, ghost-flux against the infinite-medium solution in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_tri_30_inf_medium_ghost.json -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 12
+	@echo "Test 3D unstructured tetrahedra, ghost-flux against the infinite-medium solution in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_tet_6_inf_medium_ghost.json -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 11
 	@echo "Test 2D unstructured reference-shifted pmat, one hierarchy per group, in parallel"
 	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_decades4.json -matfree_removal -precon_ref_shift -precon_ref_k 4 -ksp_max_it 30
 	@echo "Test 2D unstructured reference-shifted pmat, the default k, in parallel"

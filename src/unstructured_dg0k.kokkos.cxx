@@ -330,9 +330,6 @@ PetscErrorCode UnstructuredDG0::create_common(PhaseSpace &ps, PetscInt quad_dim,
    PetscCheck(ps.n_cells == n_global_cells_, comm_, PETSC_ERR_ARG_INCOMP, "the mesh has %" PetscInt_FMT \
       " cells but the phase space %" PetscInt_FMT " - size it off n_global_cells()", n_global_cells_, ps.n_cells);
 
-   PetscCheck(!bcs.ghost_flux_vacuum(), comm_, PETSC_ERR_SUP, "the unstructured backend does not " \
-      "support the ghost-flux vacuum treatment yet");
-
    const PetscInt dim = dim_;
    const PetscInt *reflect[3] = {reflect_mu, reflect_eta, reflect_xi};
 
@@ -516,6 +513,21 @@ PetscErrorCode UnstructuredDG0::create_common(PhaseSpace &ps, PetscInt quad_dim,
    // boundary row instead repurposes the slot of its first incoming reflective
    // face for the coupling to the mirrored angle, and a Dirichlet row keeps
    // only its diagonal
+   //
+   // Under VacuumTreatment::GHOST_FLUX a row that comes in only through
+   // VACUUM faces is not a BC row at all: it keeps the interior row's slots -
+   // whose boundary faces are nulled by the same "neighbour exists" test - and
+   // the streaming term writes its full diagonal, so the one change is the
+   // rhs, |Omega . nA_f| / V_c times the face's per-angle inflow for every
+   // vacuum face it comes in through (windowed per face, summed over faces).
+   // That is exactly the upwind face flux with the inflow as the ghost value
+   // outside, which is the natural DG0 vacuum condition. A row that comes in
+   // through any REFLECTIVE face stays the reflective row (reflect wins, as in
+   // the structured backends), mirrored over the reflective axes AND the axes
+   // of its axis-aligned incoming vacuum faces - the structured rule, so a box
+   // matches its FD twin; an incoming vacuum face that is not axis-aligned has
+   // no mirror, and the partner then comes in through it as a ghost row
+   const PetscBool ghost = bcs.ghost_flux_vacuum();
    oor_.clear();
    ooc_.clear();
    std::vector<PetscInt> row_slot_offset(local_rows + 1, 0);
@@ -523,6 +535,7 @@ PetscErrorCode UnstructuredDG0::create_common(PhaseSpace &ps, PetscInt quad_dim,
    std::vector<PetscInt> is_bc_row(local_rows, 0);
    std::vector<PetscInt> reflect_slot(local_rows, -1);
    std::vector<PetscScalar> dirichlet_value(local_rows, 0.0);
+   std::vector<PetscScalar> ghost_inflow(local_rows, 0.0);
 
    for (PetscInt k = 0; k < local_cells && !failed; k++) {
 
@@ -537,8 +550,8 @@ PetscErrorCode UnstructuredDG0::create_common(PhaseSpace &ps, PetscInt quad_dim,
          // Which boundary faces this direction comes IN through: the physics
          // decides whether the row is a boundary row at all (the sign of s),
          // the label only which family each face belongs to
-         PetscBool any_incoming = PETSC_FALSE, any_vacuum = PETSC_FALSE;
-         PetscInt win = -1, first_reflect = -1, reflect_axes = 0;
+         PetscBool any_incoming = PETSC_FALSE, any_vacuum = PETSC_FALSE, any_reflect = PETSC_FALSE;
+         PetscInt win = -1, first_reflect = -1, reflect_axes = 0, vacuum_axes = 0;
          for (PetscInt lf = 0; lf < n_faces; lf++) {
             const PetscInt kf = k0 + lf;
             if (face_neighbour_row_h_[kf] >= 0) continue;
@@ -549,7 +562,13 @@ PetscErrorCode UnstructuredDG0::create_common(PhaseSpace &ps, PetscInt quad_dim,
                // The winning face: lowest dominant axis, then lowest point
                if (win < 0 || face_axis[kf] < face_axis[win] || \
                    (face_axis[kf] == face_axis[win] && face_point[kf] < face_point[win])) win = kf;
+               // Only an axis-aligned face has a mirror (the ghost-flux
+               // reflect-wins rule mirrors over it)
+               const PetscScalar *nA = &face_nA_h_[3 * kf];
+               const PetscReal area = PetscSqrtReal(PetscRealPart(nA[0] * nA[0] + nA[1] * nA[1] + nA[2] * nA[2]));
+               if (PetscAbsScalar(nA[face_axis[kf]]) >= (1.0 - 1e-10) * area) vacuum_axes |= (1 << face_axis[kf]);
             } else {
+               any_reflect = PETSC_TRUE;
                if (first_reflect < 0) first_reflect = lf;
                reflect_axes |= (1 << face_axis[kf]);
             }
@@ -557,18 +576,29 @@ PetscErrorCode UnstructuredDG0::create_common(PhaseSpace &ps, PetscInt quad_dim,
 
          row_slot_offset[r] = (PetscInt)oor_.size();
 
-         if (!any_incoming) {
+         if (!any_incoming || (ghost && !any_reflect)) {
 
-            // Interior row: the upwind neighbour across every inflow face
+            // Interior row: the upwind neighbour across every inflow face. A
+            // ghost-flux row is the same row, its boundary inflow faces
+            // nulled by the neighbour test, their flux moved to the rhs
             for (PetscInt lf = 0; lf < n_faces; lf++) {
                const PetscInt kf = k0 + lf;
-               const PetscBool live = (PetscBool)(face_neighbour_row_h_[kf] >= 0 && \
-                  PetscRealPart(FaceFlux(omega.data(), a, face_nA_h_.data(), kf)) < 0.0);
+               const PetscScalar s = FaceFlux(omega.data(), a, face_nA_h_.data(), kf);
+               const PetscBool live = (PetscBool)(face_neighbour_row_h_[kf] >= 0 && PetscRealPart(s) < 0.0);
                oor_.push_back(live ? row : -1);
                ooc_.push_back(live ? face_neighbour_row_h_[kf] + a : -1);
+
+               if (face_neighbour_row_h_[kf] >= 0 || !(PetscRealPart(s) < 0.0)) continue;
+               const BCFace bc = bcs.face(face_label_h_[kf]);
+               PetscReal t[2] = {0.0, 0.0};
+               PetscInt n_t = 0;
+               for (PetscInt d = 0; d < dim; d++) {
+                  if (d != face_axis[kf]) t[n_t++] = face_centroid[3 * kf + d];
+               }
+               if (InWindow(bc, t, n_t)) ghost_inflow[r] += -s / volume_h_[k] * ((PetscScalar)bc.inflow / sum_weights);
             }
 
-         } else if (any_vacuum) {
+         } else if (any_vacuum && !ghost) {
 
             // Dirichlet row: identity, and the rhs takes the winning face's
             // inflow if the face centroid is inside its window
@@ -589,10 +619,12 @@ PetscErrorCode UnstructuredDG0::create_common(PhaseSpace &ps, PetscInt quad_dim,
 
             // Reflective row: psi(a) - psi(partner) = 0 in the same cell, the
             // partner mirrored in every axis the direction came in through
+            // (under ghost-flux, the axis-aligned vacuum ones too - see above)
             is_bc_row[r] = 1;
             PetscInt partner = a;
+            const PetscInt mirror_axes = reflect_axes | (ghost ? vacuum_axes : 0);
             for (PetscInt d = 0; d < dim; d++) {
-               if (reflect_axes & (1 << d)) partner = reflect[d][partner];
+               if (mirror_axes & (1 << d)) partner = reflect[d][partner];
             }
 
             // The partner is outgoing through every face this direction came
@@ -601,7 +633,8 @@ PetscErrorCode UnstructuredDG0::create_common(PhaseSpace &ps, PetscInt quad_dim,
             // meets a slanted or curved vacuum boundary, the usual
             // symmetry-reduced geometry - makes it a Dirichlet row, and
             // psi(a) = psi(partner) = the inflow is a perfectly good pair of
-            // equations. Coming in through another REFLECTIVE face is not: the
+            // equations (under ghost-flux it is an ordinary ghost row, better
+            // still). Coming in through another REFLECTIVE face is not: the
             // two rows would each define the other (a single-cell-wide
             // direction between two reflective faces), and there is no
             // sensible matrix for that
@@ -645,10 +678,8 @@ PetscErrorCode UnstructuredDG0::create_common(PhaseSpace &ps, PetscInt quad_dim,
    PetscCall(CollectiveFailure(comm_, failed, message));
    row_slot_offset[local_rows] = (PetscInt)oor_.size();
 
-   // Dirichlet-cell rows only in this cut: no ghost-flux inflow
-   const std::vector<PetscScalar> ghost_inflow(local_rows, 0.0);
    PetscCall(set_pattern(row_slot_offset, diag_slot, is_bc_row, reflect_slot, dirichlet_value, ghost_inflow, \
-      PETSC_FALSE));
+      ghost));
 
    // ~~~~~~~~~~
    // The device geometry the streaming term reads - flat rank-1 views only

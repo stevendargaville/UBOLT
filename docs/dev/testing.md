@@ -616,6 +616,27 @@ rank 0 owns anything, or that either backend numbers its rows naturally.
    cell count — PETSc's writer writes every cell of a rank's local mesh unless a "vtk"
    label says otherwise, so an overlap cell written by two ranks would push it over —
    then deletes it. The file is `verify_plexk_tmp_<size>.vtu`, so nothing is left behind.
+7. **Ghost-flux vacuum treatment.** Every FD twin case of 1 and 2 bar the "Cell Sets" one
+   again under `"ghost_flux"`, the same (a)-(f): the rhs comparison now carries the ghost
+   inflow (the windowed 2D case has both corner faces feeding the origin cell, each on
+   its own window), and the mixed configs pin the reflect-wins corners and the mirror over
+   the axis-aligned vacuum face. Then, with no twin: (a) on streaming + removal with
+   sigma_t varying cell to cell, `||(VA)^T - P(VA)P||_F / ||VA||_F <= 1e-13` (measured
+   ~1e-16), P the opposite-ordinate swap found by the driver's own cosine search and V
+   the cell volumes per row. This is the property a half-quadrature preconditioner
+   applied transposed rests on. It is not bitwise: the diagonal's outflow sum equals the
+   opposite direction's inflow sum only because the cell's `nA_f` close, which is to
+   rounding. It runs on 6^2 triangles S2, on 3^3 tets S4, and on
+   `tests/meshes/square_irregular_tri.msh` S6. That file is a 4x4 triangulation with the
+   interior nodes perturbed, so the areas vary by +-17%. There the UNWEIGHTED
+   `||A^T - PAP|| / ||A||` is required to be above 1e-3 (it is ~0.07), because the
+   generated simplex boxes have equal volumes and would not tell the two identities
+   apart. (b) inflow `psi_in` on every face and source `sigma_t psi_in` against
+   `psi = psi_in` through `UboltFillInflow` + `UboltFillSource`, residual below
+   `1e-12 ||b||` (measured ~1e-15), which pins the `|Omega . nA_f| / V_c` weights on
+   faces of every orientation. (c) `meshes/tri_slanted.msh` in ghost mode: no
+   Dirichlet rows left, reflective rows still present, the solve converged and in
+   bounds.
 
 **Why the twin comparison is to rounding and not bitwise.** The two backends reach the
 same coefficient through different arithmetic — the FD stencil writes `|mu| / dx`, DG0
@@ -658,6 +679,9 @@ is the measured one here, not its pin (several structured pins carry +1 of CI sl
 | `plex_cube_10_st2` (1000 hexes, ratio 1) | 5 | 5 | `cube_10_st2`: 5 / 5 | 0.76 of rtol |
 | `plex_tet_6_st2` (1296 tets, ratio 0.5) | 5 | 5 | — | |
 | `plex_square_msh` (8 Gmsh triangles) | 4 | 4 | — | |
+| `plex_tri_30_inf_medium_ghost`, `-check_inf_medium -ksp_rtol 1e-12` (ghost-flux right + top, reflect left + bottom; measured 2026-09-25) | 12 | 12 | — | |
+| the same, `-matfree_removal` | 33 | — | — | |
+| `plex_tet_6_inf_medium_ghost`, `-check_inf_medium -ksp_rtol 1e-12` (ghost-flux right + back + top; measured 2026-09-25) | 11 | 11 | — | |
 | `plex_decades4`, `-matfree_removal -precon_ref_shift -precon_ref_k 4` | 4, 6, 15, 30 | 4, 6, 15, 30 | `box_decades4`: 4, 6, 15, 30 both | hair-trigger (0.94 of rtol) |
 | `plex_decades4`, `-matfree_removal -precon_ref_shift` (default k = 2) | 7, 9, 24, 48 | 7, 8, 24, 48 | `box_decades4`: 7, 8, 24, 48 both | hair-trigger (0.94); group 1 differs |
 
