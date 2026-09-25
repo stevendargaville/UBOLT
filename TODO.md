@@ -6,10 +6,11 @@ previous one's verification has passed and been reviewed.
 
 ## Current state (updated 2026-09-25)
 Last landed: Phase 6a (DG0 on DMPlex, PR #2) and the ghost-flux vacuum treatment as the
-default (PR #4, Phase 5 postscript). Next up: **linear DG (DG1) on the plex backend** —
-the item under the ghost-flux postscript; decide the row layout first. Other open items:
-DSA on the plex backend and 6b CG-SUPG (Phase 6), the mismatched ref-shift + DSA
-follow-up (Phase 5, likely closed by ghost-flux), and the half-quadrature transposed PC
+default (PR #4, Phase 5 postscript), which also closed the mismatched ref-shift + DSA
+follow-up and the `-precon_stream -precon_dsa` interaction (both Dirichlet-cell
+artefacts, now pinned). Next up: **linear DG (DG1) on the plex backend** — the item
+under the ghost-flux postscript; decide the row layout first. Other open items: DSA on
+the plex backend and 6b CG-SUPG (Phase 6), and the half-quadrature transposed PC
 (blocked on PFLARE's PCAIR `PCApplyTranspose`).
 
 ## Phase 0 — Scaffolding + baseline capture (no behavior change)
@@ -305,13 +306,30 @@ follow-up (Phase 5, likely closed by ghost-flux), and the half-quadrature transp
 - Verify: matvec equivalence vs assembled path on random vectors (<1e-13); solution norms
   match Phase 2; iteration counts recorded (not pinned) — preconditioner quality is the
   research question; findings recorded below.
-- [ ] Follow-up: DSA on a MISMATCHED reference-shifted pmat is fragile — 2D `box_decades4`
-      at k = 2 takes 179 iterations on the thick group where exact coverage takes 11, while
-      the 1D twin is fine. Likely the same unexplained amat/pmat interaction as
-      `-precon_stream -precon_dsa`. The DSA recipes pin exact coverage only until it is
-      understood. UPDATE 2026-09-25: under the ghost-flux default the same run takes
-      7, 8, 9, 10 (np 2: 7, 8, 8, 10) — the 179 was tied to the Dirichlet-cell rows. One
-      problem, so left open until a mismatched-k DSA recipe is worth pinning.
+- [x] Follow-up: DSA on a MISMATCHED reference-shifted pmat is fragile — 2D `box_decades4`
+      at k = 2 took 179 iterations on the thick group where exact coverage takes 11.
+      CLOSED 2026-09-25 by the ghost-flux default. The k = 1..4 sweep, with and without
+      DSA, serial and np 2, on both decades files and the two `mg4_t05` files: every
+      mismatched DSA run converges, including k = 1 at mismatch 31.6 (thick group 16 in
+      1D, 19 in 2D, where no-DSA takes 68 and 83), and the default k = 2 + DSA takes
+      10/11 against exact coverage's 11. The same `-precon_stream -precon_dsa` interaction
+      went with it: on `cube_diffusive` Dirichlet-cell still reproduces 35 -> DIVERGED
+      (300) with DSA added, and ghost-flux takes 44 -> 44. The likely mechanism is the DSA
+      BC mask: under Dirichlet-cell every inflow boundary cell has its inflow ordinates
+      masked out of both the restriction and the prolongation, so the diffusion solve sees
+      a partial moment and corrects only half the angles in exactly those cells — an
+      inconsistency a weak pmat (mismatched or streaming-only) cannot absorb. Ghost-flux
+      empties the mask on an all-vacuum problem. Pinned: default-k + DSA on both decades
+      files (serial + np 2) and `cube_diffusive -precon_stream -precon_dsa`. Table:
+      docs/dev/testing.md, "DSA on a shifted pmat".
+- [x] Follow-up (found in that sweep, fixed 2026-09-25): `RefShiftPmats::bin_alphas` broke
+      TIES by rounding. On equally spaced log-alphas (the decades files at k = 3) which pair
+      shared the merged bin depended on the MPI sum order of the log-means, so serial and
+      np 2 built different pmats (2D: 4, 6, 27, 51 vs 7, 8, 15, 29). Widths now compare
+      with a tie tolerance, and spare bins (the optimal-width greedy can need fewer than
+      asked) are spent from the top, splitting off the highest distinct alpha, where the
+      thick groups make an exact pmat pay most. No pinned count moved; k = 3 on
+      `box_decades4` is now pinned at 29, serial and np 2.
 - [x] Follow-up: sweep the `-precon_ref_shift` pins over the CI arches — SUPERSEDED
       2026-09-25: pins are now the local opt measurement and CI flags any arch that needs
       +1 (docs/dev/testing.md, "Pass/fail contract").
@@ -800,7 +818,10 @@ follow-up (Phase 5, likely closed by ghost-flux), and the half-quadrature transp
     correction is consistent with the PDE and not with the discretisation. A
     discretisation-consistent D (or a `D + c dx` fudge) is the obvious next experiment,
     and the table above is what to beat.
-  - Open: `-precon_stream` + `-precon_dsa` does not converge, and 3D says that is a real
+  - CLOSED 2026-09-25 (a Dirichlet-cell artefact, see the Phase 5 follow-up on the
+    mismatched ref-shift + DSA; ghost-flux takes 44 with and without DSA on
+    `cube_diffusive`, and that is pinned). Original note: `-precon_stream` +
+    `-precon_dsa` does not converge, and 3D says that is a real
     interaction rather than an inherited failure. In 1D and 2D neither the combination nor
     `-precon_stream` alone converges on the diffusive files, so nothing could be concluded
     there; on `cube_diffusive.json` `-precon_stream` alone converges in 47 and adding

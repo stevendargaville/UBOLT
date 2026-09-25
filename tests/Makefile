@@ -238,6 +238,10 @@ run_tests_short_serial:
 #    reproduces the full pmat's counts exactly; the default rule picks k = 2 and
 #    pays roughly a factor of two for it. Counts, the bare-L comparison and the
 #    pins' slack: ../docs/dev/testing.md
+#  - DSA on top of it, at k = 4 (exact) and at the default k = 2. The mismatched
+#    one used to be fragile (2D took 179 on the thick group under Dirichlet-cell
+#    vacuum); under ghost-flux the DSA correction absorbs the mismatch, and the
+#    default rule plus DSA lands on the exact count or below (10/11 vs 11)
 	@echo "Test 1D slab multigroup, reference-shifted pmat covering both group ratios exactly"
 	./transportk -problem problems/slab_mg4_t05.json -matfree_removal -precon_ref_shift -precon_ref_k 2 -ksp_max_it 6
 	@echo "Test 1D decades multigroup, reference-shifted pmat, one hierarchy per group (exact)"
@@ -246,6 +250,8 @@ run_tests_short_serial:
 	./transportk -problem problems/slab_decades4.json -matfree_removal -precon_ref_shift -ksp_max_it 44
 	@echo "Test 1D decades multigroup, reference-shifted pmat with the DSA correction on top"
 	./transportk -problem problems/slab_decades4.json -matfree_removal -precon_ref_shift -precon_ref_k 4 -precon_dsa -ksp_max_it 11
+	@echo "Test 1D decades multigroup, MISMATCHED reference-shifted pmat (default k) with DSA"
+	./transportk -problem problems/slab_decades4.json -matfree_removal -precon_ref_shift -precon_dsa -ksp_max_it 11
 # A streaming-only group (Sigma_t identically zero) costs the reference shift
 # nothing: it is preconditioned with the streaming matrix itself, which is its
 # EXACT operator, the reference falls to the first group with removal, and the
@@ -299,8 +305,17 @@ run_tests_short_serial:
 	./transportk -problem problems/box_decades4.json -matfree_removal -precon_ref_shift -precon_ref_k 4 -ksp_max_it 29
 	@echo "Test 2D decades multigroup, reference-shifted pmat, default number of hierarchies"
 	./transportk -problem problems/box_decades4.json -matfree_removal -precon_ref_shift -ksp_max_it 51
+# k = 3 on four equally spaced log-alphas is a TIE (any adjacent pair can share
+# the merged bin at the same worst mismatch). The binning resolves it the same
+# way on every rank count: the thin pair shares, the thick groups get the spare
+# bin and are exact (7, 8, 15, 29). Before the tie tolerance this was decided by
+# rounding - 51 serially, 29 at -n 2
+	@echo "Test 2D decades multigroup, reference-shifted pmat, three hierarchies (a binning tie)"
+	./transportk -problem problems/box_decades4.json -matfree_removal -precon_ref_shift -precon_ref_k 3 -ksp_max_it 29
 	@echo "Test 2D decades multigroup, reference-shifted pmat with the DSA correction on top"
 	./transportk -problem problems/box_decades4.json -matfree_removal -precon_ref_shift -precon_ref_k 4 -precon_dsa -ksp_max_it 11
+	@echo "Test 2D decades multigroup, MISMATCHED reference-shifted pmat (default k) with DSA"
+	./transportk -problem problems/box_decades4.json -matfree_removal -precon_ref_shift -precon_dsa -ksp_max_it 10
 	@echo "Test 2D box, S4 (12 angles)"
 	./transportk -problem problems/box_30_s4_st2.json -ksp_max_it 6
 	@echo "Test 2D box, one MatSetValuesCOO per term instead of a single summed one"
@@ -440,10 +455,15 @@ run_tests_short_serial:
 # a y/z mix-up: reflective Y faces on an anisotropic box, where swapping the
 # axes in the diffusion operator costs three iterations. Counts and the pins'
 # slack: ../docs/dev/testing.md
+# The streaming-only pmat + DSA line is the regression pin for the amat/pmat
+# interaction: under Dirichlet-cell vacuum this file went from 35 (-precon_stream
+# alone) to divergence at 300 with DSA added; under ghost-flux both take 44
 	@echo "Test 3D cube, diffusive regime WITHOUT the DSA correction (the reference)"
 	./transportk -problem problems/cube_diffusive.json -ksp_max_it 18
 	@echo "Test 3D cube, diffusive regime with the DSA correction"
 	./transportk -problem problems/cube_diffusive.json -precon_dsa -ksp_max_it 8
+	@echo "Test 3D cube, diffusive regime, DSA on a streaming-only pmat"
+	./transportk -problem problems/cube_diffusive.json -precon_stream -precon_dsa -ksp_max_it 44
 	@echo "Test 3D cube, DSA against the infinite-medium solution (all faces reflective)"
 	./transportk -problem problems/cube_10_inf_medium.json -precon_dsa -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 9
 	@echo "Test 3D cube, DSA on a problem that never needed it"
@@ -557,6 +577,8 @@ run_tests_short_parallel:
 	$(MPIEXEC) -n 2 ./transportk -problem problems/slab_decades4.json -matfree_removal -precon_ref_shift -ksp_max_it 44
 	@echo "Test 1D decades multigroup, reference-shifted pmat with DSA in parallel"
 	$(MPIEXEC) -n 2 ./transportk -problem problems/slab_decades4.json -matfree_removal -precon_ref_shift -precon_ref_k 4 -precon_dsa -ksp_max_it 11
+	@echo "Test 1D decades multigroup, mismatched reference-shifted pmat with DSA in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/slab_decades4.json -matfree_removal -precon_ref_shift -precon_dsa -ksp_max_it 11
 	@echo "Test 1D decades multigroup with a streaming-only top group in parallel"
 	$(MPIEXEC) -n 2 ./transportk -problem problems/slab_decades4_stream0.json -matfree_removal -precon_ref_shift -ksp_max_it 22
 	@echo "Test 1D slab multigroup, matrix-free removal against the assembled operator in parallel"
@@ -593,8 +615,12 @@ run_tests_short_parallel:
 	$(MPIEXEC) -n 2 ./transportk -problem problems/box_decades4.json -matfree_removal -precon_ref_shift -precon_ref_k 4 -ksp_max_it 29
 	@echo "Test 2D decades multigroup, reference-shifted pmat in parallel, default hierarchies"
 	$(MPIEXEC) -n 2 ./transportk -problem problems/box_decades4.json -matfree_removal -precon_ref_shift -ksp_max_it 51
+	@echo "Test 2D decades multigroup, reference-shifted pmat in parallel, three hierarchies (a binning tie)"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/box_decades4.json -matfree_removal -precon_ref_shift -precon_ref_k 3 -ksp_max_it 29
 	@echo "Test 2D decades multigroup, reference-shifted pmat with DSA in parallel"
 	$(MPIEXEC) -n 2 ./transportk -problem problems/box_decades4.json -matfree_removal -precon_ref_shift -precon_ref_k 4 -precon_dsa -ksp_max_it 11
+	@echo "Test 2D decades multigroup, mismatched reference-shifted pmat with DSA in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/box_decades4.json -matfree_removal -precon_ref_shift -precon_dsa -ksp_max_it 10
 	@echo "Test 2D box, matrix-free removal against the assembled operator in parallel"
 	$(MPIEXEC) -n 2 ./transportk -problem problems/box_50_st2.json -check_matfree -ksp_max_it 7
 	@echo "Test 2D box, S4 in parallel"
@@ -676,6 +702,8 @@ run_tests_short_parallel:
 	$(MPIEXEC) -n 2 ./transportk -problem problems/cube_diffusive.json -ksp_max_it 18
 	@echo "Test 3D cube, diffusive regime with the DSA correction in parallel"
 	$(MPIEXEC) -n 2 ./transportk -problem problems/cube_diffusive.json -precon_dsa -ksp_max_it 8
+	@echo "Test 3D cube, diffusive regime, DSA on a streaming-only pmat in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/cube_diffusive.json -precon_stream -precon_dsa -ksp_max_it 44
 	@echo "Test 3D cube, DSA against the infinite-medium solution in parallel"
 	$(MPIEXEC) -n 2 ./transportk -problem problems/cube_10_inf_medium.json -precon_dsa -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 9
 	@echo "Test 3D cube, painting identity on a 2D processor grid"
