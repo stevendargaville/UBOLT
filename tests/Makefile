@@ -305,6 +305,13 @@ run_tests_short_serial:
 	./transportk -problem problems/box_decades4.json -matfree_removal -precon_ref_shift -precon_ref_k 4 -ksp_max_it 29
 	@echo "Test 2D decades multigroup, reference-shifted pmat, default number of hierarchies"
 	./transportk -problem problems/box_decades4.json -matfree_removal -precon_ref_shift -ksp_max_it 51
+# k = 3 on four equally spaced log-alphas is a TIE (any adjacent pair can share
+# the merged bin at the same worst mismatch). The binning resolves it the same
+# way on every rank count: the thin pair shares, the thick groups get the spare
+# bin and are exact (7, 8, 15, 29). Before the tie tolerance this was decided by
+# rounding - 51 serially, 29 at -n 2
+	@echo "Test 2D decades multigroup, reference-shifted pmat, three hierarchies (a binning tie)"
+	./transportk -problem problems/box_decades4.json -matfree_removal -precon_ref_shift -precon_ref_k 3 -ksp_max_it 29
 	@echo "Test 2D decades multigroup, reference-shifted pmat with the DSA correction on top"
 	./transportk -problem problems/box_decades4.json -matfree_removal -precon_ref_shift -precon_ref_k 4 -precon_dsa -ksp_max_it 11
 	@echo "Test 2D decades multigroup, MISMATCHED reference-shifted pmat (default k) with DSA"
@@ -608,6 +615,8 @@ run_tests_short_parallel:
 	$(MPIEXEC) -n 2 ./transportk -problem problems/box_decades4.json -matfree_removal -precon_ref_shift -precon_ref_k 4 -ksp_max_it 29
 	@echo "Test 2D decades multigroup, reference-shifted pmat in parallel, default hierarchies"
 	$(MPIEXEC) -n 2 ./transportk -problem problems/box_decades4.json -matfree_removal -precon_ref_shift -ksp_max_it 51
+	@echo "Test 2D decades multigroup, reference-shifted pmat in parallel, three hierarchies (a binning tie)"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/box_decades4.json -matfree_removal -precon_ref_shift -precon_ref_k 3 -ksp_max_it 29
 	@echo "Test 2D decades multigroup, reference-shifted pmat with DSA in parallel"
 	$(MPIEXEC) -n 2 ./transportk -problem problems/box_decades4.json -matfree_removal -precon_ref_shift -precon_ref_k 4 -precon_dsa -ksp_max_it 11
 	@echo "Test 2D decades multigroup, mismatched reference-shifted pmat with DSA in parallel"

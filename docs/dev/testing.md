@@ -1204,21 +1204,25 @@ default-k + DSA runs are now recipes too (1D pinned at 11, 2D at 10, serial and
 |---|---|---|---|
 | `slab_decades4` | 1 (31.6) | 94, 21, 21, 68 | 52, 12, 9, 16 |
 | `slab_decades4` | 2, the default (3.16) | 13, 11, 28, 44 | 11, 11, 7, 10 |
-| `slab_decades4` | 3 (3.16) | 4, 8, 28, 44 | 4, 4, 7, 10 |
+| `slab_decades4` | 3 (3.16) | 13, 11, 14, 22 | 11, 11, 5, 11 |
 | `slab_decades4` | 4 (exact) | 4, 8, 14, 22 | 4, 4, 5, 11 |
 | `box_decades4` | 1 (31.6) | 27, 15, 21, 83 (82) | 20, 11, 10, 19 |
 | `box_decades4` | 2, the default (3.16) | 7, 8, 27, 51 | 7, 8, 9, 10 (7, 8, 8, 10) |
-| `box_decades4` | 3 (3.16) | 4, 6, 27, 51 (7, 8, 15, 29) | 4, 4, 9, 10 (7, 8, 6, 11) |
+| `box_decades4` | 3 (3.16) | 7, 8, 15, 29 | 7, 8, 6, 11 |
 | `box_decades4` | 4 (exact) | 4, 6, 15, 29 | 4, 4, 6, 11 |
 
 Every mismatched DSA run converges, even one shared pmat at a mismatch of 31.6,
 and on the thick group mismatched + DSA matches or beats exact coverage + DSA.
-(The 2D k = 3 rows are not the same pmats serial and at `-n 2`: the decades
-log-alphas are exactly equally spaced, so at k = 3 any adjacent pair can share
-the one two-group bin at the same worst mismatch, and which pair gets it is
-decided by last-bit rounding in the parallel log-mean. Serial pairs the thick
-groups, `-n 2` the thin ones. A tie in `RefShiftPmats::bin_alphas`, not a DSA
-effect, and why no recipe pins k = 3.) The `mg4_t05` files have at most a 1.12
+(k = 3 is a binning TIE on these files: the log-alphas are exactly equally
+spaced, so any adjacent pair can share the one merged bin at the same worst
+mismatch. As first measured, last-bit rounding in the parallel log-mean picked
+the pair, so serial and `-n 2` built different pmats — 2D serial took 4, 6, 27,
+51 and `-n 2` 7, 8, 15, 29. `RefShiftPmats::bin_alphas` now compares widths
+with a tie tolerance, and spends any bin the optimal-width greedy pass leaves
+spare from the top, splitting off the highest distinct alpha. So the thin pair
+shares and the thick groups are exact on every rank count, and the rows above
+are that binning. k = 3 on `box_decades4` is pinned at 29, serial and `-n 2`,
+and the old rounding-decided choice fails that pin serially.) The `mg4_t05` files have at most a 1.12
 mismatch and DSA takes 5-6 in 1D and 4-5 in 3D at every k. The 179 lived in
 the Dirichlet-cell boundary rows, the same DSA-mask artefact as the
 `-precon_stream -precon_dsa` divergence (see the DSA section).

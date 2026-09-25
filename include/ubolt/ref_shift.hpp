@@ -111,7 +111,9 @@ private:
    // and the classification that picks ref and flags streaming-only groups
    PetscErrorCode compute_alphas(const GroupXSections &xs);
    // Partition the sorted log-alphas into contiguous bins minimising the
-   // widest bin - see the .cxx for why this beats cutting at the largest gaps
+   // widest bin - see the .cxx for why this beats cutting at the largest gaps,
+   // how ties are broken the same way on every rank count, and where the spare
+   // bins go when the optimal width needs fewer than were asked for
    void bin_alphas(PetscInt n_bins);
 
    MPI_Comm comm_ = MPI_COMM_NULL;

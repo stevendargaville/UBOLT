@@ -322,6 +322,14 @@ the plex backend and 6b CG-SUPG (Phase 6), and the half-quadrature transposed PC
       empties the mask on an all-vacuum problem. Pinned: default-k + DSA on both decades
       files (serial + np 2) and `cube_diffusive -precon_stream -precon_dsa`. Table:
       docs/dev/testing.md, "DSA on a shifted pmat".
+- [x] Follow-up (found in that sweep, fixed 2026-09-25): `RefShiftPmats::bin_alphas` broke
+      TIES by rounding. On equally spaced log-alphas (the decades files at k = 3) which pair
+      shared the merged bin depended on the MPI sum order of the log-means, so serial and
+      np 2 built different pmats (2D: 4, 6, 27, 51 vs 7, 8, 15, 29). Widths now compare
+      with a tie tolerance, and spare bins (the optimal-width greedy can need fewer than
+      asked) are spent from the top, splitting off the highest distinct alpha, where the
+      thick groups make an exact pmat pay most. No pinned count moved; k = 3 on
+      `box_decades4` is now pinned at 29, serial and np 2.
 - [x] Follow-up: sweep the `-precon_ref_shift` pins over the CI arches — SUPERSEDED
       2026-09-25: pins are now the local opt measurement and CI flags any arch that needs
       +1 (docs/dev/testing.md, "Pass/fail contract").

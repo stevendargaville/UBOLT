@@ -126,15 +126,17 @@ PetscErrorCode RefShiftPmats::compute_alphas(const GroupXSections &xs)
 // How many bins a greedy left-to-right pass over the sorted log-alphas needs if
 // no bin may span more than `spread` - the standard fact that greedy is optimal
 // for "fewest intervals of a bounded width", which is what makes the search
-// below exact rather than a heuristic
-static PetscInt BinsNeeded(const std::vector<PetscReal> &sorted_log, PetscReal spread)
+// below exact rather than a heuristic. `tol` is the tie tolerance - see
+// bin_alphas
+static PetscInt BinsNeeded(const std::vector<PetscReal> &sorted_log, PetscReal spread, \
+   PetscReal tol)
 {
    PetscInt bins = 0;
    size_t i = 0;
 
    while (i < sorted_log.size()) {
       const PetscReal start = sorted_log[i];
-      while (i < sorted_log.size() && sorted_log[i] - start <= spread) i++;
+      while (i < sorted_log.size() && sorted_log[i] - start <= spread + tol) i++;
       bins++;
    }
    return bins;
@@ -157,6 +159,24 @@ static PetscInt BinsNeeded(const std::vector<PetscReal> &sorted_log, PetscReal s
 // pairwise difference of log-alphas, since the answer is one of them - for the
 // smallest that BinsNeeded can manage in n_bins. n_groups is small (this is a
 // group structure, not a mesh) and it runs once at setup
+//
+// Every width comparison carries a tie tolerance. The alphas are log-means
+// reduced over the mesh, so their last bits depend on the MPI sum order, and
+// when two candidate partitions tie in exact arithmetic - equally spaced
+// log-alphas, as in the decades files, where any adjacent pair could share the
+// one merged bin at k = 3 - rounding alone would pick the winner, and serial
+// and parallel runs would build different pmats. Differences within `tol` are
+// treated as equal, which makes the greedy pass decide, deterministically
+//
+// The greedy pass at the optimal width can use FEWER bins than were asked for:
+// exactly, when there are fewer distinct alphas than bins, and also at a tie
+// (0, 1, 2, 3 in 3 bins is {0,1}, {2,3} at width 1). The spare bins are then
+// spent from the TOP, splitting the highest distinct alpha off the highest bin
+// that still holds more than one, until they run out or every bin is exact.
+// That never widens a bin, so the worst mismatch stands, and the top is where
+// the spare hierarchy pays: the high-alpha groups are the thick ones, where a
+// mismatch costs the most iterations (box_decades4 at k = 3: 15, 29 on the two
+// thick groups with them exact, against 27, 51 with them sharing a bin)
 //
 // Each bin's representative then sits at the log-MIDPOINT of the alphas it
 // holds, which is the choice that minimises the worst mismatch inside the bin:
@@ -196,26 +216,44 @@ void RefShiftPmats::bin_alphas(PetscInt n_bins)
          for (PetscInt j = i; j < n_pos; j++) candidates.push_back(sorted_log[j] - sorted_log[i]);
       }
       std::sort(candidates.begin(), candidates.end());
+
+      // Far above the rounding in a mesh-sized log-mean, far below any ratio
+      // worth a hierarchy of its own
+      const PetscReal tol = 1e-10 * PetscMax((PetscReal)1.0, sorted_log[n_pos - 1] - sorted_log[0]);
+
       PetscReal spread = candidates.back();
       for (size_t c = 0; c < candidates.size(); c++) {
-         if (BinsNeeded(sorted_log, candidates[c]) <= n_bins) { spread = candidates[c]; break; }
+         if (BinsNeeded(sorted_log, candidates[c], tol) <= n_bins) { spread = candidates[c]; break; }
       }
 
-      PetscInt bin_start = 0;
-      for (PetscInt i = 0; i < n_pos; i++) {
+      // The bins as the index each one starts at in sorted_log. A new bin
+      // starts as soon as an alpha is further than `spread` above the one that
+      // opened the current bin - the same greedy pass BinsNeeded counted, so it
+      // lands in n_bins bins or fewer
+      std::vector<PetscInt> starts = {0};
+      for (PetscInt i = 1; i < n_pos; i++) {
+         if (sorted_log[i] - sorted_log[starts.back()] > spread + tol) starts.push_back(i);
+      }
 
-         // A new bin starts as soon as this alpha is further than `spread`
-         // above the one that opened the current bin - the same greedy pass
-         // BinsNeeded counted, so it lands in exactly n_bins bins or fewer
-         if (sorted_log[i] - sorted_log[bin_start] > spread) {
-            bin_alpha_.push_back(PetscExpReal( \
-               0.5 * (sorted_log[bin_start] + sorted_log[i - 1])));
-            bin_start = i;
+      // Spend any spare bins from the top: split off the highest distinct
+      // alpha of the highest bin that has more than one
+      while ((PetscInt)starts.size() < n_bins) {
+         PetscInt split = -1;
+         for (PetscInt b = (PetscInt)starts.size() - 1; b >= 0 && split < 0; b--) {
+            const PetscInt end = b + 1 < (PetscInt)starts.size() ? starts[b + 1] : n_pos;
+            for (PetscInt j = end - 1; j > starts[b]; j--) {
+               if (sorted_log[j] - sorted_log[j - 1] > tol) { split = j; break; }
+            }
          }
-         bin_of_group_[pos[order[i]]] = (PetscInt)bin_alpha_.size();
+         if (split < 0) break;
+         starts.insert(std::upper_bound(starts.begin(), starts.end(), split), split);
       }
-      bin_alpha_.push_back(PetscExpReal( \
-         0.5 * (sorted_log[bin_start] + sorted_log[n_pos - 1])));
+
+      for (size_t b = 0; b < starts.size(); b++) {
+         const PetscInt end = b + 1 < starts.size() ? starts[b + 1] : n_pos;
+         for (PetscInt i = starts[b]; i < end; i++) bin_of_group_[pos[order[i]]] = (PetscInt)b;
+         bin_alpha_.push_back(PetscExpReal(0.5 * (sorted_log[starts[b]] + sorted_log[end - 1])));
+      }
 
       for (PetscInt i = 0; i < n_pos; i++) {
          const PetscReal ratio = alpha_[pos[i]] / bin_alpha_[bin_of_group_[pos[i]]];
