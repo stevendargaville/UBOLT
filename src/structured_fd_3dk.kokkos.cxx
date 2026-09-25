@@ -104,7 +104,9 @@ static PetscErrorCode CheckDALayout(DM da, const PhaseSpace &ps, const PetscInt 
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-enum class RowKind { INTERIOR, DIRICHLET, REFLECT };
+// GHOST is the VacuumTreatment::GHOST_FLUX counterpart of DIRICHLET - see the
+// 2D backend for the full note
+enum class RowKind { INTERIOR, DIRICHLET, REFLECT, GHOST };
 
 // The upwind neighbour is behind the direction on each axis: to the
 // left/front/below for a positive cosine, to the right/back/above for a
@@ -140,7 +142,8 @@ static RowKind ClassifyRow(PetscInt i, PetscInt j, PetscInt k, PetscInt a, \
    PetscInt n_cells_x, PetscInt n_cells_y, PetscInt n_cells_z, \
    BCType left, BCType right, BCType front, BCType back, BCType bottom, BCType top, \
    const PetscInt *reflect_mu, const PetscInt *reflect_eta, const PetscInt *reflect_xi, \
-   Upwind *upwind, PetscInt *partner, PetscInt *dirichlet_face)
+   Upwind *upwind, PetscInt *partner, PetscInt *dirichlet_face, \
+   PetscBool ghost = PETSC_FALSE, PetscInt *ghost_face = nullptr)
 {
    upwind->upwind_i = (mu[a] > 0) ? i - 1 : ((mu[a] < 0) ? i + 1 : i);
    upwind->upwind_j = (eta[a] > 0) ? j - 1 : ((eta[a] < 0) ? j + 1 : j);
@@ -157,6 +160,7 @@ static RowKind ClassifyRow(PetscInt i, PetscInt j, PetscInt k, PetscInt a, \
 
    *partner = -1;
    *dirichlet_face = -1;
+   if (ghost_face) { ghost_face[0] = -1; ghost_face[1] = -1; ghost_face[2] = -1; }
    if (!x_outside && !y_outside && !z_outside) return RowKind::INTERIOR;
 
    // Which face the direction comes in through on each outside axis. The
@@ -164,17 +168,40 @@ static RowKind ClassifyRow(PetscInt i, PetscInt j, PetscInt k, PetscInt a, \
    const BCType x_bc = (mu[a] > 0) ? left : right;
    const BCType y_bc = (eta[a] > 0) ? front : back;
    const BCType z_bc = (xi[a] > 0) ? bottom : top;
-   if (x_outside && x_bc == BCType::VACUUM) {
-      *dirichlet_face = (mu[a] > 0) ? StructuredFD3D::FACE_LEFT : StructuredFD3D::FACE_RIGHT;
-      return RowKind::DIRICHLET;
+
+   // Ghost-flux mode: a row becomes a ghost row only when EVERY face it comes
+   // in through is vacuum, otherwise it stays the reflective row below - the
+   // opposite precedence to the default's "vacuum wins" at a mixed corner or
+   // edge. See the 2D backend for why
+   if (ghost) {
+      const PetscBool x_reflect = (PetscBool)(x_outside && x_bc == BCType::REFLECT);
+      const PetscBool y_reflect = (PetscBool)(y_outside && y_bc == BCType::REFLECT);
+      const PetscBool z_reflect = (PetscBool)(z_outside && z_bc == BCType::REFLECT);
+      if (!x_reflect && !y_reflect && !z_reflect) {
+         if (ghost_face) {
+            if (x_outside) ghost_face[0] = (mu[a] > 0) ? StructuredFD3D::FACE_LEFT : \
+               StructuredFD3D::FACE_RIGHT;
+            if (y_outside) ghost_face[1] = (eta[a] > 0) ? StructuredFD3D::FACE_FRONT : \
+               StructuredFD3D::FACE_BACK;
+            if (z_outside) ghost_face[2] = (xi[a] > 0) ? StructuredFD3D::FACE_BOTTOM : \
+               StructuredFD3D::FACE_TOP;
+         }
+         return RowKind::GHOST;
+      }
    }
-   if (y_outside && y_bc == BCType::VACUUM) {
-      *dirichlet_face = (eta[a] > 0) ? StructuredFD3D::FACE_FRONT : StructuredFD3D::FACE_BACK;
-      return RowKind::DIRICHLET;
-   }
-   if (z_outside && z_bc == BCType::VACUUM) {
-      *dirichlet_face = (xi[a] > 0) ? StructuredFD3D::FACE_BOTTOM : StructuredFD3D::FACE_TOP;
-      return RowKind::DIRICHLET;
+   else {
+      if (x_outside && x_bc == BCType::VACUUM) {
+         *dirichlet_face = (mu[a] > 0) ? StructuredFD3D::FACE_LEFT : StructuredFD3D::FACE_RIGHT;
+         return RowKind::DIRICHLET;
+      }
+      if (y_outside && y_bc == BCType::VACUUM) {
+         *dirichlet_face = (eta[a] > 0) ? StructuredFD3D::FACE_FRONT : StructuredFD3D::FACE_BACK;
+         return RowKind::DIRICHLET;
+      }
+      if (z_outside && z_bc == BCType::VACUUM) {
+         *dirichlet_face = (xi[a] > 0) ? StructuredFD3D::FACE_BOTTOM : StructuredFD3D::FACE_TOP;
+         return RowKind::DIRICHLET;
+      }
    }
 
    PetscInt ap = a;
@@ -290,6 +317,8 @@ PetscErrorCode StructuredFD3D::create(MPI_Comm comm, PhaseSpace &ps, PetscInt n_
    std::vector<PetscInt> is_bc_row(local_rows, 0);
    std::vector<PetscInt> reflect_slot(local_rows, -1);
    std::vector<PetscScalar> dirichlet_value(local_rows, 0.0);
+   std::vector<PetscScalar> ghost_inflow(local_rows, 0.0);
+   const PetscBool ghost = bcs.ghost_flux_vacuum();
 
    // A 3D face is a rectangle, so it takes two tangential [lo, hi] pairs in
    // ascending global-axis order. The per-angle rhs value is the face's
@@ -338,10 +367,36 @@ PetscErrorCode StructuredFD3D::create(MPI_Comm comm, PhaseSpace &ps, PetscInt n_
                // their axes
                Upwind upwind;
                PetscInt partner = -1, dirichlet_face = -1;
+               PetscInt ghost_face[3] = {-1, -1, -1};
                const RowKind kind = ClassifyRow(i, j, k, a, mu, eta, xi, n_cells_x, n_cells_y, \
                   n_cells_z, left, right, front, back, bottom, top, reflect_mu, reflect_eta, \
-                  reflect_xi, &upwind, &partner, &dirichlet_face);
-               if (kind != RowKind::INTERIOR) is_bc_row[r] = 1;
+                  reflect_xi, &upwind, &partner, &dirichlet_face, ghost, ghost_face);
+               // A GHOST row is an ordinary unknown - see the 2D backend
+               if (kind != RowKind::INTERIOR && kind != RowKind::GHOST) is_bc_row[r] = 1;
+
+               if (kind == RowKind::GHOST)
+               {
+                  // One rhs contribution per vacuum face this direction enters
+                  // through - an edge or corner cell gets two or three - each
+                  // |cosine| / h times that face's per-angle inflow, windowed
+                  // by the cell's two tangential centre coordinates in
+                  // ascending global-axis order
+                  const PetscScalar xc = ((PetscScalar)i + 0.5) * dx_;
+                  const PetscScalar yc = ((PetscScalar)j + 0.5) * dy_;
+                  const PetscScalar zc = ((PetscScalar)k + 0.5) * dz_;
+                  const PetscScalar coef[3] = {PetscAbsScalar(mu[a]) / dx_, \
+                                               PetscAbsScalar(eta[a]) / dy_, \
+                                               PetscAbsScalar(xi[a]) / dz_};
+                  for (PetscInt axis = 0; axis < 3; axis++) {
+                     if (ghost_face[axis] < 0) continue;
+                     for (PetscInt f = 0; f < 6; f++) {
+                        if (face_id[f] != ghost_face[axis]) continue;
+                        const PetscScalar t1 = (axis == 0) ? yc : xc;
+                        const PetscScalar t2 = (axis == 2) ? yc : zc;
+                        if (InWindow(face_of[f], t1, t2)) ghost_inflow[r] += coef[axis] * face_value[f];
+                     }
+                  }
+               }
 
                if (kind == RowKind::DIRICHLET)
                {
@@ -395,9 +450,21 @@ PetscErrorCode StructuredFD3D::create(MPI_Comm comm, PhaseSpace &ps, PetscInt n_
                }
                else
                {
-                  const PetscBool null_x = (PetscBool)(kind == RowKind::DIRICHLET || !upwind.has_x);
-                  const PetscBool null_y = (PetscBool)(kind == RowKind::DIRICHLET || !upwind.has_y);
-                  const PetscBool null_z = (PetscBool)(kind == RowKind::DIRICHLET || !upwind.has_z);
+                  // A GHOST row keeps every slot whose upwind neighbour is
+                  // inside and nulls the ones pointing out of the domain -
+                  // exactly the slots whose coefficients moved to the rhs
+                  const PetscBool x_out = (PetscBool)(upwind.has_x && \
+                     (upwind.upwind_i < 0 || upwind.upwind_i >= n_cells_x));
+                  const PetscBool y_out = (PetscBool)(upwind.has_y && \
+                     (upwind.upwind_j < 0 || upwind.upwind_j >= n_cells_y));
+                  const PetscBool z_out = (PetscBool)(upwind.has_z && \
+                     (upwind.upwind_k < 0 || upwind.upwind_k >= n_cells_z));
+                  const PetscBool null_x = (PetscBool)(kind == RowKind::DIRICHLET || \
+                     !upwind.has_x || (kind == RowKind::GHOST && x_out));
+                  const PetscBool null_y = (PetscBool)(kind == RowKind::DIRICHLET || \
+                     !upwind.has_y || (kind == RowKind::GHOST && y_out));
+                  const PetscBool null_z = (PetscBool)(kind == RowKind::DIRICHLET || \
+                     !upwind.has_z || (kind == RowKind::GHOST && z_out));
 
                   oor_[4 * r]     = null_x ? -1 : row;
                   ooc_[4 * r]     = null_x ? -1 : \
@@ -440,7 +507,7 @@ PetscErrorCode StructuredFD3D::create(MPI_Comm comm, PhaseSpace &ps, PetscInt n_
 
    // Slot maps - row r owns COO slots 4r (upwind-x), 4r + 1 (upwind-y),
    // 4r + 2 (upwind-z) and 4r + 3 (diagonal)
-   PetscCall(set_uniform_pattern(4, is_bc_row, reflect_slot, dirichlet_value));
+   PetscCall(set_uniform_pattern(4, is_bc_row, reflect_slot, dirichlet_value, ghost_inflow, ghost));
 
    PetscFunctionReturn(PETSC_SUCCESS);
 }

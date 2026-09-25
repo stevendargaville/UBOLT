@@ -307,7 +307,7 @@ PetscErrorCode ProblemSpec::create(MPI_Comm comm, const char *problem_path)
    // The problem file is strict - an unknown key is a typo, not an extension
    PetscCall(JsonCheckKeys(root, "the problem file", problem_path, \
       {"dimension", "mesh", "sn_order", "materials", "regions", "boundary_conditions", \
-       "output"}));
+       "vacuum_treatment", "output"}));
 
    PetscCall(JsonGetInt(root, "dimension", problem_path, &dimension));
    PetscCheck(dimension >= 1 && dimension <= 3, PETSC_COMM_SELF, PETSC_ERR_ARG_OUTOFRANGE, \
@@ -354,6 +354,21 @@ PetscErrorCode ProblemSpec::create(MPI_Comm comm, const char *problem_path)
    // The SN order, not the ordinate count - which orders exist is the
    // quadrature's business, so only the obvious nonsense is caught here
    PetscCall(JsonGetInt(root, "sn_order", problem_path, &sn_order));
+
+   // How every vacuum face is discretised - "dirichlet_cell" (the default, the
+   // boundary cell's row replaced by the identity) or "ghost_flux" (the cell
+   // stays an unknown and the inflow enters through the upwind flux). See
+   // VacuumTreatment in bc_spec.hpp and docs/problem_files.md
+   if (root.contains("vacuum_treatment")) {
+      PetscCheck(root.at("vacuum_treatment").is_string(), PETSC_COMM_SELF, PETSC_ERR_ARG_WRONG, \
+         "%s: vacuum_treatment must be a string", problem_path);
+      const std::string treatment = root.at("vacuum_treatment").get<std::string>();
+      if (treatment == "dirichlet_cell") bcs.set_vacuum_treatment(VacuumTreatment::DIRICHLET_CELL);
+      else if (treatment == "ghost_flux") bcs.set_vacuum_treatment(VacuumTreatment::GHOST_FLUX);
+      else SETERRQ(PETSC_COMM_SELF, PETSC_ERR_ARG_WRONG, \
+         "%s: vacuum_treatment must be \"dirichlet_cell\" or \"ghost_flux\", was \"%s\"", \
+         problem_path, treatment.c_str());
+   }
    PetscCheck(sn_order > 0 && sn_order % 2 == 0, PETSC_COMM_SELF, PETSC_ERR_ARG_OUTOFRANGE, \
       "%s: sn_order must be a positive even integer, was given %" PetscInt_FMT, problem_path, \
       sn_order);

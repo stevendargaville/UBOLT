@@ -46,11 +46,27 @@ struct PETSC_VISIBILITY_PUBLIC BoundaryInfo {
    // through more than one vacuum face (a corner), the winning face is the
    // FIRST vacuum incoming face in axis order x, y, z - the order ClassifyRow
    // checks - and the window test applies on that face. Sized local_rows
+   //
+   // Under VacuumTreatment::GHOST_FLUX there are no Dirichlet rows, so this is
+   // zero everywhere and ghost_inflow_d below carries the boundary value instead
    PetscScalarKokkosView dirichlet_value_d;
+   // The GHOST_FLUX rhs contribution: sum over the row's vacuum inflow FACES of
+   // |Omega_axis| / h_axis times that face's per-angle inflow, windowed. Unlike
+   // dirichlet_value_d this SUMS over faces - a corner cell is fed through both
+   // of them - and it is ADDED to the rhs rather than written over it, because
+   // a ghost row also carries the external source. Zero everywhere under the
+   // default treatment. Sized local_rows
+   PetscScalarKokkosView ghost_inflow_d;
+   // Is any row in this discretisation a ghost-flux row? Host-side only, so
+   // the default treatment can skip the extra rhs kernel entirely and stay
+   // bitwise what it was
+   PetscBool ghost_flux_vacuum = PETSC_FALSE;
 };
 
-// Write the per-row inflow onto the Dirichlet rows of b (other rows are
-// untouched): call on a zeroed b, before UboltFillSource
+// Put the boundary inflow into b: the per-row value written ONTO each
+// Dirichlet row (other rows untouched) under the default vacuum treatment, and
+// ADDED to each ghost-flux row under VacuumTreatment::GHOST_FLUX. Call on a
+// zeroed b, before UboltFillSource
 PETSC_EXTERN PetscErrorCode UboltFillInflow(const BoundaryInfo &boundary, Vec b);
 
 // Zero b on the reflective rows: their equation is psi_r - psi_partner = 0, so

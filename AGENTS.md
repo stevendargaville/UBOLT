@@ -22,7 +22,9 @@ Codebase map
   shared materials files); one file per distinct physics setup.
   `tests/verify_2dk.kokkos.cxx` / `tests/verify_3dk.kokkos.cxx`: the 2D/3D
   discretisation checks — a pure-streaming closed form and the shell operator against a
-  reference matrix (the 3D mixed config puts three reflective faces around one corner).
+  reference matrix (the 3D mixed config puts three reflective faces around one corner),
+  each under both vacuum treatments, plus the library-built boundary rhs against a
+  constant solution and, under ghost-flux, the opposite-ordinate identity `A^T = P A P`.
   `tests/verify_quadraturek.kokkos.cxx`: the quadrature sets themselves, against the
   moment conditions that define them — needed because they are generated, not tabulated.
   `tests/baselines/`: captured
@@ -40,7 +42,15 @@ Codebase map
   weights are NOT equal within a set), plus
   `UboltAngularIntegral`, the shared angular integral; `BCSpec` (boundary label id →
   BC family {vacuum, reflect}, plus the vacuum face's prescribed inflow and optional
-  tangential window, keyed the way DMPlex "Face Sets" ids are — the structured
+  tangential window, plus the `VacuumTreatment` — `DIRICHLET_CELL`, the default: an
+  inflow boundary cell is an identity row carrying the inflow; or `GHOST_FLUX`, opt-in
+  via the problem file's `vacuum_treatment`: the cell keeps its full stencil, the
+  outside-pointing slot is nulled and the inflow enters the rhs through the face flux
+  (`BoundaryInfo::ghost_inflow_d`, added by `UboltFillInflow`; `UboltFillSource` ADDS
+  for that reason). Ghost-flux is what makes the streaming/removal block for `-Omega_d`
+  exactly the transpose of the block for `Omega_d` on every row (the groundwork for
+  transposed half-quadrature preconditioning); reflect wins over vacuum at a corner,
+  and `DSAPrecon` refuses the mode. Keyed the way DMPlex "Face Sets" ids are — the structured
   backends' `FACE_*` constants match PETSc's box-mesh convention, and a problem file's
   `boundary_conditions` names faces onto them); `MaterialSpec` (BCSpec's sibling
   for cell data: per-material, per-group xsections + external source — an isotropic

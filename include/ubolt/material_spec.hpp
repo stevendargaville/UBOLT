@@ -57,14 +57,20 @@ private:
    std::vector<PetscScalar> source_;
 };
 
-// b = source(material(cell), g) / sum_weights on every row of every cell -
+// b += source(material(cell), g) / sum_weights on every row of every cell -
 // the isotropic strength shared out over the quadrature's angular domain -
 // EXCEPT the BC rows: the rhs there belongs to the boundary condition - the
 // incoming flux on a Dirichlet row, zero on a reflective one - the same
 // contract the terms and GroupTransfer::add_source have with the BC row mask.
-// So zero b and write the per-face inflow onto the Dirichlet rows first
-// (VecSet(b, 0.0) + UboltFillInflow), call this, and let UboltZeroReflectRows
-// hold the reflective rows at zero as usual
+// So zero b and write the per-face inflow first (VecSet(b, 0.0) +
+// UboltFillInflow), call this, and let UboltZeroReflectRows hold the
+// reflective rows at zero as usual
+//
+// It ADDS rather than assigns. Under the default vacuum treatment that is the
+// same thing bitwise - the rows it touches are exactly the rows UboltFillInflow
+// leaves at zero - but under VacuumTreatment::GHOST_FLUX a boundary cell is an
+// ordinary unknown whose rhs carries the external source AND the |Omega|/h
+// inflow, and assigning would wipe the latter
 PETSC_EXTERN PetscErrorCode UboltFillSource(const PhaseSpace &ps, const BoundaryInfo &boundary, \
    const AngularQuadrature &quad, const MaterialSpec &mats, const PetscIntKokkosView &mat_id_d, \
    PetscInt g, Vec b);

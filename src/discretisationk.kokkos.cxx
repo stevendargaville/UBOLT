@@ -51,7 +51,8 @@ PetscErrorCode Discretisation::destroy()
 // coordinates out this way never has to hand a term a raw index. Building them
 // here rather than per backend also keeps "the diagonal is last" stated once
 PetscErrorCode Discretisation::set_uniform_pattern(PetscInt slots_per_row, const std::vector<PetscInt> &is_bc_row, \
-   const std::vector<PetscInt> &reflect_slot, const std::vector<PetscScalar> &dirichlet_value)
+   const std::vector<PetscInt> &reflect_slot, const std::vector<PetscScalar> &dirichlet_value, \
+   const std::vector<PetscScalar> &ghost_inflow, PetscBool ghost_flux_vacuum)
 {
    PetscFunctionBeginUser;
 
@@ -67,6 +68,9 @@ PetscErrorCode Discretisation::set_uniform_pattern(PetscInt slots_per_row, const
    PetscCheck((PetscInt)dirichlet_value.size() == local_rows, comm_, PETSC_ERR_ARG_INCOMP, \
       "Dirichlet values have %" PetscInt_FMT " entries but there are %" PetscInt_FMT " local rows", \
       (PetscInt)dirichlet_value.size(), local_rows);
+   PetscCheck((PetscInt)ghost_inflow.size() == local_rows, comm_, PETSC_ERR_ARG_INCOMP, \
+      "ghost inflows have %" PetscInt_FMT " entries but there are %" PetscInt_FMT " local rows", \
+      (PetscInt)ghost_inflow.size(), local_rows);
    PetscCheck((PetscInt)oor_.size() == slots_per_row * local_rows && oor_.size() == ooc_.size(), \
       comm_, PETSC_ERR_ARG_INCOMP, "COO coordinates are %" PetscInt_FMT " long, not %" PetscInt_FMT \
       " slots x %" PetscInt_FMT " local rows", (PetscInt)oor_.size(), slots_per_row, local_rows);
@@ -86,6 +90,14 @@ PetscErrorCode Discretisation::set_uniform_pattern(PetscInt slots_per_row, const
    boundary_.is_bc_row_d = PetscIntKokkosView("is_bc_row_d", local_rows);
    boundary_.reflect_slot_d = PetscIntKokkosView("reflect_slot_d", local_rows);
    boundary_.dirichlet_value_d = PetscScalarKokkosView("dirichlet_value_d", local_rows);
+   // Only under the ghost-flux treatment. The default path must allocate
+   // NOTHING it did not allocate before: an extra device allocation shifts
+   // every later one, and a shifted buffer changes the chunking a vectorised
+   // reduction picks, which moves the last bits of a residual norm. The
+   // captured baselines in tests/baselines are bit-for-bit comparisons, so
+   // that is a real regression rather than a cosmetic one
+   boundary_.ghost_flux_vacuum = ghost_flux_vacuum;
+   if (ghost_flux_vacuum) boundary_.ghost_inflow_d = PetscScalarKokkosView("ghost_inflow_d", local_rows);
 
    PetscIntKokkosViewHostUnmanaged row_slot_offset_h(row_slot_offset.data(), local_rows + 1);
    PetscIntKokkosViewHostUnmanaged diag_slot_h(diag_slot.data(), local_rows);
@@ -99,6 +111,11 @@ PetscErrorCode Discretisation::set_uniform_pattern(PetscInt slots_per_row, const
    Kokkos::deep_copy(boundary_.is_bc_row_d, is_bc_row_h);
    Kokkos::deep_copy(boundary_.reflect_slot_d, reflect_slot_h);
    Kokkos::deep_copy(boundary_.dirichlet_value_d, dirichlet_value_h);
+   if (ghost_flux_vacuum) {
+      PetscScalarKokkosViewHostUnmanaged ghost_inflow_h( \
+         const_cast<PetscScalar *>(ghost_inflow.data()), local_rows);
+      Kokkos::deep_copy(boundary_.ghost_inflow_d, ghost_inflow_h);
+   }
 
    PetscFunctionReturn(PETSC_SUCCESS);
 }
@@ -118,11 +135,31 @@ static void FillInflowKernel(PetscScalarKokkosView b_d, PetscIntKokkosView is_bc
       });
 }
 
+// A ghost-flux row is an ordinary unknown, so its boundary value is ADDED to
+// the rhs rather than written over it - the external source lands on the same
+// row afterwards. The value is |Omega_axis| / h_axis times the face's
+// per-angle inflow, already summed over the row's vacuum inflow faces by the
+// backend, so a corner cell fed through two faces gets both
+// A free function for the same reason FillInflowKernel is one
+static void FillGhostInflowKernel(PetscScalarKokkosView b_d, \
+   PetscScalarKokkosView ghost_inflow_d, PetscInt local_rows)
+{
+   Kokkos::parallel_for(
+      Kokkos::RangePolicy<>(0, local_rows), KOKKOS_LAMBDA(PetscInt r) {
+
+         b_d(r) += ghost_inflow_d(r);
+      });
+}
+
 // The rhs of a Dirichlet row IS the boundary value: the per-angle inflow the
 // backend computed at create time - the winning face's angle-integrated
 // strength divided by the quadrature's measure, zeroed outside that face's
 // window. Every other row is left alone, so this goes onto a zeroed b before
 // the external source is filled in
+//
+// Under VacuumTreatment::GHOST_FLUX there are no Dirichlet rows: the first
+// kernel writes nothing and the second ADDS the |Omega|/h weighted inflow onto
+// the ghost rows instead
 PetscErrorCode UboltFillInflow(const BoundaryInfo &boundary, Vec b)
 {
    PetscFunctionBeginUser;
@@ -137,6 +174,9 @@ PetscErrorCode UboltFillInflow(const BoundaryInfo &boundary, Vec b)
    PetscCall(VecGetKokkosView(b, &b_d));
    FillInflowKernel(b_d, boundary.is_bc_row_d, boundary.reflect_slot_d, boundary.dirichlet_value_d, \
       local_rows);
+   // Only under the ghost-flux treatment, so the default path runs exactly the
+   // one kernel it always did
+   if (boundary.ghost_flux_vacuum) FillGhostInflowKernel(b_d, boundary.ghost_inflow_d, local_rows);
    PetscCall(VecRestoreKokkosView(b, &b_d));
 
    PetscFunctionReturn(PETSC_SUCCESS);

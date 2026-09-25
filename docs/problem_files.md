@@ -41,7 +41,43 @@ ignored everywhere (JSON has no comments), holding provenance prose.
 | `materials` | string or object | yes | a path to a materials file, resolved relative to the problem file's own directory, or the same schema inline |
 | `regions` | object | no | which cells are which material - see below; absent = uniform background |
 | `boundary_conditions` | object | no | per-face `"vacuum"`/`"reflect"`, or an object `{"type", "inflow", "window"}` - see below; unset faces are vacuum with inflow 0 |
+| `vacuum_treatment` | string | no | how every VACUUM face is discretised: `"dirichlet_cell"` (default) or `"ghost_flux"` - see below. Reflective faces are unaffected |
 | `output.flux_vtk` | string | no | output path, `.vts` or `.vtr`; `-flux_vtk` on the command line overrides it. A single-group problem writes the filename as given, multigroup writes one file per group (`flux.vts` becomes `flux_g0.vts`, ...). Each file carries three per-cell fields for its group: `scalar_flux`, `sigma_t` and `source` (the isotropic strength as written here, not the per-ordinate share) |
+
+### Vacuum treatment
+
+Two discretisations of the same physics - a prescribed incoming flux on a
+vacuum face - differing in whether the boundary cell stays an unknown.
+
+`"dirichlet_cell"` (the default, and what UBOLT did before the key existed):
+for a direction that enters through the face, the boundary cell's row is
+REPLACED by the identity and the rhs there carries the incoming flux. The cell
+is not an unknown for that direction.
+
+`"ghost_flux"`: the boundary cell stays an ordinary unknown. Its row carries
+the full upwind stencil - the same diagonal `sum_a |Omega_a| / h_a` an interior
+row has - and the one off-diagonal per axis whose upwind neighbour lies outside
+the domain is simply absent, its coefficient `|Omega_a| / h_a` times the face's
+per-angle inflow moved to the rhs. That is the usual upwind flux with a ghost
+cell holding the prescribed inflow. Per-face inflows and tangential windows
+work exactly as they do under the default, and a corner cell fed through two
+vacuum faces gets a contribution from each (the default takes only the first
+vacuum face in axis order x, y, z).
+
+The two differ at the boundary cell by O(h) and converge to the same solution
+under mesh refinement. `"ghost_flux"` leaves no identity rows in the operator,
+which is what makes the upwind operator for `-Omega` the exact transpose of the
+one for `+Omega` on every row rather than only the interior ones.
+
+Restrictions:
+
+- Reflective faces are untouched: a reflective row is still
+  `psi(a) - psi(mirror a) = 0`. Where a direction enters through BOTH a vacuum
+  and a reflective face - a mixed corner or edge - the REFLECTIVE treatment
+  wins under `"ghost_flux"` and the row is mirrored over every axis it enters
+  through, the opposite precedence to the default's "vacuum wins".
+- The DSA correction (`-precon_dsa`) has no ghost-flux vacuum boundary yet and
+  errors if the two are combined.
 
 ### Regions
 

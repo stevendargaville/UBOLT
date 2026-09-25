@@ -116,7 +116,14 @@ static void FillSourceKernel(PetscScalarKokkosView b_d, PetscScalarKokkosView so
                const PetscInt r = i * n_angles + j;
                // The rhs on a BC row belongs to the boundary condition
                if (is_bc_row_d(r)) return;
-               b_d(r) = q;
+               // ADD, not assign. Under the default vacuum treatment the rows
+               // this touches are exactly the rows UboltFillInflow does not,
+               // so on a zeroed b the two are the same thing bitwise. They are
+               // NOT the same under VacuumTreatment::GHOST_FLUX: a ghost-flux
+               // boundary cell is an ordinary unknown, so it carries BOTH the
+               // external source and the |Omega|/h inflow, and assigning here
+               // would wipe the inflow the fill before it put there
+               b_d(r) += q;
          });
    });
 }

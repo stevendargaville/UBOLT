@@ -845,3 +845,28 @@ previous one's verification has passed and been reviewed.
   1000x4); the decomposition is decided in cells (PetscSplitOwnership over n_cells) from
   Phase 1a on. np=1,2 are unaffected (the splits coincide), np=3 now converges in 10 its
   matching serial where the pre-refactor binary did not.
+
+## Phase 5 postscript — the ghost-flux vacuum treatment (own commit, Sep 2026)
+Split out of the transposed-solves campaign (branch `claude/transpose-boltzmann-report-a40050`,
+report outside the repo in `transpose_solves/`), which found that the opposite-ordinate
+identity `A^T = P A P` (P swaps `(cell, Omega)` with `(cell, -Omega)`) holds exactly on
+every interior row in 1D/2D/3D but fails on the Dirichlet-cell boundary rows, and that a
+PCAIR built on half the ordinates applied transposed on the other half then costs 6-7x
+the iterations in 2D/3D. The ghost-flux treatment removes the identity rows; the identity
+is then exact on every row and the half-quadrature PC matched the full hierarchy within 1
+iteration at ~50% setup/memory. The transposed applies, the probe driver and the solve
+experiments stay on the campaign branch until PFLARE's PCAIR `PCApplyTranspose` merges.
+- [x] Opt-in `"vacuum_treatment": "ghost_flux"`: `BCSpec::VacuumTreatment`,
+      `BoundaryInfo::ghost_inflow_d`, per-axis GHOST rows in the three structured
+      backends, reflect wins mixed corners, DSA refuses it. Default byte-identical.
+- [x] Verified: `verify_2dk`/`verify_3dk` run closed form + reference matrix in both
+      treatments, the library-built rhs against a constant solution, and `A^T = P A P`
+      (0.0 relative, heterogeneous sigma_t, parallel too) under ghost-flux;
+      `*_inf_medium_ghost.json` solves against the exact constant in 1D/2D/3D.
+- [x] Swept the ghost-flux pins over the 64-bit and OpenMP CI images (two went up by 1).
+- [ ] Make ghost-flux the default. It is the standard upwind FV inflow, differs from the
+      default by O(h) at the boundary cell, and is what DG does anyway. It changes every
+      solution at boundary cells, so: regenerate all 24 baselines deliberately, re-pin
+      every recipe, and rewrite `DSAPrecon`'s Marshak face. Its own commit series.
+- [ ] The half-quadrature preconditioner and an `-adjoint` path — blocked on PFLARE's
+      PCAIR `PCApplyTranspose`; see the campaign branch.

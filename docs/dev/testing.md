@@ -239,7 +239,9 @@ indirect fingerprint of the numerics; in 2D `tests/verify_2dk` compares the oper
 itself, so it is a strictly sharper oracle and there is nothing left for a baseline to
 catch. `make baselines` is still 1D + multigroup only.
 
-`verify_2dk` runs two checks, both S2 (4 angles) and S4 (12), and exits non-zero on either:
+`verify_2dk` runs these checks, both S2 (4 angles) and S4 (12), and exits non-zero on any.
+Checks 1 and 2 run under both vacuum treatments; the ghost-flux runs and checks 3-4
+are described under "Ghost-flux vacuum treatment" below:
 
 1. **Pure-streaming closed form.** `psi = x + y` is linear, and first-order upwind
    differencing is exact on a linear function, so the *discrete* operator has the PDE's
@@ -364,7 +366,8 @@ pmat carries the coupling too), so these counts have no reason to match their va
 counterparts.
 
 The sharp oracles are the verify_2dk reference configs above and the **infinite-medium
-check**: with every face reflective, a uniform source and uniform xsections, the exact
+check**: with every face reflective (or a vacuum face feeding in exactly the
+infinite-medium flux, see the ghost-flux section), a uniform source and uniform xsections, the exact
 discrete solution is constant in every cell and angle — no discretisation error, so
 `-check_inf_medium` compares against 1e-9 under `-ksp_rtol 1e-12` (lands at ~1e-13).
 The constant is per group, by forward substitution down the sweep:
@@ -392,6 +395,56 @@ vacuum — the last group always has ratio 1 (no downscatter out of it).
 | 2D 50x50 S4, left+bottom reflect, ratio 0.5 | 6 | — |
 | 2D 20x20 S8, left+bottom reflect, ratio 0.5 | 6 | 6 |
 | 2D all-reflect infinite medium (rtol 1e-12) | 10 | 10 |
+
+## Ghost-flux vacuum treatment
+The opt-in `"vacuum_treatment": "ghost_flux"` (see `docs/problem_files.md`) changes only
+the boundary rows, so the checks are the existing ones run a second time in that mode,
+plus two that only it needs. The default is untouched: every other recipe and all 24
+baselines are byte-identical to the pre-ghost library (a fresh capture on the same arch
+matches one from the unmodified library).
+
+- **Closed form** (`verify_2dk`/`verify_3dk` check 1, ghost mode). A ghost row is a
+  stencil row, so its rhs is the streamed source plus `|cosine| / h` times `psi` at the
+  GHOST node one cell further upwind, per outside axis. That cell against the Dirichlet
+  row's boundary node is exactly the O(h) the two treatments differ by.
+- **Reference matrix** (check 2, ghost mode). A ghost row is the interior row with the
+  outside-pointing upwind entries dropped. The mixed configs pin the ghost-mode corner
+  rule, which is the opposite of the default: reflect wins a corner or edge where a
+  direction enters through both a vacuum and a reflective face.
+- **Constant inflow** (check 3, both modes). Inflow `psi_in` on every face and a source
+  `sigma_t psi_in` make `psi = psi_in` exact, and the rhs is built by `UboltFillInflow` +
+  `UboltFillSource` exactly as `transportk` builds it. That pins the per-face
+  `|cosine| / h` weights in `BoundaryInfo::ghost_inflow_d` and that `UboltFillSource`
+  adds rather than overwrites. Checks 1 and 2 build their rhs by hand and cannot see
+  either.
+- **Opposite-ordinate identity** (check 4, ghost mode only, parallel too).
+  `||A^T - P A P||_F / ||A||_F` on streaming + removal with heterogeneous sigma_t, where P
+  swaps `(cell, Omega)` with `(cell, -Omega)` (found by the driver's own cosine search).
+  It must be below 1e-14 and is 0.0. This is why the mode exists: it lets one hierarchy
+  built on half the ordinates precondition the other half through its transpose. Under
+  the default it fails on the boundary rows (residue ~0.1 relative in 2D), so it is not
+  run there.
+- **Solves** against the infinite-medium oracle. `*_inf_medium_ghost.json` replace some
+  or all reflective faces with ghost-flux vacuum faces whose inflow IS the
+  infinite-medium flux, so the constant stays exact. The 2D/3D files keep reflective
+  faces on the low sides, which puts the mixed corners in the solve. `-check_inf_medium`
+  accepts such a face (whole-face, and inflow / sum_weights equal to the expected
+  constant in every group, otherwise it errors).
+- `DSAPrecon` refuses ghost mode (its Marshak face is written against the Dirichlet-cell
+  boundary), so no DSA recipe runs it.
+
+Pins, measured 2026-09-25 and swept the same day in the 64-bit and OpenMP CI images; a
+pin is the max over the arches, and the two that sit above the opt reference say which
+arch set them:
+
+| ghost-flux config (rtol 1e-12, `-check_inf_medium`) | np=1 | np=2 |
+|---|---|---|
+| 1D slab, both faces ghost vacuum | 8 | 8 |
+| 1D slab, both faces ghost vacuum, `-matfree_removal` | 18 (opt 17, 64-bit 18) | — |
+| 2D 50x50, left+bottom reflect, right+top ghost vacuum | 12 | 12 (opt/64-bit 11, OpenMP 12) |
+| 2D same, `-matfree_removal` | 25 | — |
+| 3D 10^3, left+front+bottom reflect, others ghost vacuum | 11 | 11 |
+| 3D same, `-matfree_removal` | 21 | — |
 
 ## Painted regions (MaterialSpec)
 A problem file's `regions.paint` list paints shapes — boxes in 2D, intervals in 1D —
@@ -438,8 +491,9 @@ The 2D story, one axis wider, and the same deliberate absence: there are **no 3D
 baselines** — `tests/verify_3dk` compares the operator itself, `make baselines` stays
 1D + multigroup only.
 
-`verify_3dk` runs the two checks of `verify_2dk`, both S2 (8 angles) and S4 (24 — a 3D
-level-symmetric set has twice the ordinates of the same-order 2D set):
+`verify_3dk` runs the checks of `verify_2dk`, both S2 (8 angles) and S4 (24 — a 3D
+level-symmetric set has twice the ordinates of the same-order 2D set), each under both
+vacuum treatments (see "Ghost-flux vacuum treatment" below):
 
 1. **Pure-streaming closed form**, `psi = x + y + z` on an 8x6x4 grid over a 1x2x3 box —
    all three extents distinct, so no axis mix-up can hide. Residual ~8e-15 against the
