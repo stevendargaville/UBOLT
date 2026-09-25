@@ -175,7 +175,7 @@ run_tests_short_serial:
 	@echo "Test 1D slab, ghost-flux vacuum faces against the infinite-medium solution"
 	./transportk -problem problems/slab_inf_medium_ghost.json -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 8
 	@echo "Test 1D slab, ghost-flux vacuum faces, matrix-free removal against the infinite-medium solution"
-	./transportk -problem problems/slab_inf_medium_ghost.json -matfree_removal -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 17
+	./transportk -problem problems/slab_inf_medium_ghost.json -matfree_removal -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 18
 #
 # The Dirichlet-cell vacuum treatment (opt-in, "vacuum_treatment":
 # "dirichlet_cell"; the default until Sep 2026). One twin of the st2 workhorse
@@ -320,7 +320,7 @@ run_tests_short_serial:
 	@echo "Test 2D box, matrix-free removal against the assembled operator (reflective faces)"
 	./transportk -problem problems/box_50_reflect_lb.json -check_matfree -ksp_max_it 6
 	@echo "Test 2D box, matrix-free removal against the infinite-medium solution (all faces reflective)"
-	./transportk -problem problems/box_50_inf_medium.json -matfree_removal -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 24
+	./transportk -problem problems/box_50_inf_medium.json -matfree_removal -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 25
 	@echo "Test 2D box, ghost-flux vacuum + reflective faces against the infinite-medium solution"
 	./transportk -problem problems/box_50_inf_medium_ghost.json -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 12
 	@echo "Test 2D box, ghost-flux vacuum + reflective faces, matrix-free removal against the infinite-medium solution"
@@ -576,7 +576,7 @@ run_tests_short_parallel:
 	@echo "Test 2D box, Dirichlet-cell vacuum treatment in parallel"
 	$(MPIEXEC) -n 2 ./transportk -problem problems/box_50_st2_dirichlet_cell.json -ksp_max_it 6
 	@echo "Test 2D box, ghost-flux vacuum + reflective faces against the infinite-medium solution in parallel"
-	$(MPIEXEC) -n 2 ./transportk -problem problems/box_50_inf_medium_ghost.json -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 11
+	$(MPIEXEC) -n 2 ./transportk -problem problems/box_50_inf_medium_ghost.json -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 12
 	@echo "Test 2D box, scattering ratio 0.5 in parallel"
 	$(MPIEXEC) -n 2 ./transportk -problem problems/box_50_ratio05.json -ksp_max_it 5
 	@echo "Test 2D box, non-square grid in parallel"
@@ -612,7 +612,7 @@ run_tests_short_parallel:
 	@echo "Test 2D box, DSA against the infinite-medium solution in parallel"
 	$(MPIEXEC) -n 2 ./transportk -problem problems/box_50_inf_medium.json -precon_dsa -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 10
 	@echo "Test 2D crooked pipe benchmark without the DSA correction in parallel"
-	$(MPIEXEC) -n 2 ./transportk -problem problems/box_crooked_pipe.json -ksp_max_it 114
+	$(MPIEXEC) -n 2 ./transportk -problem problems/box_crooked_pipe.json -ksp_max_it 117
 	@echo "Test 2D crooked pipe benchmark with the DSA correction in parallel"
 	$(MPIEXEC) -n 2 ./transportk -problem problems/box_crooked_pipe.json -precon_dsa -ksp_max_it 28
 	@echo "Test 2D layered thick/thin benchmark without the DSA correction in parallel"

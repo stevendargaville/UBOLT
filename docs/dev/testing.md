@@ -10,8 +10,12 @@
   re-set that way 2026-09-25 for the ghost-flux vacuum default (see "Switching the
   default" under the ghost-flux section). The same recipes run on every CI arch
   (opt/debug/64-bit/OpenMP), so CI flags any arch that needs one more, and at that point
-  the pin takes the max over the arches. The per-arch notes further down ("pinned 10",
-  "64-bit CI 18") are the history of the pre-2026-09-25 max-over-arches policy.
+  the pin takes the max over the arches. The first CI run after the re-pin did that for
+  four recipes, each noted where its count is tabulated: the 1D ghost-flux and 2D
+  all-reflective `-matfree_removal` inf-medium checks (64-bit, 17 -> 18 and 24 -> 25), the
+  2D ghost-flux inf-medium check at np=2 (OpenMP, 11 -> 12) and the crooked pipe at np=2
+  (OpenMP, 114 -> 117). Older per-arch notes further down ("pinned 10") are the history
+  of the pre-2026-09-25 policy.
 - Multigroup caveat: `-ksp_max_it` is one option for the whole group sweep, so a
   multigroup recipe pins the **max over the groups**. A single group getting slower
   without exceeding that max will not fail the recipe — the multigroup baselines below
@@ -475,8 +479,8 @@ them back onto the opt count, so these two are where CI would ask for +1:
 | ghost-flux config (rtol 1e-12, `-check_inf_medium`) | np=1 | np=2 |
 |---|---|---|
 | 1D slab, both faces ghost vacuum | 8 | 8 |
-| 1D slab, both faces ghost vacuum, `-matfree_removal` | 17 (64-bit CI 18) | — |
-| 2D 50x50, left+bottom reflect, right+top ghost vacuum | 12 | 11 (OpenMP CI 12) |
+| 1D slab, both faces ghost vacuum, `-matfree_removal` | 17 (pinned 18, 64-bit CI) | — |
+| 2D 50x50, left+bottom reflect, right+top ghost vacuum | 12 | 11 (pinned 12, OpenMP CI) |
 | 2D same, `-matfree_removal` | 25 | — |
 | 3D 10^3, left+front+bottom reflect, others ghost vacuum | 11 | 11 |
 | 3D same, `-matfree_removal` | 21 | — |
@@ -885,7 +889,8 @@ brackets where they moved, and the plex pair is in "Unstructured iteration count
 | 3D 10^3 st=2 | 6 / 6 | 6 / 6 |
 
 The infinite-medium check runs in this mode too — `slab_inf_medium.json` in 7 serial
-and 8 at `-n 2`, `box_50_inf_medium.json` in 24 both. Those are the streaming-only
+and 8 at `-n 2`, `box_50_inf_medium.json` in 24 both (the serial recipe pinned 25:
+the 64-bit CI arch takes one more). Those are the streaming-only
 pmat's counts rather than the default pc's 10, and they are what `-precon_stream`
 measures on the same files. The solution lands at 1.4e-13 to 7.6e-12 against the 1e-9
 tolerance; the drift from the default path's ~1e-13 is the pmat and not the matrix-free
@@ -1047,7 +1052,7 @@ runs both ways, reference and `-precon_dsa`, serial and `-n 2`, in
 
 | problem | regime pinned | np=1 | np=2 |
 |---|---|---|---|
-| `box_crooked_pipe.json` (28x20) | discontinuous D through the harmonic face mean (Southworth et al. crooked pipe, Table I set 2) | 113 / 28 (Dirichlet-cell 123 / 72) | 114 / 28 (Dirichlet-cell 95 / 69) |
+| `box_crooked_pipe.json` (28x20) | discontinuous D through the harmonic face mean (Southworth et al. crooked pipe, Table I set 2) | 113 / 28 (Dirichlet-cell 123 / 72) | 114 (pinned 117, OpenMP CI) / 28 (Dirichlet-cell 95 / 69) |
 | `box_layers.json` (40x40) | alternating thick/thin layers (the Warsa mixed regime) | 24 / 12 (Dirichlet-cell 25 / 13) | 24 / 11 (Dirichlet-cell 25 / 12) |
 | `box_lattice.json` (56x56) | scattering ratio exactly 1 with painted pure absorbers | 9 / 5 | 9 / 5 |
 | `box_random8.json` (32x32) | fixed-seed blockwise random thick/thin/absorber mix | 19 / 8 (Dirichlet-cell 27 / 11) | 19 / 8 (Dirichlet-cell 27 / 11) |
