@@ -98,7 +98,7 @@ static void MaterialIdRange(const PetscIntKokkosView &mat_id_d, PetscInt local_c
 
 static void FillSourceKernel(PetscScalarKokkosView b_d, PetscScalarKokkosView source_tab_d, \
    PetscIntKokkosView mat_id_d, PetscIntKokkosView is_bc_row_d, PetscInt n_groups, PetscInt g, \
-   PetscInt n_angles, PetscInt local_cells, PetscScalar sum_weights)
+   PetscInt n_angles, PetscInt n_basis, PetscInt local_cells, PetscScalar sum_weights)
 {
    Kokkos::parallel_for(
       Kokkos::TeamPolicy<>(PetscGetKokkosExecutionSpace(), local_cells, Kokkos::AUTO()),
@@ -113,7 +113,8 @@ static void FillSourceKernel(PetscScalarKokkosView b_d, PetscScalarKokkosView so
          Kokkos::parallel_for(
             Kokkos::TeamThreadRange(t, n_angles), [&](const PetscInt j) {
 
-               const PetscInt r = i * n_angles + j;
+               // Basis 0 of the cell: a constant projects onto nothing else
+               const PetscInt r = i * n_basis * n_angles + j;
                // The rhs on a BC row belongs to the boundary condition
                if (is_bc_row_d(r)) return;
                // ADD, not assign. Under VacuumTreatment::DIRICHLET_CELL the
@@ -179,7 +180,7 @@ PetscErrorCode UboltFillSource(const PhaseSpace &ps, const BoundaryInfo &boundar
    PetscScalarKokkosView b_d;
    PetscCall(VecGetKokkosView(b, &b_d));
    FillSourceKernel(b_d, source_tab_d, mat_id_d, boundary.is_bc_row_d, mats.n_groups(), g, \
-      ps.n_angles, ps.local_cells, quad.sum_weights());
+      ps.n_angles, ps.n_basis, ps.local_cells, quad.sum_weights());
    PetscCall(VecRestoreKokkosView(b, &b_d));
 
    PetscFunctionReturn(PETSC_SUCCESS);

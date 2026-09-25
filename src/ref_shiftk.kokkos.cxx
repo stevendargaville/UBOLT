@@ -19,12 +19,12 @@
 // which is the same contract every term already has with the mask
 static void ShiftFillKernel(PetscScalarKokkosView shift_d, \
    PetscScalarKokkosView sigma_t_ref_d, PetscIntKokkosView is_bc_row_d, \
-   PetscScalar alpha, PetscInt n_angles, PetscInt local_rows)
+   PetscScalar alpha, PetscInt rows_per_cell, PetscInt local_rows)
 {
    Kokkos::parallel_for(
       Kokkos::RangePolicy<>(0, local_rows), KOKKOS_LAMBDA(PetscInt r) {
 
-         shift_d(r) = is_bc_row_d(r) ? (PetscScalar)0.0 : alpha * sigma_t_ref_d(r / n_angles);
+         shift_d(r) = is_bc_row_d(r) ? (PetscScalar)0.0 : alpha * sigma_t_ref_d(r / rows_per_cell);
       });
 }
 
@@ -349,7 +349,7 @@ PetscErrorCode RefShiftPmats::create(MPI_Comm comm, const PhaseSpace &ps, \
 
       PetscCall(VecGetKokkosViewWrite(shift_vec, &shift_d));
       ShiftFillKernel(shift_d, sigma_t_ref_d, boundary.is_bc_row_d, \
-         (PetscScalar)bin_alpha_[k], ps_.n_angles, ps_.local_rows());
+         (PetscScalar)bin_alpha_[k], ps_.rows_per_cell(), ps_.local_rows());
       PetscCall(VecRestoreKokkosViewWrite(shift_vec, &shift_d));
 
       PetscCall(MatDiagonalSet(pmats_[k], shift_vec, ADD_VALUES));

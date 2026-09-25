@@ -8,7 +8,7 @@
 #include "ubolt/structured_fd_1d.hpp"
 #include "ubolt/structured_fd_2d.hpp"
 #include "ubolt/structured_fd_3d.hpp"
-#include "ubolt/unstructured_dg0.hpp"
+#include "ubolt/unstructured_dg.hpp"
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -101,7 +101,7 @@ private:
 // Streaming on an unstructured mesh: Omega . grad psi as the DG0 upwind face
 // flux, sum_f (Omega . nA_f / V_c) psi_upwind(f)
 //
-// The sibling of the structured streaming terms for UnstructuredDG0, and the
+// The sibling of the structured streaming terms for UnstructuredDG, and the
 // owner of its slot convention: n_faces + 1 slots per row, one per face in cone
 // order, then the diagonal. Per face s = Omega_a . nA_f; an OUTFLOW face
 // (s > 0) adds s / V_c to the diagonal, an inflow face adds it (negative) to
@@ -115,7 +115,7 @@ private:
 // never disagree
 class PETSC_VISIBILITY_PUBLIC StreamingTermDG0 : public OperatorTerm {
 public:
-   PetscErrorCode create(const PhaseSpace &ps, const UnstructuredDG0 &disc);
+   PetscErrorCode create(const PhaseSpace &ps, const UnstructuredDG &disc);
 
    PetscBool assembled() const override { return PETSC_TRUE; }
    PetscErrorCode assemble_add(PetscScalarKokkosView &coo_v_d) const override;
@@ -136,10 +136,53 @@ private:
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
+// Streaming on an unstructured mesh at DG1: the upwind DG weak form of
+// Omega . grad psi against the backend's orthonormal linear basis, per unit
+// volume - for row (c, i, a), with s = Omega_a . nA_f
+//   sum_f s * (1 / (V A_f)) int_f phi_i psi^up  -  (Omega_a . grad phi_i) psi_(c, 0)
+// psi^up this cell's own trace on an outflow face (s > 0: the face_own_d matrix
+// into the row's own block), the upwind trace otherwise (face_up_d into that
+// face's block - the backend pointed it at the neighbour, at the mirrored angle
+// on a reflective face, or nulled it on a vacuum face, whose inflow is in the
+// rhs). The volume term lands on own slot 0. Same fill discipline as DG0: the
+// only branch is on the sign of s
+//
+// The sibling of StreamingTermDG0 for UnstructuredDG at order 1, and the owner
+// of its slot convention: n_basis slots per face in cone order, then this
+// cell's n_basis, the diagonal being own slot i. Takes no quadrature, for the
+// same reason as DG0
+class PETSC_VISIBILITY_PUBLIC StreamingTermDG1 : public OperatorTerm {
+public:
+   PetscErrorCode create(const PhaseSpace &ps, const UnstructuredDG &disc);
+
+   PetscBool assembled() const override { return PETSC_TRUE; }
+   PetscErrorCode assemble_add(PetscScalarKokkosView &coo_v_d) const override;
+
+   PetscBool has_diagonal() const override { return PETSC_TRUE; }
+   PetscErrorCode add_diagonal(Vec d) const override;
+
+private:
+   PetscInt n_angles_ = 0;
+   PetscInt n_basis_ = 0;
+   PetscInt local_rows_ = 0;
+   PetscScalarKokkosView omega_d_;
+   PetscIntKokkosView cell_face_offset_d_;
+   PetscScalarKokkosView face_nA_d_;
+   PetscScalarKokkosView face_own_d_;
+   PetscScalarKokkosView face_up_d_;
+   PetscScalarKokkosView basis_grad_d_;
+   CooPattern pattern_;
+   BoundaryInfo boundary_;
+};
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
 // Removal: sigma_t psi, a pure diagonal contribution
 //
 // Nothing here is dimension-specific - it writes the diagonal slot and skips
-// the Dirichlet rows - so it takes any Discretisation
+// the Dirichlet rows - so it takes any Discretisation. At DG1 too: the basis
+// is orthonormal on the cell, so the mass matrix is the identity and sigma_t
+// (constant on the cell) stays on the diagonal of every basis row
 //
 // The one term that can go either way. Assembled (the default) it is a
 // per-group refill of the shared matrix; matrix-free it leaves the assembled
@@ -176,7 +219,7 @@ public:
    PetscErrorCode add_diagonal(Vec d) const override;
 
 private:
-   PetscInt n_angles_ = 0;
+   PetscInt rows_per_cell_ = 0;
    PetscInt local_rows_ = 0;
    PetscBool matrix_free_ = PETSC_FALSE;
    PetscScalarKokkosView sigma_t_d_;
@@ -208,6 +251,7 @@ public:
 
 private:
    PetscInt n_angles_ = 0;
+   PetscInt n_basis_ = 1;
    PetscScalar sum_weights_ = 0.0;
    PetscScalarKokkosView sigma_s_d_;
    PetscScalar2DKokkosView w_d_;

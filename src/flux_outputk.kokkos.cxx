@@ -197,19 +197,23 @@ PetscErrorCode UboltWriteScalarFluxVTK(const PhaseSpace &ps, \
    }
 
    // The shared angular integral, so what gets written is bit-identical with
-   // what the terms integrate
-   PetscScalar2DKokkosView scalar_flux_d("scalar_flux_d", ps.local_cells, 1);
+   // what the terms integrate. Per node - (cell, basis) - and what is written
+   // is basis 0 of each cell: the cell itself at one dof per cell, the cell
+   // AVERAGE with a modal basis whose basis 0 is the constant (DG1)
+   PetscScalar2DKokkosView scalar_flux_d("scalar_flux_d", ps.local_nodes(), 1);
    PetscCall(UboltAngularIntegral(psi, ps.n_angles, quad.w_d(), scalar_flux_d));
 
-   // The angular integral writes a (cells, 1) gemm output, the extra fields are
-   // plain per-cell views; both are contiguous in cell on either backend, so
-   // the mirror's data() is the field in local cell order in both cases
+   // The angular integral writes a (nodes, 1) gemm output, the extra fields are
+   // plain per-cell views; both are contiguous on either backend, so the
+   // mirror's data() is the field in local node (cell) order in both cases
    auto flux_h = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), scalar_flux_d);
+   std::vector<PetscScalar> cell_flux(ps.local_cells);
+   for (PetscInt c = 0; c < ps.local_cells; c++) cell_flux[c] = flux_h.data()[c * ps.n_basis];
    std::vector<decltype(Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), extra[0].values))> extra_h;
    std::vector<const char *> names(1 + n_extra);
    std::vector<const PetscScalar *> values(1 + n_extra);
    names[0] = "scalar_flux";
-   values[0] = flux_h.data();
+   values[0] = cell_flux.data();
    for (PetscInt f = 0; f < n_extra; f++) {
       extra_h.push_back(Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), extra[f].values));
       names[1 + f] = extra[f].name;

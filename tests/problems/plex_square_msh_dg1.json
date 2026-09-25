@@ -1,0 +1,45 @@
+{
+ "_comment": "The DG1 twin of plex_square_msh.json: tests/meshes/square_2x2_tri.msh, Cell Sets materials and Face Sets boundary conditions (left driven, top reflective, the rest cold), at order 1. Pins the file reader, cell_sets painting and integer-keyed BCs through the DG1 path.",
+ "dimension": 2,
+ "mesh": {
+  "type": "unstructured",
+  "file": "../meshes/square_2x2_tri.msh",
+  "order": 1
+ },
+ "sn_order": 4,
+ "materials": {
+  "n_groups": 1,
+  "materials": [
+   {
+    "id": 0,
+    "name": "scatterer",
+    "Sigma_t": [2.0],
+    "Sigma_s": [
+     [1.0]
+    ],
+    "Source": [1.0]
+   },
+   {
+    "id": 1,
+    "name": "absorber",
+    "Sigma_t": [10.0],
+    "Sigma_s": [
+     [1.0]
+    ],
+    "Source": [0.0]
+   }
+  ]
+ },
+ "regions": {
+  "cell_sets": {
+   "1": "scatterer",
+   "2": "absorber"
+  }
+ },
+ "boundary_conditions": {
+  "13": {"type": "vacuum", "inflow": 1.0},
+  "12": "reflect",
+  "10": "vacuum",
+  "11": "vacuum"
+ }
+}

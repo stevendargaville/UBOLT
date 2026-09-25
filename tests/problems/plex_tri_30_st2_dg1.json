@@ -1,0 +1,32 @@
+{
+ "_comment": "The DG1 twin of plex_tri_30_st2.json: the 30x30 simplex box (triangles), S4, sigma_t 2, scattering ratio 0.5, 4 pi inflow on every face. Pins the DG1 count on cells whose faces are not all axis-aligned.",
+ "dimension": 2,
+ "mesh": {
+  "type": "unstructured",
+  "simplex": true,
+  "n_cells": [30, 30],
+  "lengths": [1.0, 1.0],
+  "order": 1
+ },
+ "sn_order": 4,
+ "materials": {
+  "n_groups": 1,
+  "materials": [
+   {
+    "id": 0,
+    "name": "st2_ss1",
+    "Sigma_t": [2.0],
+    "Sigma_s": [
+     [1.0]
+    ],
+    "Source": [1.0]
+   }
+  ]
+ },
+ "boundary_conditions": {
+  "left": {"type": "vacuum", "inflow": 12.566370614359172},
+  "right": {"type": "vacuum", "inflow": 12.566370614359172},
+  "bottom": {"type": "vacuum", "inflow": 12.566370614359172},
+  "top": {"type": "vacuum", "inflow": 12.566370614359172}
+ }
+}

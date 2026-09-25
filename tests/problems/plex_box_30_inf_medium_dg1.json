@@ -1,0 +1,31 @@
+{
+ "_comment": "DG1 on the 30x30 QUAD box (S4), the infinite-medium material with reflective left + bottom and vacuum right + top whose inflow is the infinite-medium flux (inflow = sum_weights * 1/(4 pi) = 1): the constant on basis 0 and zero slope is the exact discrete solution, checked by -check_inf_medium. The twin of plex_tri_30_inf_medium_dg1.json that needs no simplex mesher, so it runs on every CI image.",
+ "dimension": 2,
+ "mesh": {
+  "type": "unstructured",
+  "n_cells": [30, 30],
+  "lengths": [1.0, 1.0],
+  "order": 1
+ },
+ "sn_order": 4,
+ "materials": {
+  "n_groups": 1,
+  "materials": [
+   {
+    "id": 0,
+    "name": "st2_ss1",
+    "Sigma_t": [2.0],
+    "Sigma_s": [
+     [1.0]
+    ],
+    "Source": [1.0]
+   }
+  ]
+ },
+ "boundary_conditions": {
+  "left": "reflect",
+  "right": {"type": "vacuum", "inflow": 1.0},
+  "bottom": "reflect",
+  "top": {"type": "vacuum", "inflow": 1.0}
+ }
+}

@@ -1,0 +1,31 @@
+{
+ "_comment": "The DG1 twin of plex_box_50_reflect_lb.json: reflective left + bottom faces on the 50x50 quad box. At DG1 a reflective face is a face coupling to the mirrored angle's trace in the same cell (no BC rows at all), so this pins the reflective couplings and the corner where two of them meet.",
+ "dimension": 2,
+ "mesh": {
+  "type": "unstructured",
+  "n_cells": [50, 50],
+  "lengths": [1.0, 1.0],
+  "order": 1
+ },
+ "sn_order": 2,
+ "materials": {
+  "n_groups": 1,
+  "materials": [
+   {
+    "id": 0,
+    "name": "st2_ss1",
+    "Sigma_t": [2.0],
+    "Sigma_s": [
+     [1.0]
+    ],
+    "Source": [1.0]
+   }
+  ]
+ },
+ "boundary_conditions": {
+  "left": "reflect",
+  "right": {"type": "vacuum", "inflow": 12.566370614359172},
+  "bottom": "reflect",
+  "top": {"type": "vacuum", "inflow": 12.566370614359172}
+ }
+}

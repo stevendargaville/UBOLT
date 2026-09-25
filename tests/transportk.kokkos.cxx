@@ -64,6 +64,33 @@
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
+// -check_inf_medium's error: max over the rows of |psi - the infinite-medium
+// solution|, which is the constant on every row of a one-dof-per-cell backend
+// and, with a modal basis (DG1), the constant on basis 0 and zero on the rest.
+// A host loop - it runs once, after the solve
+static PetscErrorCode InfMediumError(const PhaseSpace &ps, Vec psi, PetscScalar expected, PetscReal *err)
+{
+   const PetscScalar *psi_a = nullptr;
+   PetscInt local_rows = 0;
+   PetscReal local_err = 0.0;
+
+   PetscFunctionBeginUser;
+
+   PetscCall(VecGetLocalSize(psi, &local_rows));
+   PetscCall(VecGetArrayRead(psi, &psi_a));
+   for (PetscInt r = 0; r < local_rows; r++) {
+      const PetscInt basis = (r / ps.n_angles) % ps.n_basis;
+      const PetscScalar target = (basis == 0) ? expected : (PetscScalar)0.0;
+      local_err = PetscMax(local_err, PetscAbsScalar(psi_a[r] - target));
+   }
+   PetscCall(VecRestoreArrayRead(psi, &psi_a));
+   PetscCallMPI(MPIU_Allreduce(&local_err, err, 1, MPIU_REAL, MPIU_MAX, PetscObjectComm((PetscObject)psi)));
+
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
 // -check_matfree: is the matrix-free removal the same operator as the
 // assembled one, and is the composed diagonal the same diagonal?
 //
@@ -311,8 +338,9 @@ int main(int argc, char **args) {
       StreamingTerm streaming_1d;
       StreamingTerm2D streaming_2d;
       StreamingTerm3D streaming_3d;
-      UnstructuredDG0 disc_dg0;
+      UnstructuredDG disc_dg;
       StreamingTermDG0 streaming_dg0;
+      StreamingTermDG1 streaming_dg1;
       const AngularQuadrature *quad = NULL;
       Discretisation *disc = NULL;
       OperatorTerm *streaming = NULL;
@@ -350,20 +378,27 @@ int main(int argc, char **args) {
          }
          else SETERRQ(PETSC_COMM_WORLD, PETSC_ERR_SUP, "no unstructured backend for dimension %" \
             PetscInt_FMT, spec.dimension);
-         PetscCall(disc_dg0.create_mesh(PETSC_COMM_WORLD, mesh_spec));
-         PetscCall(ps.create(PETSC_COMM_WORLD, disc_dg0.n_global_cells(), quad->n_angles(), n_groups));
-         if (spec.dimension == 2) PetscCall(disc_dg0.create(ps, quad_2d, spec.bcs));
-         else PetscCall(disc_dg0.create(ps, quad_3d, spec.bcs));
+         PetscCall(disc_dg.create_mesh(PETSC_COMM_WORLD, mesh_spec));
+         PetscCall(ps.create(PETSC_COMM_WORLD, disc_dg.n_global_cells(), quad->n_angles(), n_groups));
+         if (spec.dimension == 2) PetscCall(disc_dg.create(ps, quad_2d, spec.bcs, spec.mesh_order));
+         else PetscCall(disc_dg.create(ps, quad_3d, spec.bcs, spec.mesh_order));
          if (!spec.cell_sets.empty()) {
-            PetscCall(disc_dg0.paint_cell_sets(bg, spec.cell_sets, mat_id_d));
-            if (spec.dimension == 2) PetscCall(disc_dg0.paint_boxes_over(spec.boxes, mat_id_d));
-            else PetscCall(disc_dg0.paint_boxes_over(spec.boxes_3d, mat_id_d));
+            PetscCall(disc_dg.paint_cell_sets(bg, spec.cell_sets, mat_id_d));
+            if (spec.dimension == 2) PetscCall(disc_dg.paint_boxes_over(spec.boxes, mat_id_d));
+            else PetscCall(disc_dg.paint_boxes_over(spec.boxes_3d, mat_id_d));
          }
-         else if (spec.dimension == 2) PetscCall(disc_dg0.paint_boxes(bg, spec.boxes, mat_id_d));
-         else PetscCall(disc_dg0.paint_boxes(bg, spec.boxes_3d, mat_id_d));
-         PetscCall(streaming_dg0.create(ps, disc_dg0));
-         disc = &disc_dg0;
-         streaming = &streaming_dg0;
+         else if (spec.dimension == 2) PetscCall(disc_dg.paint_boxes(bg, spec.boxes, mat_id_d));
+         else PetscCall(disc_dg.paint_boxes(bg, spec.boxes_3d, mat_id_d));
+         // The streaming term is per order, like it is per dimension: it owns
+         // the slot convention
+         if (spec.mesh_order == 1) {
+            PetscCall(streaming_dg1.create(ps, disc_dg));
+            streaming = &streaming_dg1;
+         } else {
+            PetscCall(streaming_dg0.create(ps, disc_dg));
+            streaming = &streaming_dg0;
+         }
+         disc = &disc_dg;
       }
       else if (spec.dimension == 1) {
          PetscCall(quad_1d.create(spec.sn_order));
@@ -591,7 +626,8 @@ int main(int argc, char **args) {
       // The infinite-medium check: uniform source, uniform xsections and no
       // boundary to leak through leave nothing for the streaming term to do,
       // so the exact discrete solution is constant in every cell and angle -
-      // to solver tolerance, not discretisation error. Per group, by forward
+      // to solver tolerance, not discretisation error (at DG1: the constant on
+      // basis 0 and zero slope on the rest). Per group, by forward
       // substitution down the sweep:
       //   psi_g = (Source_g / sum_weights + sum_{g'<g} Sigma_s[g'][g] psi_g')
       //           / (Sigma_t[g] - Sigma_s[g][g])
@@ -622,9 +658,7 @@ int main(int argc, char **args) {
             }
 
             PetscReal err_g = 0.0;
-            PetscCall(VecShift(psi[g], -expected[g]));
-            PetscCall(VecNorm(psi[g], NORM_INFINITY, &err_g));
-            PetscCall(VecShift(psi[g], expected[g]));
+            PetscCall(InfMediumError(ps, psi[g], expected[g], &err_g));
             inf_medium_err = PetscMax(inf_medium_err, err_g);
          }
       }
@@ -649,9 +683,17 @@ int main(int argc, char **args) {
                (int)base_len, flux_vtk.c_str(), g, dot ? dot : ""));
 
             PetscCall(UboltFillCellSource(ps, spec.materials, mat_id_d, g, cell_source_d));
-            const UboltCellField extra[] = {{"sigma_t", xs.sigma_t(g)}, {"source", cell_source_d}};
-            PetscCall(UboltWriteScalarFluxVTK(ps, *disc, *quad, psi[g], \
-               (PetscInt)(sizeof(extra) / sizeof(extra[0])), extra, fname));
+            std::vector<UboltCellField> extra = {{"sigma_t", xs.sigma_t(g)}, {"source", cell_source_d}};
+            // DG1: scalar_flux is the cell average, so the slope rides along
+            // and the file carries the whole linear solution
+            std::vector<PetscScalarKokkosView> grad;
+            if (spec.mesh_unstructured && spec.mesh_order == 1) {
+               static const char *grad_names[3] = {"scalar_flux_grad_x", "scalar_flux_grad_y", "scalar_flux_grad_z"};
+               PetscCall(disc_dg.scalar_flux_gradient(psi[g], *quad, grad));
+               for (size_t d = 0; d < grad.size(); d++) extra.push_back({grad_names[d], grad[d]});
+            }
+            PetscCall(UboltWriteScalarFluxVTK(ps, *disc, *quad, psi[g], (PetscInt)extra.size(), extra.data(), \
+               fname));
          }
       }
 

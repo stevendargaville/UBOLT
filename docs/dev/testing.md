@@ -668,8 +668,9 @@ block was eyeballed via `-flux_vtk` (sigma_t 10 painted mid-cube, flux ~3.3 over
 block against ~10 in the surrounding medium) — those numbers are from the 20^3 file,
 before the 2026-08-02 resize, and have not been re-measured at 10^3.
 
-## Unstructured DG0 verification
-The unstructured backend (`UnstructuredDG0` + `StreamingTermDG0`, Phase 6a) has no
+## Unstructured DG verification
+The unstructured backend (`UnstructuredDG` + `StreamingTermDG0`, Phase 6a; at order 1
+`StreamingTermDG1`, checks 8 and 9) has no
 baselines either, for the 2D/3D reason: `tests/verify_plexk` compares the operator
 itself. It runs serially in `run_check` and at `-n 2` and `-n 4` in
 `run_tests_short_parallel`, and every comparison in it is parallel-safe — nothing assumes
@@ -715,8 +716,9 @@ rank 0 owns anything, or that either backend numbers its rows naturally.
    itself a REFLECTIVE row (reflect on both x faces of a one-cell-wide box), `cell_sets`
    on a mesh with no "Cell Sets" label, a 2D quadrature on a 3D mesh, a `.vts` name on
    the plex, reflect on the slanted hypotenuse of `tests/meshes/tri_slanted.msh` (a
-   4-triangle right triangle), and a boundary condition on a "Face Sets" value no face
-   carries. All six must be rejected. The POSITIVE twin of the slanted case is checked
+   4-triangle right triangle), a boundary condition on a "Face Sets" value no face
+   carries, DG1 under `"dirichlet_cell"`, and `StreamingTermDG0` handed a DG1 backend.
+   All eight must be rejected. The POSITIVE twin of the slanted case is checked
    too: reflect on that mesh's axis-aligned bottom with the hypotenuse a vacuum face
    must be accepted (some reflection partners there are Dirichlet rows, the
    symmetry-reduced geometry a file mesh exists for), converge, and stay inside the
@@ -748,6 +750,32 @@ rank 0 owns anything, or that either backend numbers its rows naturally.
    faces of every orientation. (c) `meshes/tri_slanted.msh` in ghost mode: no
    Dirichlet rows left, reflective rows still present, the solve converged and in
    bounds.
+8. **DG1** (order 1), which has no FD twin, on 5x6 quads S4, `square_irregular_tri.msh`
+   S6, 4^3 hexes S2 and — where PETSc can mesh them — 5x6 triangles S4 and 4^3 tets S4,
+   each with the faces around one corner reflective (left + bottom; + front in 3D) and
+   the rest driven vacuum: (a) `n_basis == dimension + 1` and ZERO BC rows; (b)
+   `||(VA)^T - P(VA)P||_F / ||VA||_F <= 1e-12` on streaming + heterogeneous removal
+   (measured 4e-16 to 1e-15) — at DG1 the reflective couplings are inside this identity
+   rather than excluded BC rows, and the own-cell block only closes by the divergence
+   theorem on the cell, so it also pins the fan face moments against the fan cell
+   moments; (c) the constant `psi_in` on basis 0 (zero slope) through `UboltFillInflow`
+   + `UboltFillSource` with source `sigma_t psi_in`, residual below `1e-12 ||b||`
+   (measured ~1e-15) — the ghost weights `phi_i(x_f)` and the reflective couplings; (d)
+   the projection of a LINEAR field `alpha + b . x`, the same in every direction, through
+   the streaming matrix alone, against `Omega . b` on basis 0 and zero on the slopes in
+   every cell with no boundary face, to `1e-11 max |Omega . b|` (measured 3e-15 to
+   4e-14) — the volume term and both face matrices, across neighbours whose bases
+   differ, on the irregular mesh included.
+9. **DG1 is second order**: a pure absorber (sigma_t 1) on [0, 1]^2 with inflow 1 on the
+   left, reflective top and bottom (the solution does not depend on y, so reflecting it
+   is exact) and a cold right face, whose exact discrete-ordinates solution is
+   `psi_in exp(-sigma x / mu)`. The cell averages against the exact scalar flux at the
+   centroids, volume-weighted RMS, at n = 4, 8, 16, S4: the observed order between the
+   last two must be at least 1.8. Measured 2.03 on quads (3.5e-3, 8.6e-4, 2.1e-4) and
+   2.01 on triangles (2.4e-3, 6.1e-4, 1.5e-4). Kept this small because the check runs
+   three times in the suite, on the debug arch too. The measure itself is O(h^2) even for
+   the exact solution (average against centroid value), so this cannot see anything
+   better than second order - it is there to catch a first-order DG1.
 
 **Why the twin comparison is to rounding and not bitwise.** The two backends reach the
 same coefficient through different arithmetic — the FD stencil writes `|mu| / dx`, DG0
@@ -802,6 +830,36 @@ with the same options.
 | `plex_decades4`, `-matfree_removal -precon_ref_shift` (default k = 2) | 7, 8, 27, 51 | 7, 8, 27, 51 | `box_decades4`: 7, 8, 27, 51 both | Dirichlet-cell plex 7, 9, 24, 48 serial and 7, 8, 24, 48 otherwise |
 
 A multigroup row pins the max over its groups (29, 51), as everywhere else.
+
+**DG1** (`*_dg1.json`: the DG0 file with `"order": 1` in `mesh`, and no
+`vacuum_treatment` - DG1 is ghost-flux only). Every DG1 line passes
+`-sub_1_pc_air_strong_threshold 0.25`: at PCAIR's default 0.5 the coarsening stalls on
+DG1 (AIR levels grow linearly with n; TODO.md), which made the 50x50 DG1 boxes the
+slowest lines in the suite and more than doubled the debug CI job. At 0.25 they are 3-6x
+cheaper and take 1-3 fewer iterations. Measured 2026-09-25 on the opt arch; the first CI
+run went red on two rows, so every DG1 line was then swept in the opt, 64-bit and
+OpenMP CI images (2026-09-26) and pinned on the max - the brackets are the CI-image
+counts where they differ from local opt. The DG0 column is the table above, for scale.
+
+| recipe | DG1 np=1 | DG1 np=2 | DG0 np=1 |
+|---|---|---|---|
+| `plex_box_50_st2_dg1` (also `-ubolt_coo_two_call`, `-check_matfree`) | 7 (8 on 64-bit and OpenMP) | 7 | 7 |
+| the same, `-precon_stream -ksp_pc_side right` | 10 (9 in every CI image) | - | 7 |
+| the same, `-matfree_removal -ksp_pc_side right` | 10 (9 in every CI image) | 9 (10 in every CI image) | 7 |
+| `plex_box_50_reflect_lb_dg1` | 6 | 6 | 6 |
+| `plex_tri_30_st2_dg1` | 5 | 5 | 5 |
+| `plex_cube_10_st2_dg1` | 7 | 7 | 6 |
+| `plex_tet_6_st2_dg1` | 5 | 5 | 5 |
+| `plex_square_msh_dg1` | 5 | 5 | 5 |
+| `plex_box_30_inf_medium_dg1`, `-check_inf_medium -ksp_rtol 1e-12` (quads, so it runs in CI) | 13 | 13 | - |
+| the same, `-matfree_removal` | 42 | - | - |
+| `plex_tri_30_inf_medium_dg1`, `-check_inf_medium -ksp_rtol 1e-12` | 13 | - | 12 |
+| `plex_tet_6_inf_medium_dg1`, `-check_inf_medium -ksp_rtol 1e-12` | 12 | 12 | 11 |
+| `plex_decades4_dg1`, `-matfree_removal -precon_ref_shift -precon_ref_k 4` | 4, 7, 17, 36 | 4, 7, 17, 36 | 4, 6, 15, 29 |
+| `plex_decades4_dg1`, `-matfree_removal -precon_ref_shift` (default k) | 8, 10, 41, 66 | - | 7, 8, 27, 51 |
+
+The infinite-medium DG1 solves land at ~1e-13 against the 1e-9 tolerance, the slopes
+included (the check wants the constant on basis 0 and zero on the rest).
 
 **The twin difference is a finding, not a bug.** On a uniform quad/hex box the plex matrix
 IS the structured one to ~1e-15 (verify_plexk, above), but its rows are in a different
@@ -1408,10 +1466,11 @@ again, the next lever is `OMP_NUM_THREADS=1`, which trades the threading coverag
    line, serial and `-n 2` variants, with `-ksp_max_it` pinned to the observed
    converged count.
    `mesh.type` picks the backend: `"structured"` (the default) is the DMDA finite
-   difference ones, `"unstructured"` the DG0 plex one (2D/3D, a box or a mesh file,
-   no `-precon_dsa`); an unstructured quad/hex box is the natural twin of a structured
-   file, and its count goes next to the structured one in "Unstructured iteration
-   counts".
+   difference ones, `"unstructured"` the DG plex one (2D/3D, a box or a mesh file,
+   no `-precon_dsa`; `mesh.order` 1 for DG1); an unstructured quad/hex box is the
+   natural twin of a structured file, and its count goes next to the structured one in
+   "Unstructured iteration counts" (a DG1 file goes in that section's DG1 table, next to
+   its DG0 twin).
 3. No output files from any recipe: `output.flux_vtk` (and the `-flux_vtk` override)
    are fine on a problem file you run by hand but must not appear in anything a `run_*`
    recipe names — a test run leaves nothing behind.

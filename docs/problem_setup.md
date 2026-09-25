@@ -43,8 +43,8 @@ convert, it just trusts you to be consistent).
 
 #### Structured or unstructured?
 `mesh.type` is `"structured"` by default: the DMDA finite-difference backends,
-a box of equal cells per axis. `"unstructured"` is the DG0 upwind backend on a
-DMPlex (2D and 3D only; schema in `docs/problem_files.md`, "Unstructured
+a box of equal cells per axis. `"unstructured"` is the upwind DG backend on a
+DMPlex, DG0 by default or linear DG with `"order": 1` (2D and 3D only; schema in `docs/problem_files.md`, "Unstructured
 meshes"). Reach for it when the geometry is not a box of boxes:
 - **the geometry needs a mesh file** — curved or slanted material interfaces,
   a domain that is not a rectangle, a mesh from Gmsh with its physical groups
@@ -53,10 +53,13 @@ meshes"). Reach for it when the geometry is not a box of boxes:
 - **you want triangles/tets** on a box (`"simplex": true`), e.g. to see how the
   solver behaves on cells whose faces are not axis-aligned.
 
-What it costs: it is **first order, like the FD** — one flux per cell, upwind
-faces — so it resolves nothing a structured box of the same cell size would
-not; on a uniform quad/hex box the two are the same stencil, which is how it
-is verified. It carries more per-row bookkeeping (a face list per cell instead
+What it costs: at DG0 it is **first order, like the FD** — one flux per cell,
+upwind faces — so it resolves nothing a structured box of the same cell size
+would not; on a uniform quad/hex box the two are the same stencil, which is how
+it is verified. `"order": 1` makes it **second order** (a linear flux in each
+cell) for `dimension + 1` times the unknowns and a few more iterations — the
+choice when accuracy per cell matters more than cost per cell. DG1 takes the
+default ghost-flux vacuum treatment only. It carries more per-row bookkeeping (a face list per cell instead
 of a fixed stencil). **No DSA yet** (`-precon_dsa` errors), so diffusive
 problems stay on the structured backends for now. And reflective faces must be
 axis-aligned: a mesh file can only reflect on the straight x/y/z parts of its

@@ -15,7 +15,15 @@
 // runs, local_cells is PETSC_DECIDE, so anything sized off it must be built
 // AFTER the discretisation and calls check_decomposed() to say so
 //
-// Dof ordering is angle-fastest: row = cell * n_angles + angle
+// Dof ordering is angle-fastest: row = (cell * n_basis + basis) * n_angles +
+// angle. n_basis is the number of SPATIAL dofs per cell - 1 for the finite
+// difference and DG0 backends, where this is row = cell * n_angles + angle -
+// and like local_cells it is the discretisation's to decide: its create()
+// writes it here (UnstructuredDG at order 1 has dimension + 1). A (cell,
+// basis) pair is a "node", and every node owns a contiguous run of n_angles
+// rows, which is what lets the dimension-independent terms work on nodes and
+// never learn what a basis function is: the angular integral is per node, the
+// xsections are per CELL, node / n_basis
 //
 // Energy groups are NOT part of the row count. Groups are solved one at a time
 // (one Vec and one system per group, swept in a group Gauss-Seidel), so the
@@ -25,12 +33,19 @@ struct PETSC_VISIBILITY_PUBLIC PhaseSpace {
    PetscInt n_cells     = 0;  // global number of spatial cells
    PetscInt n_angles    = 0;
    PetscInt n_groups    = 1;  // energy groups, ordered high energy to low
+   // Spatial dofs per cell - see above. Written by the discretisation's create()
+   PetscInt n_basis     = 1;
    // Cells owned by this rank. PETSC_DECIDE until the discretisation fills it
    PetscInt local_cells = PETSC_DECIDE;
 
    // Per group - see the note above
-   PetscInt global_rows() const { return n_cells * n_angles; }
-   PetscInt local_rows() const { return local_cells * n_angles; }
+   PetscInt global_rows() const { return n_cells * n_basis * n_angles; }
+   PetscInt local_rows() const { return local_cells * n_basis * n_angles; }
+   // (cell, basis) pairs on this rank, each a contiguous run of n_angles rows -
+   // what the angular integral and the scalar flux are sized on
+   PetscInt local_nodes() const { return local_cells * n_basis; }
+   // Rows per cell: row / rows_per_cell() is the local cell of a local row
+   PetscInt rows_per_cell() const { return n_basis * n_angles; }
 
    // Has the discretisation handed us its decomposition yet? Everything sized
    // off local_cells calls this, because the alternative to a clear error here
@@ -60,8 +75,10 @@ struct PETSC_VISIBILITY_PUBLIC PhaseSpace {
       n_cells  = n_cells_in;
       n_angles = n_angles_in;
       n_groups = n_groups_in;
-      // Left for the discretisation's DM to fill - see the note above
+      // Left for the discretisation's DM to fill - see the note above. One
+      // spatial dof per cell until a backend says otherwise
       local_cells = PETSC_DECIDE;
+      n_basis = 1;
 
       PetscFunctionReturn(PETSC_SUCCESS);
    }
