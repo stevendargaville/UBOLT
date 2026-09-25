@@ -1,0 +1,15 @@
+{
+ "_comment": "slab_st2.json with the opt-in Dirichlet-cell vacuum treatment - the default until Sep 2026 - so the recipes keep that path covered and reproduce the pre-ghost-flux-default counts.",
+ "dimension": 1,
+ "mesh": {
+  "n_cells": [1000],
+  "lengths": [1.0]
+ },
+ "sn_order": 4,
+ "materials": "materials/slab_st2.json",
+ "vacuum_treatment": "dirichlet_cell",
+ "boundary_conditions": {
+  "left": {"type": "vacuum", "inflow": 2.0},
+  "right": {"type": "vacuum", "inflow": 2.0}
+ }
+}

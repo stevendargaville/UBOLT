@@ -5,12 +5,13 @@
   true so CI can just run `make tests`, which it does — see
   `.github/workflows/ci_build.yml`). `make` stops on the first non-zero exit.
 - Every solve recipe in `tests/Makefile` pins `-ksp_max_it` to the baseline iteration
-  count, so an iteration-count regression fails the run. The same recipes run on every
-  CI arch (opt/debug/64-bit/OpenMP), so a pin is the max over those environments —
-  today that differs from the reference count only for the two streaming-only pmat 2D
-  recipes, see the 2D table. The unstructured pins are the exception: measured on one
-  arch and pinned exactly, pending their first CI run (see "Unstructured iteration
-  counts").
+  count, so an iteration-count regression fails the run. A pin is the count measured on
+  the local opt arch (`arch-linux-c-opt`), exactly, with no per-arch slack: every pin was
+  re-set that way 2026-09-25 for the ghost-flux vacuum default (see "Switching the
+  default" under the ghost-flux section). The same recipes run on every CI arch
+  (opt/debug/64-bit/OpenMP), so CI flags any arch that needs one more, and at that point
+  the pin takes the max over the arches. The per-arch notes further down ("pinned 10",
+  "64-bit CI 18") are the history of the pre-2026-09-25 max-over-arches policy.
 - Multigroup caveat: `-ksp_max_it` is one option for the whole group sweep, so a
   multigroup recipe pins the **max over the groups**. A single group getting slower
   without exceeding that max will not fail the recipe — the multigroup baselines below
@@ -47,7 +48,8 @@ new driver, plus the t0 structural identity, the painting identity at np=1 and n
 the 1D/2D infinite-medium checks.
 
 ### Single-group baselines
-Re-captured 2026-08-04 for the quadrature precision fix (see below). Before that,
+Re-captured 2026-09-25 for the switch to the ghost-flux vacuum treatment as the default
+(see below). Before that, 2026-08-04 for the quadrature precision fix, then
 2026-08-01 after the Dirichlet-row fix to the matrix-free scatter, 2026-07-31 after the
 negative-angle upwind sign fix, and before *that* they
 came from the pre-refactor code (the single-file `UBOLTk.kokkos.cxx`); Phase 1a and Phase
@@ -59,13 +61,18 @@ came from the pre-refactor code (the single-file `UBOLTk.kokkos.cxx`); Phase 1a 
   `slab1d_<default|stream>_st<0|2>_np<1|2>[_ds].log`.
 - Capture is capped at `-ksp_max_it 200`: all four st=2 diag_scale configs are pathological
   (see table) and a 200-iteration residual history is a strong enough fingerprint.
-  Non-converged baselines are still valid fingerprints for a refactor diff. None of those
-  four converges, so all four capture lines carry `|| true`.
+  Non-converged baselines are still valid fingerprints for a refactor diff. Under
+  Dirichlet-cell none of those four converged, so all four capture lines carry
+  `|| true`; under ghost-flux the default-pc pair scrapes in at 174/173 and the
+  streaming-pmat pair hits the cap, and the `|| true` stays for the latter.
 - Re-capture with `make baselines` — only do this deliberately (i.e. when the reference
   behavior itself is being intentionally changed), never to make a failing test pass.
 - Environment matters for exact reproduction: these were captured with a debug PETSc main
   build (`arch-linux-c-debug`), gcc 13, OpenMPI, np as named — the same environment every
-  previous capture used, so a capture-to-capture diff is like for like. Different
+  previous capture used, so a capture-to-capture diff is like for like. (The 2026-09-25
+  capture used a debug build of PFLARE main 9ec892b; the unmodified library on it
+  reproduced 20 of the 24 previous logs byte for byte and the other 4 in the 12th-13th
+  digit, so the environment is like for like.) Different
   compilers/optimization may shift trailing digits; iteration counts should still match
   (measured, on the pre-change code: debug against opt moves no count in any of the 24
   logs, leaves the initial residuals identical, and drifts early iterations by 1.3e-13).
@@ -73,26 +80,43 @@ came from the pre-refactor code (the single-file `UBOLTk.kokkos.cxx`); Phase 1a 
   log against the baseline for the *same* np, never across np.
 
 ## Single-group baseline iteration counts
-Captured 2026-08-04, capped at `-ksp_max_it 200`. The older columns are kept because
-earlier phases were verified against them — "Dirichlet fix" is the 2026-08-01 capture,
+Captured 2026-09-25 under the ghost-flux default, capped at `-ksp_max_it 200`. The older
+columns are kept because earlier phases were verified against them — "Dirichlet-cell" is
+the 2026-08-04 capture, the last one before the switch (and what the opt-in
+`"vacuum_treatment": "dirichlet_cell"` still reproduces byte for byte), "Dirichlet fix" is the 2026-08-01 capture,
 before the quadrature constants were fixed; "sign fix" is 2026-07-31, before the scatter's
 Dirichlet rows were fixed; and "pre-refactor" is what the original single file did:
 
-| config | np=1 | np=2 | Dirichlet fix (np=1, np=2) | sign fix (np=1, np=2) | pre-refactor |
-|---|---|---|---|---|---|
-| default pc, st=0 | 1 | 1 | 1, 1 | 1, 1 | 1, 1 |
-| default pc, st=2 | 6 | 6 | 6, 6 | 5, 5 | 10, 10 |
-| default pc, st=0, diag_scale | 1 | 1 | 1, 1 | 1, 1 | 1, 1 |
-| default pc, st=2, diag_scale | DIVERGED_ITS (200) | DIVERGED_ITS (200) | DIVERGED_ITS (200) | 175, 173 | DIVERGED_ITS |
-| precon_stream, st=0 | 1 | 1 | 1, 1 | 1, 1 | 1, 1 |
-| precon_stream, st=2 | 9 | 9 | 9, 9 | 10, 10 | 16, 16 |
-| precon_stream, st=0, diag_scale | 3 | 3 | 3, 3 | 3, 3 | 3, 3 |
-| precon_stream, st=2, diag_scale | DIVERGED_BREAKDOWN (60) | DIVERGED_BREAKDOWN (180) | DIVERGED_BREAKDOWN (150, 150) | DIVERGED_BREAKDOWN (90) | DIVERGED_ITS |
+| config | np=1 | np=2 | Dirichlet-cell (np=1, np=2) | Dirichlet fix (np=1, np=2) | sign fix (np=1, np=2) | pre-refactor |
+|---|---|---|---|---|---|---|
+| default pc, st=0 | 1 | 1 | 1, 1 | 1, 1 | 1, 1 | 1, 1 |
+| default pc, st=2 | 6 | 6 | 6, 6 | 6, 6 | 5, 5 | 10, 10 |
+| default pc, st=0, diag_scale | 1 | 1 | 1, 1 | 1, 1 | 1, 1 | 1, 1 |
+| default pc, st=2, diag_scale | 174 | 173 | DIVERGED_ITS (200) | DIVERGED_ITS (200) | 175, 173 | DIVERGED_ITS |
+| precon_stream, st=0 | 1 | 1 | 1, 1 | 1, 1 | 1, 1 | 1, 1 |
+| precon_stream, st=2 | 8 | 8 | 9, 9 | 9, 9 | 10, 10 | 16, 16 |
+| precon_stream, st=0, diag_scale | 2 | 2 | 3, 3 | 3, 3 | 3, 3 | 3, 3 |
+| precon_stream, st=2, diag_scale | DIVERGED_ITS (200) | DIVERGED_ITS (200) | DIVERGED_BREAKDOWN (60, 180) | DIVERGED_BREAKDOWN (150, 150) | DIVERGED_BREAKDOWN (90) | DIVERGED_ITS |
 
-The st=0 rows are identical across every capture, and must be: `sigma_s = 0` there,
-so neither the scatter nor its Dirichlet rows exist.
+The st=0 rows were identical across every capture up to the ghost-flux switch, and had to
+be: `sigma_s = 0` there, so neither the scatter nor its Dirichlet rows exist. The switch
+moves the boundary rows themselves, so it is the first capture that moves them (only the
+diag-scaled streaming pmat's count, 3 -> 2).
 
 History of these baselines:
+- **Ghost-flux became the default vacuum treatment** (2026-09-25, this re-capture): every
+  vacuum inflow row is a physical row now, so every log moves from the first residual.
+  Iteration counts: the default pc is unchanged; the streaming-only pmat improves by one
+  (9 -> 8, and 3 -> 2 diag-scaled); the default-pc diag-scaled pair, pathological since
+  the Dirichlet-row fix, converges again at 174/173, while the diag-scaled streaming pair
+  goes from breakdown to the 200 cap - neither is a stable quantity and neither is pinned.
+  The right-preconditioned (streaming-pmat) logs' INITIAL residual grows from 63 to 1313:
+  with right preconditioning it is `||b||`, and the ghost rows' rhs is `|mu|/dx` times the
+  inflow where a Dirichlet row's was the inflow itself, which at dx = 1e-3 makes the
+  boundary rows dominate `||b||` and hence the rtol reference. The opt-in
+  `"vacuum_treatment": "dirichlet_cell"` twin (`slab_st2_dirichlet_cell.json`) reproduces
+  the previous capture's `default_st2` (np 1 and 2), `default_st2_ds` and `stream_st2`
+  logs byte for byte on the same arch.
 - **The quadrature constants were truncated to float precision** (FIXED 2026-08-04, this
   re-capture): the direction cosines were literals of 7 to 10 significant digits in a
   double code (`0.5773502692` for `1/sqrt(3)`, a relative error of 1.8e-10), and the
@@ -145,8 +169,10 @@ unification these were `slab_1d_mgk -sigma_transfer` recipes, whose derived per-
 values are exactly what the files now tabulate). Each log is the whole group sweep: one
 KSP history after another, in group order. That is what pins the per-group iteration
 counts and the downscatter source arithmetic, neither of which a single `-ksp_max_it`
-can reach. The six t05/stream logs were re-captured 2026-08-02 for the isotropic-source
-change (below); the two t0 logs deliberately did not move.
+can reach. All eight were re-captured 2026-09-25 for the ghost-flux default (the t0 logs
+are still four byte-for-byte copies of the single-group log, re-checked structurally); the
+six t05/stream logs were re-captured before that, 2026-08-02, for the isotropic-source
+change (below), when the two t0 logs deliberately did not move.
 
 The `t0` logs are exactly four byte-for-byte copies of the matching single-group
 `slab1d_default_st2_np<n>.log`. That is the Phase 2 uncoupled-groups verification, and it
@@ -163,7 +189,7 @@ what keeps the identity byte-for-byte.
 | default pc, st=2, transfer 0.0 | 6, 6, 6, 6 (= single group, four times; Source 2.0) |
 | default pc, st=2, transfer 0.5 | 6, 6, 6, 6 |
 | default pc, st=2, transfer 2.0 | 6, 6, 5, 5 (recipe only, not captured) |
-| precon_stream, st=2, transfer 0.5 | 11, 11, 11, 9 |
+| precon_stream, st=2, transfer 0.5 | 9, 9, 9, 8 (Dirichlet-cell: 11, 11, 11, 9) |
 
 Group 0 matches the single-group count because its rhs is just the external source (a
 count match at Source 1.0, a history match at Source 2.0, see above); the later groups
@@ -282,44 +308,46 @@ Dirichlet-row fix; before it, ratio 1 took 18 to 87 iterations on square grids a
 converge at all on any other shape, which is what led to the fix — see the research note
 in `TODO.md`. They were re-measured 2026-08-02 under the isotropic external source (see
 the painted-regions section): only the two streaming-only pmat serial references moved,
-8 -> 9 and 9 -> 10.
+8 -> 9 and 9 -> 10. Re-measured again 2026-09-25 under the ghost-flux default; where a
+count moved, the Dirichlet-cell count follows it in brackets.
 
 | config | np=1 | np=2 |
 |---|---|---|
-| 50x50, st=2 (ratio 1) | 6 | 6 |
+| 50x50, st=2 (ratio 1) | 7 (Dirichlet-cell 6) | 7 (Dirichlet-cell 6) |
 | 50x50, st=2, ratio 0.5 | 5 | 5 |
 | 40x20 (dx != dy), st=2 | 6 | 6 |
-| 80x40 (same shape, 4x finer), st=2 | 6 | 6 |
+| 80x40 (same shape, 4x finer), st=2 | 7 (Dirichlet-cell 6) | 7 (Dirichlet-cell 6) |
 | 80x20 in a 1x0.25 box (dx == dy), st=2 | 5 | 5 |
 | 50x50, st=0 (pure streaming) | 3 | 3 |
 | 60x60, st=0 | — | 3 |
 | 60x60, st=2 | 7 | 7 |
-| 50x50, streaming-only pmat, st=2 | 9 (pinned 10) | 9 (pinned 10) |
-| 80x40, streaming-only pmat, st=2 | 9 (pinned 10) | — |
+| 50x50, streaming-only pmat, st=2 | 7 (Dirichlet-cell 9) | 7 (Dirichlet-cell 9) |
+| 80x40, streaming-only pmat, st=2 | 7 (Dirichlet-cell 9) | — |
 | 30x30 S4, st=2 | 6 | 6 |
 | 60x60 S4, st=2 | 6 | 6 |
 | 20x20 S8, left+bottom reflect, ratio 0.5 | 6 | 6 |
 
-**The three streaming-only pmat recipes are the arch-fragile ones, and all three carry a
-pin of 10 against a reference count of 9.** They converge by clearing rtol on the last
-iteration with only a percent or two to spare, so a perturbation far too small to call a
-regression decides whether that last iteration counts. The 2026-08-04 quadrature precision
-fix is exactly such a perturbation, and it demonstrated the point twice: 80x40 serial
-measured 10 before it and 9 after on both local arches, while 50x50 serial measured 9
-locally both before and after but moved 9 -> 10 on all three CI images. So the reference
-counts in the table are not what the pins should be here — do not tighten these three onto
-a local measurement, which is a mistake this change made and CI caught.
+**Under Dirichlet-cell the three streaming-only pmat recipes were the arch-fragile ones,
+and all three carried a pin of 10 against a reference count of 9.** They converged by
+clearing rtol on the last iteration with only a percent or two to spare, so a
+perturbation far too small to call a regression decided whether that last iteration
+counted. The 2026-08-04 quadrature precision fix was exactly such a perturbation, and it
+demonstrated the point twice: 80x40 serial measured 10 before it and 9 after on both
+local arches, while 50x50 serial measured 9 locally both before and after but moved
+9 -> 10 on all three CI images. Under ghost-flux the three take 7 and are pinned at 7,
+the local count, per the contract — if CI asks for 8 on one arch, this is the history.
 
-Mesh independent on every shape: 40x20 to 80x40 holds at 6, and 200x50 in the 1x0.25
-box (not a recipe) is 5, the same as 80x20.
+Mesh independent on every shape: 40x20 to 80x40 holds at 6 under Dirichlet-cell (6 to 7
+under ghost-flux), and 200x50 in the 1x0.25 box (not a recipe) is 5, the same as 80x20
+(a Dirichlet-cell measurement, not repeated).
 
 These sizes were cut on 2026-08-02 to bring CI down (see "Recipe cost" below): the
 "larger grid" family went 100x100 -> 60x60, the non-square mesh-independence pair
 60x30/120x60 -> 40x20/80x40 with its 2x ratio intact, and the S4 reflective run joined
 the plain S4 recipe at 30x30. The counts above are the re-measured references.
 
-A pin is the max over the reference build and the two sensitive CI arches (64-bit
-indices and the OpenMP Kokkos backend), re-swept 2026-08-02 in both CI images after the
+Until 2026-09-25 a pin was the max over the reference build and the two sensitive CI
+arches (64-bit indices and the OpenMP Kokkos backend), re-swept 2026-08-02 in both CI images after the
 isotropic-source change. Which configs sit one above the reference count changed with
 it: the two streaming-only pmat serial recipes now measure the same everywhere (so
 their pins equal the table), and instead the 50x50 ratio-1 SERIAL solve takes 7 under
@@ -330,10 +358,12 @@ the np2 streaming-only pmat takes 10 (pinned 10) and the serial large-grid S4 ta
 measures its reference count in both images; the resized recipes' pins are debug-arch
 measurements, and CI runs green with them. The cost is
 one iteration of slack on the reference build for those five recipes — the 1D
-streaming-pmat baselines still pin their counts exactly.
+streaming-pmat baselines still pin their counts exactly. (That was the policy until
+2026-09-25; since the ghost-flux re-pin every pin is the local opt count, so the 60x60 S4
+serial pin is 6 and the 50x50 ratio-1 serial pins are 7 because the count itself is 7.)
 
-**The 2026-08-04 quadrature precision fix was swept locally** (opt, then re-checked on
-debug) **and then against CI**, which is where the streaming-only pmat pins above got
+**The 2026-08-04 quadrature precision fix was swept locally** (Dirichlet-cell era; opt,
+then re-checked on debug) **and then against CI**, which is where the streaming-only pmat pins above got
 their slack — the local sweep alone was not enough, and the note above records why. It has
 NOT been swept in the sense of tightening every other pin back onto a per-arch maximum;
 those are unchanged from before the fix, which is safe because the change only ever moves
@@ -394,16 +424,18 @@ vacuum — the last group always has ratio 1 (no downscatter out of it).
 | 1D all-reflect infinite medium (rtol 1e-12) | 10 | 11 |
 | 1D multigroup 4 groups t05, left reflect | 8 (max over groups) | — |
 | 2D 50x50, left+bottom reflect, st=2 ratio 0.5 | 6 | 6 |
-| 2D 50x50 S4, left+bottom reflect, ratio 0.5 | 6 | — |
+| 2D 30x30 S4, left+bottom reflect, ratio 0.5 | 6 | — |
 | 2D 20x20 S8, left+bottom reflect, ratio 0.5 | 6 | 6 |
 | 2D all-reflect infinite medium (rtol 1e-12) | 10 | 10 |
 
+No row moved under the 2026-09-25 switch to the ghost-flux default: the all-reflect rows
+have no vacuum face to change, and the mixed rows land on their Dirichlet-cell counts.
+
 ## Ghost-flux vacuum treatment
-The opt-in `"vacuum_treatment": "ghost_flux"` (see `docs/problem_files.md`) changes only
-the boundary rows, so the checks are the existing ones run a second time in that mode,
-plus two that only it needs. The default is untouched: every other recipe and all 24
-baselines are byte-identical to the pre-ghost library (a fresh capture on the same arch
-matches one from the unmodified library).
+`"vacuum_treatment": "ghost_flux"` (see `docs/problem_files.md`) changes only the
+boundary rows. It landed opt-in, with its checks being the existing ones run a second
+time in that mode plus two that only it needs, and became the DEFAULT on 2026-09-25 -
+see "Switching the default" at the end of this section for what that moved.
 
 - **Closed form** (`verify_2dk`/`verify_3dk` check 1, ghost mode). A ghost row is a
   stencil row, so its rhs is the streamed source plus `|cosine| / h` times `psi` at the
@@ -432,21 +464,92 @@ matches one from the unmodified library).
   faces on the low sides, which puts the mixed corners in the solve. `-check_inf_medium`
   accepts such a face (whole-face, and inflow / sum_weights equal to the expected
   constant in every group, otherwise it errors).
-- `DSAPrecon` refuses ghost mode (its Marshak face is written against the Dirichlet-cell
-  boundary), so no DSA recipe runs it.
+- `DSAPrecon` refused ghost mode until the switch; it now takes either treatment (see
+  below).
 
-Pins, measured 2026-09-25 and swept the same day in the 64-bit and OpenMP CI images; a
-pin is the max over the arches, and the two that sit above the opt reference say which
-arch set them:
+Counts, measured 2026-09-25 on the local opt arch and pinned on exactly that. The same
+day's sweep in the 64-bit and OpenMP CI images measured one more on two rows (noted in
+the table) and those pins first took the max; the re-pin for the default switch moved
+them back onto the opt count, so these two are where CI would ask for +1:
 
 | ghost-flux config (rtol 1e-12, `-check_inf_medium`) | np=1 | np=2 |
 |---|---|---|
 | 1D slab, both faces ghost vacuum | 8 | 8 |
-| 1D slab, both faces ghost vacuum, `-matfree_removal` | 18 (opt 17, 64-bit 18) | — |
-| 2D 50x50, left+bottom reflect, right+top ghost vacuum | 12 | 12 (opt/64-bit 11, OpenMP 12) |
+| 1D slab, both faces ghost vacuum, `-matfree_removal` | 17 (64-bit CI 18) | — |
+| 2D 50x50, left+bottom reflect, right+top ghost vacuum | 12 | 11 (OpenMP CI 12) |
 | 2D same, `-matfree_removal` | 25 | — |
 | 3D 10^3, left+front+bottom reflect, others ghost vacuum | 11 | 11 |
 | 3D same, `-matfree_removal` | 21 | — |
+
+### Switching the default (2026-09-25)
+Ghost-flux replaced Dirichlet-cell as the default vacuum treatment; `"vacuum_treatment":
+"dirichlet_cell"` keeps the old path. `*_dirichlet_cell.json` twins of `slab_st2`,
+`box_50_st2`, `cube_10_st2` and `plex_box_50_st2` were added as recipes and reproduce the
+pre-switch counts exactly (6, 6, 5, 7; `box_50_st2_dirichlet_cell` also at np=2, 6, and
+with `-precon_dsa`, 5), and the 1D baselines were re-captured — see "Single-group
+baselines". Every pin was re-set onto the local opt count at the same time. The recipes
+whose count moved (the max over groups for a multigroup recipe, as pinned; "and
+`-matfree_removal`" means the right-preconditioned twin, which moved identically):
+
+| recipe | Dirichlet-cell | ghost-flux |
+|---|---|---|
+| 1D `slab_st2`, `-precon_stream` and `-matfree_removal`, np=1 and 2 | 9 | 8 |
+| 1D `slab_st0`, `-diag_scale -precon_stream`, np=1 | 3 | 2 |
+| 1D `slab_mg4_t05`, `-precon_stream` and `-matfree_removal`, np=1 and 2 | 11 | 9 |
+| 1D `slab_diffusive`, np=1 and 2 | 20 | 23 |
+| 1D `slab_diffusive`, `-precon_dsa`, np=2 | 10 | 11 |
+| 1D `slab_decades4`, ref-shift `-precon_ref_k 4`, np=1 and 2 | 20 | 22 |
+| 1D `slab_decades4`, ref-shift default k, np=1 and 2 | 42 | 44 |
+| 1D `slab_decades4_stream0`, ref-shift default k, np=1 and 2 | 20 | 22 |
+| 2D `box_50_st2` (also `-ubolt_coo_two_call`; np=2 also `-check_matfree`), np=1 and 2 | 6 | 7 |
+| 2D `box_50_identity`, np=1 | 6 | 7 |
+| 2D `box_80x40_st2`, np=1 and 2 | 6 | 7 |
+| 2D `box_50_st2`, `-precon_stream` and `-matfree_removal`, np=1 and 2 | 9 | 7 |
+| 2D `box_80x40_st2`, `-precon_stream` and `-matfree_removal`, np=1 | 9 | 7 |
+| 2D `box_decades4`, ref-shift `-precon_ref_k 4`, np=1 and 2 | 30 | 29 |
+| 2D `box_decades4`, ref-shift default k, np=1 and 2 | 48 | 51 |
+| 2D `box_diffusive`, `-precon_dsa -pc_composite_type additive`, np=1 | 23 | 14 |
+| 2D `box_crooked_pipe`, np=1 | 123 | 113 |
+| 2D `box_crooked_pipe`, np=2 | 95 | 114 |
+| 2D `box_crooked_pipe`, `-precon_dsa`, np=1 | 72 | 28 |
+| 2D `box_crooked_pipe`, `-precon_dsa`, np=2 | 69 | 28 |
+| 2D `box_layers`, np=1 and 2 | 25 | 24 |
+| 2D `box_layers`, `-precon_dsa`, np=1 | 13 | 12 |
+| 2D `box_layers`, `-precon_dsa`, np=2 | 12 | 11 |
+| 2D `box_random8`, np=1 and 2 | 27 | 19 |
+| 2D `box_random8`, `-precon_dsa`, np=1 and 2 | 11 | 8 |
+| 3D `cube_10_st2` (also `-ubolt_coo_two_call`), np=1 and 2 | 5 | 6 |
+| 3D `cube_10_identity`, np=1 and 4 | 5 | 6 |
+| 3D `cube_10_mg4_t05`, np=2 (its last group; serial stays 5) | 5 | 6 |
+| 3D `cube_diffusive`, np=1 and 2 | 21 | 18 |
+| 3D `cube_diffusive`, `-precon_dsa`, np=1 and 2 | 10 | 8 |
+| 3D `cube_diffusive_yreflect`, `-precon_dsa`, np=1 | 10 | 12 |
+| plex `plex_box_50_st2`, `-precon_stream` and `-matfree_removal`, np=1 | 9 | 7 |
+| plex `plex_box_50_st2`, `-precon_stream` and `-matfree_removal`, np=2 | 9 | 8 |
+| plex `plex_cube_10_st2`, np=1 and 2 | 5 | 6 |
+| plex `plex_square_msh`, np=1 | 4 | 5 |
+| plex `plex_decades4`, ref-shift `-precon_ref_k 4`, np=1 and 2 | 30 | 29 |
+| plex `plex_decades4`, ref-shift default k, np=1 and 2 | 48 | 51 |
+
+Every other recipe measures its Dirichlet-cell count, including every all-reflective one
+(nothing to change there) and every `*_inf_medium_ghost` one (ghost-flux already).
+
+- The ratio-1 st=2 workhorses take one more in 2D and 3D (`box_50_st2`, `box_80x40_st2`,
+  `cube_10_st2` and their identity/two-call copies, `plex_cube_10_st2`); 1D `slab_st2`,
+  the ratio-0.5 files and `box_40x20_st2` / `box_60_st2` do not move. `plex_box_50_st2`
+  stays at 7, so the structured and plex 50x50 boxes now agree.
+- The streaming-only pmats improve everywhere: 9 -> 8 in 1D, 11 -> 9 on the multigroup
+  slab, 9 -> 7 on the 2D boxes, 9 -> 7/8 on the plex box; 3D stays at 6.
+- The mismatched default-k ref-shift gets worse by 2 or 3 (1D 42 -> 44, 2D 48 -> 51)
+  while exact coverage moves with the full-pmat count it reproduces (1D 20 -> 22, 2D 30
+  -> 29).
+- DSA is much better on the heterogeneous problems — crooked pipe 72 -> 28 (and the
+  unaccelerated serial/parallel gap, 123 against 95, is gone: 113 / 114), random8
+  11 -> 8, `cube_diffusive` 10 -> 8, and the additive composite 23 -> 14 — but worse on
+  `cube_diffusive_yreflect`, 10 -> 12. Off the recipes, the mismatched 2D ref-shift +
+  DSA that took 179 on its thick group now takes 10 (see "DSA on a shifted pmat").
+- DSA needed no change to its Marshak face for the switch: scaling that coefficient over
+  0.25-1.0 moved no DSA count by more than 1.
 
 ## Painted regions (MaterialSpec)
 A problem file's `regions.paint` list paints shapes — boxes in 2D, intervals in 1D —
@@ -479,7 +582,7 @@ domain on purpose: a whole-domain cover would leave the background material unus
 
 | painted config | np=1 | np=2 | np=4 |
 |---|---|---|---|
-| 2D 50x50 identity: 2 regions = background, st=2 | 6 | — | 7 |
+| 2D 50x50 identity: 2 regions = background, st=2 | 7 (Dirichlet-cell 6) | — | 7 |
 | 2D 30x30 overlap: masked box covered by a background copy, st=2 ratio 0.5 | 5 | — | — |
 | 2D 50x50 absorbing sourceless block (sigma_t 10, sigma_s 1, q 0) over st=2 ratio 0.5 | 5 | 5 | — |
 | 2D 60x60 cold box: no face inflow, zero source outside a central 0.1x0.1 region | 5 | 5 | — |
@@ -520,11 +623,12 @@ parallel oracle, exactly as in 1D/2D (`cube_10_inf_medium.json`, ~1e-13 against 
 ## 3D iteration counts
 Measured 2026-08-02 on the reference build at capture. CI has since run green on the
 sensitive arches (64-bit indices, OpenMP Kokkos) with these pins as committed, so no
-per-arch slack was needed.
+per-arch slack was needed. Re-measured 2026-09-25 on the local opt arch under the
+ghost-flux default; moved counts carry their Dirichlet-cell value in brackets.
 
 | config | np=1 | np=2 |
 |---|---|---|
-| 10^3, st=2 (ratio 1) | 5 | 5 |
+| 10^3, st=2 (ratio 1) | 6 (Dirichlet-cell 5) | 6 (Dirichlet-cell 5) |
 | 10^3, st=2, ratio 0.5 | 4 | 4 |
 | 10x5x5 (dx, dy, dz all differ), st=2 | 6 | 6 |
 | 15^3 (same shape, 1.5x finer), st=2 | 6 | 6 |
@@ -532,19 +636,19 @@ per-arch slack was needed.
 | 10^3 S4, st=2 | 6 | 6 |
 | 10^3, left+front+bottom reflect, ratio 0.5 | 5 | 5 |
 | 10^3 all-reflect infinite medium (rtol 1e-12) | 10 | 10 |
-| 10^3 identity: 2 regions = background, st=2 | 5 | 5 (np=4) |
+| 10^3 identity: 2 regions = background, st=2 | 6 (Dirichlet-cell 5) | 6 (np=4; Dirichlet-cell 5) |
 | 10^3 overlap: masked box covered by a background copy, st=2 ratio 0.5 | 4 | — |
 | 10^3 absorbing sourceless block over ratio 0.5 | 4 | 4 |
 | 10^3 cold cube: no face inflow, zero source outside a central 0.2^3 region | 4 | 4 |
-| 10^3 multigroup 4 groups t05 | 5, 5, 5, 5 | 5, 5, 5, 5 |
+| 10^3 multigroup 4 groups t05 | 5, 5, 5, 5 | 5, 5, 5, 6 (Dirichlet-cell 5, 5, 5, 5) |
 
 Every cube dropped from 20^3 to 10^3 on 2026-08-02 to bring CI down (see "Recipe cost"
 below), and the mesh-independence twin from 30^3 to 15^3 to keep its 1.5x ratio; the
 counts above are the re-measured references, one lower than the 20^3 ones almost
-throughout. Mesh independence is now a weaker statement than it was: 10^3 to 15^3 moves
-5 to 6, where 20^3 to 30^3 held flat at 6. A one-iteration move over a 1.5x refinement is
-the same behaviour 2D shows across its own pair, but if the flat span is wanted back,
-that costs the 27000-cell run.
+throughout. Mesh independence was a weaker statement after the resize: under
+Dirichlet-cell 10^3 to 15^3 moved 5 to 6, where 20^3 to 30^3 held flat at 6. Under the
+ghost-flux default 10^3 rises to 6, so 10^3 to 15^3 is flat at 6 again (and 2D's
+40x20 to 80x40 pair is now the one that moves by one).
 
 The cold cube's source region had to widen from 0.1^3 to 0.2^3: at 10 cells the old
 0.45/0.55 bounds land exactly on cell centres, where membership is a floating-point coin
@@ -668,36 +772,38 @@ only the two `plex_box_50_st2` streaming-only rows moved (9 to 10). The simplex-
 rows (`plex_tri_*`, `plex_tet_*`) do NOT run in CI: generating them needs PETSc's
 triangle / (c)tetgen, which the CI images lack, so `tests/Makefile` skips them there
 (`PETSC_HAVE_TRIANGLE`, `PETSC_HAVE_TETMESHER`) and `verify_plexk` skips its
-generated-simplex checks. Triangles stay covered in CI through the Gmsh mesh files. **Pinned on the measured count, exactly**: the contract says a
-pin is the max over the CI arches, and these have not yet seen one — the first CI run is
-the sweep, and the hair-trigger rows below are where to expect a +1. The structured twin
-is the same file without `"type": "unstructured"`, run with the same options; its count
-is the measured one here, not its pin (several structured pins carry +1 of CI slack).
+generated-simplex checks. Triangles stay covered in CI through the Gmsh mesh files.
+Re-measured 2026-09-25 under the ghost-flux default and **pinned on the opt count,
+exactly**, as every pin now is; a moved count carries its Dirichlet-cell value in
+brackets. The structured twin is the same file without `"type": "unstructured"`, run
+with the same options.
 
 | recipe | plex np=1 | plex np=2 | structured twin np=1 / np=2 | notes |
 |---|---|---|---|---|
-| `plex_box_50_st2` (50x50 quads, ratio 1) | 7 | 7 | `box_50_st2`: 6 / 6 | the twin difference, see below |
-| `plex_box_50_st2`, `-precon_stream -ksp_pc_side right` | 10 (opt 9) | 10 (opt 9) | 9 / 9 | hair-trigger (0.87 of rtol on opt); 10 on the 64-bit and OpenMP CI arches, np 1 and 2 |
-| `plex_box_50_st2`, `-matfree_removal -ksp_pc_side right` | 10 (opt 9) | 10 (opt 9) | 9 / 9 | identical history to the line above, 10 on the CI arches too |
+| `plex_box_50_st2` (50x50 quads, ratio 1) | 7 | 7 | `box_50_st2`: 7 / 7 (Dirichlet-cell 6 / 6) | the twins agree now; see "the twin difference" below |
+| `plex_box_50_st2`, `-precon_stream -ksp_pc_side right` | 7 (Dirichlet-cell 9) | 8 (Dirichlet-cell 9) | 7 / 7 (Dirichlet-cell 9 / 9) | Dirichlet-cell: hair-trigger, 10 on the 64-bit and OpenMP CI arches |
+| `plex_box_50_st2`, `-matfree_removal -ksp_pc_side right` | 7 (Dirichlet-cell 9) | 8 (Dirichlet-cell 9) | 7 / 7 (Dirichlet-cell 9 / 9) | same count as the line above |
 | `plex_box_50_reflect_lb` | 6 | 6 | `box_50_reflect_lb`: 6 / 6 | |
 | `plex_tri_30_st2` (1800 triangles, S4, ratio 0.5) | 5 | 5 | — | |
-| `plex_cube_10_st2` (1000 hexes, ratio 1) | 5 | 5 | `cube_10_st2`: 5 / 5 | 0.76 of rtol |
+| `plex_cube_10_st2` (1000 hexes, ratio 1) | 6 (Dirichlet-cell 5) | 6 (Dirichlet-cell 5) | `cube_10_st2`: 6 / 6 (Dirichlet-cell 5 / 5) | |
 | `plex_tet_6_st2` (1296 tets, ratio 0.5) | 5 | 5 | — | |
-| `plex_square_msh` (8 Gmsh triangles) | 4 | 4 | — | |
+| `plex_square_msh` (8 Gmsh triangles) | 5 (Dirichlet-cell 4) | 4 | — | |
 | `plex_tri_30_inf_medium_ghost`, `-check_inf_medium -ksp_rtol 1e-12` (ghost-flux right + top, reflect left + bottom; measured 2026-09-25) | 12 | 12 | — | |
 | the same, `-matfree_removal` | 33 | — | — | |
 | `plex_tet_6_inf_medium_ghost`, `-check_inf_medium -ksp_rtol 1e-12` (ghost-flux right + back + top; measured 2026-09-25) | 11 | 11 | — | |
-| `plex_decades4`, `-matfree_removal -precon_ref_shift -precon_ref_k 4` | 4, 6, 15, 30 | 4, 6, 15, 30 | `box_decades4`: 4, 6, 15, 30 both | hair-trigger (0.94 of rtol) |
-| `plex_decades4`, `-matfree_removal -precon_ref_shift` (default k = 2) | 7, 9, 24, 48 | 7, 8, 24, 48 | `box_decades4`: 7, 8, 24, 48 both | hair-trigger (0.94); group 1 differs |
+| `plex_decades4`, `-matfree_removal -precon_ref_shift -precon_ref_k 4` | 4, 6, 15, 29 | 4, 6, 15, 29 | `box_decades4`: 4, 6, 15, 29 both | Dirichlet-cell 4, 6, 15, 30 on both sides |
+| `plex_decades4`, `-matfree_removal -precon_ref_shift` (default k = 2) | 7, 8, 27, 51 | 7, 8, 27, 51 | `box_decades4`: 7, 8, 27, 51 both | Dirichlet-cell plex 7, 9, 24, 48 serial and 7, 8, 24, 48 otherwise |
 
-A multigroup row pins the max over its groups (30, 48), as everywhere else.
+A multigroup row pins the max over its groups (29, 51), as everywhere else.
 
 **The twin difference is a finding, not a bug.** On a uniform quad/hex box the plex matrix
 IS the structured one to ~1e-15 (verify_plexk, above), but its rows are in a different
 order — plex point order under the simple partitioner, not DMDA order — and PCAIR is not
 permutation-invariant: its CF splitting and its approximate inverses depend on the order
-it walks the rows. So a twin can land an iteration away. Two do, both on the edge of
-rtol on BOTH sides:
+it walks the rows. So a twin can land an iteration away. Under ghost-flux the only twin
+rows that differ are the streaming-only pmat pair at np=2 (plex 8, structured 7); the
+Dirichlet-cell measurements below had two others, both on the edge of rtol on BOTH sides
+(the rtol margins are Dirichlet-cell-era numbers and were not re-measured):
 - `plex_box_50_st2`: the structured solve clears rtol at iteration 6 with 1.4% to spare
   (5.30e-4 against a target of 5.38e-4); the plex one misses at iteration 6 by 0.4%
   (5.398e-4 against 5.378e-4 — even the preconditioned `r_0` differs in the fourth
@@ -705,28 +811,30 @@ rtol on BOTH sides:
   (0.07 of rtol). The pin of 7 is safe; another arch could see 6, which passes.
 - `plex_decades4` default k, group 1 serial: 9 against the structured 8, missing rtol at
   8 by 9%; at np=2 the plex matches the structured 8 (0.94 of rtol). The recipe pins the
-  group max, 48, which is unaffected.
+  group max, 48, which is unaffected. Under ghost-flux group 1 is 8 on both sides.
 
-The partitioner moves the same edge: `plex_box_50_st2` at `-n 2` is 7 under the default
-simple partitioner and 6 under `-petscpartitioner_type parmetis` (tri and tet: 5 under
-both). That is why the backend defaults to `simple` — deterministic, and available on
+The partitioner moved the same edge under Dirichlet-cell: `plex_box_50_st2` at `-n 2`
+was 7 under the default simple partitioner and 6 under `-petscpartitioner_type parmetis`
+(tri and tet: 5 under both). Under ghost-flux it is 7 under both. That is why the backend defaults to `simple` — deterministic, and available on
 every CI image, where ParMETIS may not be — and why no recipe passes a partitioner.
 
-**Hair-trigger pins**, the final residual as a fraction of rtol at the pinned iteration
+**Hair-trigger pins** (Dirichlet-cell era, not re-measured under ghost-flux), the final
+residual as a fraction of rtol at the pinned iteration
 (np=1 / np=2), i.e. where another arch could need one more: the streaming-only pmat and
 matfree pair (0.87 / 0.71), the two `plex_decades4` group-3 solves (0.94 / 0.94, and
 group 1 of default k at np=2, 0.94), `plex_cube_10_st2` (0.76), `plex_square_msh`
 (0.60 / 0.64). The structured twins of the first two carry exactly that +1 in their
-pins (10, 31, 49), which is the strongest hint of what the CI sweep will ask for. The
-rest clear rtol by 6x or more.
+pins then (10, 31, 49), and the CI sweep did ask for 10 on the first. The rest cleared
+rtol by 6x or more.
 
-**Second-arch sweep** (2026-09-23, `arch-linux-c-debug` against a debug-built PFLARE
-main): build with `-Wall -Werror`, `check`, `tests_short` and `tests` all exit 0; every
+**Second-arch sweep** (2026-09-23, Dirichlet-cell era, `arch-linux-c-debug` against a
+debug-built PFLARE main): build with `-Wall -Werror`, `check`, `tests_short` and `tests` all exit 0; every
 plex recipe and every structured twin converges in EXACTLY the opt count above at np 1
 and np 2 (per group too), with the same rtol margins to three digits; `-malloc_dump`
 reports nothing unfreed on `verify_plexk` (np 1, 2, 3) and on the plex solves with and
 without `.vtu` output. One structured recipe is the sharpest edge in the whole suite:
-`box_50_st2` at np 2 clears rtol at its pin of 6 by 0.013%.
+`box_50_st2` at np 2 cleared rtol at its then pin of 6 by 0.013% (it takes 7 under
+ghost-flux).
 
 **Checked by hand, not recipes** (2026-09-22, np 1 and 2): every plex problem with
 `-check_matfree -matfree_removal` — matvec differences 2e-16 to 4e-16 against 1e-13,
@@ -764,14 +872,16 @@ removal into one matrix entry and multiplies once where the matrix-free path mul
 twice and adds, so the two differ in the last bits and diverge from there. That is why
 the matfree recipes are *pinned at their twin's pin* and get no baseline of their own:
 the count is the invariant, the history is not. Every twin below measured exactly the
-same count as its `-precon_stream` line, serial and at `-n 2`.
+same count as its `-precon_stream` line, serial and at `-n 2`, under Dirichlet-cell and
+again under the ghost-flux default (2026-09-25, local opt; the Dirichlet-cell counts in
+brackets where they moved, and the plex pair is in "Unstructured iteration counts").
 
 | config | `-precon_stream` / `-matfree_removal`, np=1 | np=2 |
 |---|---|---|
-| 1D slab st=2 | 9 / 9 | 9 / 9 |
-| 1D multigroup 4 groups t05 | 11, 11, 11, 9 / same | 11, 11, 11, 9 / same |
-| 2D 50x50 st=2 | 9 / 9 | 9 / 9 (pinned 10, as the twin is) |
-| 2D 80x40 st=2 | 10 / 10 | — |
+| 1D slab st=2 | 8 / 8 (Dirichlet-cell 9 / 9) | 8 / 8 (Dirichlet-cell 9 / 9) |
+| 1D multigroup 4 groups t05 | 9, 9, 9, 8 / same (Dirichlet-cell 11, 11, 11, 9) | 9, 9, 9, 8 / same (Dirichlet-cell 11, 11, 11, 9) |
+| 2D 50x50 st=2 | 7 / 7 (Dirichlet-cell 9 / 9) | 7 / 7 (Dirichlet-cell 9 / 9) |
+| 2D 80x40 st=2 | 7 / 7 (Dirichlet-cell 9 / 9) | — |
 | 3D 10^3 st=2 | 6 / 6 | 6 / 6 |
 
 The infinite-medium check runs in this mode too — `slab_inf_medium.json` in 7 serial
@@ -780,8 +890,9 @@ pmat's counts rather than the default pc's 10, and they are what `-precon_stream
 measures on the same files. The solution lands at 1.4e-13 to 7.6e-12 against the 1e-9
 tolerance; the drift from the default path's ~1e-13 is the pmat and not the matrix-free
 apply, since `-precon_stream` measures the same errors to four digits. These three pins
-carry one iteration of slack (measured + 1) rather than sitting on the measured number:
-it is a new configuration and has not been swept over the CI arches.
+carried one iteration of slack (measured + 1) until the 2026-09-25 re-pin, and sit on the
+measured number (7, 8, 24) since; all-reflective, so the ghost-flux switch did not move
+them.
 
 **`-check_matfree` is the sharp oracle**, and it is what makes the mode trustworthy
 rather than merely green. It builds BOTH operators on whatever problem file is being
@@ -820,36 +931,39 @@ ratio of 0.99, every face vacuum so the diffusion operator is nonsingular
 whatever the ratio, all at S4: `slab_diffusive.json` is 100 cells over a length
 of 10, `box_diffusive.json` 50x50 over 5x5 and `cube_diffusive.json` 10^3 over
 1^3. Only the dimension changes between them, which is what makes the counts
-comparable.
+comparable. Re-measured 2026-09-25 (local opt) under the ghost-flux default, which
+every row with a vacuum face runs in; the Dirichlet-cell count follows in brackets where
+it moved. Rows without a recipe at that np (np=2 of the st=2, additive, CG and yreflect
+rows) were measured by hand.
 
 | config | np=1 | np=2 |
 |---|---|---|
-| 1D diffusive slab, no DSA (the reference) | 20 | 20 |
-| 1D diffusive slab, `-precon_dsa` | 11 | 10 |
+| 1D diffusive slab, no DSA (the reference) | 23 (Dirichlet-cell 20) | 23 (Dirichlet-cell 20) |
+| 1D diffusive slab, `-precon_dsa` | 11 | 11 (Dirichlet-cell 10) |
 | 1D all-reflect infinite medium, `-precon_dsa` (rtol 1e-12) | 10 | 10 |
 | 1D slab st=2, `-precon_dsa` | 5 | 5 |
 | 2D diffusive box, no DSA (the reference) | 29 | 29 |
 | 2D diffusive box, `-precon_dsa` | 11 | 11 |
-| 2D diffusive box, `-precon_dsa -pc_composite_type additive` | 23 | 23 |
+| 2D diffusive box, `-precon_dsa -pc_composite_type additive` | 14 (Dirichlet-cell 23) | 14 (Dirichlet-cell 23) |
 | 2D diffusive box, `-precon_dsa -dsa_ksp_type cg -dsa_ksp_max_it 5` | 11 | 11 |
 | 2D all-reflect infinite medium, `-precon_dsa` (rtol 1e-12) | 10 | 10 |
 | 2D box st=2, `-precon_dsa` | 5 | 5 |
-| 3D diffusive cube, no DSA (the reference) | 21 | 21 |
-| 3D diffusive cube, `-precon_dsa` | 10 | 10 |
-| 3D diffusive cube, Y faces reflective, anisotropic box, `-precon_dsa` | 10 | 11 |
+| 3D diffusive cube, no DSA (the reference) | 18 (Dirichlet-cell 21) | 18 (Dirichlet-cell 21) |
+| 3D diffusive cube, `-precon_dsa` | 8 (Dirichlet-cell 10) | 8 (Dirichlet-cell 10) |
+| 3D diffusive cube, Y faces reflective, anisotropic box, `-precon_dsa` | 12 (Dirichlet-cell 10) | 12 (Dirichlet-cell 11) |
 | 3D all-reflect infinite medium, `-precon_dsa` (rtol 1e-12) | 9 | 9 |
 | 3D cube st=2, `-precon_dsa` | 4 | 4 |
 
 Read each dimension's first two rows together: that pair IS the test, and
-halving the count is what the correction buys — 20 to 11 in 1D, 29 to 11 in 2D,
-21 to 10 in 3D. **The corrected count is 10 or 11 in every dimension** while
-the uncorrected one is not, so what the correction removes is exactly the part
-that varies with dimension. That is the claim DSA makes, and it is the number
-to beat for anything that comes after (see the numerical-diffusion note in
-`TODO.md`).
+halving the count is what the correction buys — 23 to 11 in 1D, 29 to 11 in 2D,
+18 to 8 in 3D (20 to 11, 29 to 11 and 21 to 10 under Dirichlet-cell). **The
+corrected count is 8 to 11 in every dimension** while the uncorrected one is not,
+so what the correction removes is exactly the part that varies with dimension.
+That is the claim DSA makes, and it is the number to beat for anything that comes
+after (see the numerical-diffusion note in `TODO.md`).
 
 The remaining rows say DSA does not break what already worked — st=2 goes 6 to
-5 in 1D, 7 to 5 in 2D and 5 to 4 in 3D, and the infinite media still land on
+5 in 1D, 7 to 5 in 2D and 6 to 4 in 3D, and the infinite media still land on
 the exact constant (1D 2.3e-13 serial and 7.1e-12 at np=2, 2D 3.4e-14 and
 8.3e-14, 3D 6.9e-14 and 1.1e-13, against the 1e-9 tolerance). Those runs are
 also the reflective-branch check: every face reflective means every face is a
@@ -866,24 +980,25 @@ Marshak condition where the transport has reflection and a zero-Neumann one
 where it has vacuum. `cube_diffusive_yreflect.json` is deliberately
 anisotropic, 20x10x5 over 2 x 1 x 0.5 with the Y faces reflective, because a
 cubic box hides the swap behind its symmetry: measured by swapping the two
-axes in `DSAPrecon::create` by hand, it costs 10 -> 13 iterations there (and
-12 -> 15 on the Z-reflective mirror of the same file), so the pin at 11 fails
-on it.
+axes in `DSAPrecon::create` by hand, it cost 10 -> 13 iterations there under
+Dirichlet-cell (and 12 -> 15 on the Z-reflective mirror of the same file), so the
+pin at 11 then failed on it. The file takes 12 under ghost-flux and is pinned at 12;
+the swap has not been re-measured there, so whether it still fails the pin is open.
 
 The two 2D generality rows pin the CLI rather than a regime. The shell is added
 to the composite BEFORE `KSPSetFromOptions`, so the paper's additive
-combination is just `-pc_composite_type additive` (slower here — 23 against 11
-— which is why multiplicative is the default order, but it must keep working),
+combination is just `-pc_composite_type additive` (slower here — 14 against 11,
+23 under Dirichlet-cell — which is why multiplicative is the default order, but it must keep working),
 and the inner diffusion solve is reachable under its own prefix, so
 `-dsa_ksp_type cg -dsa_ksp_max_it 5` replaces the single PCGAMG application
 with five CG iterations. That buys nothing on this problem (11 either way), and
 that is the point: the default inexact solve is already enough.
 
-Unlike the rest of the 3D pins these carry one iteration of deliberate slack
-(measured count + 1) rather than sitting on the measured number: PCGAMG is new
-to this test matrix and its aggregation is the most arch-sensitive thing in the
-suite. CI runs green with that slack in place; the table above is the reference
-measurement, so a tightening pass would have to re-measure per arch first.
+Until 2026-09-25 these pins carried one iteration of deliberate slack (measured
+count + 1), because PCGAMG was new to this test matrix and its aggregation looked
+like the most arch-sensitive thing in the suite; CI ran green with it. The ghost-flux
+re-pin put them on the local opt count like every other pin, so a DSA recipe is the
+first place to look if CI asks for +1.
 
 **`-precon_stream` + `-precon_dsa` is not supported and no recipe combines
 them.** In 1D and 2D the combination does not converge in 300 iterations — but
@@ -932,17 +1047,17 @@ runs both ways, reference and `-precon_dsa`, serial and `-n 2`, in
 
 | problem | regime pinned | np=1 | np=2 |
 |---|---|---|---|
-| `box_crooked_pipe.json` (28x20) | discontinuous D through the harmonic face mean (Southworth et al. crooked pipe, Table I set 2) | 123 / 72 | 94 / 69 |
-| `box_layers.json` (40x40) | alternating thick/thin layers (the Warsa mixed regime) | 25 / 13 | 25 / 12 |
+| `box_crooked_pipe.json` (28x20) | discontinuous D through the harmonic face mean (Southworth et al. crooked pipe, Table I set 2) | 113 / 28 (Dirichlet-cell 123 / 72) | 114 / 28 (Dirichlet-cell 95 / 69) |
+| `box_layers.json` (40x40) | alternating thick/thin layers (the Warsa mixed regime) | 24 / 12 (Dirichlet-cell 25 / 13) | 24 / 11 (Dirichlet-cell 25 / 12) |
 | `box_lattice.json` (56x56) | scattering ratio exactly 1 with painted pure absorbers | 9 / 5 | 9 / 5 |
-| `box_random8.json` (32x32) | fixed-seed blockwise random thick/thin/absorber mix | 27 / 11 | 27 / 11 |
+| `box_random8.json` (32x32) | fixed-seed blockwise random thick/thin/absorber mix | 19 / 8 (Dirichlet-cell 27 / 11) | 19 / 8 (Dirichlet-cell 27 / 11) |
 
-Counts are reference / `-precon_dsa`; the pins sit at measured + 1 like the
-other DSA pins (PCGAMG/PCAIR slack). The crooked pipe is the one file whose
-reference count moves with the rank count (123 vs 94 — PCAIR on a strongly
-heterogeneous operator), so its serial and parallel pins differ. These were
-measured on the local **opt** arch; CI runs green with the +1 slack in place,
-like the DSA pins above.
+Counts are reference / `-precon_dsa`, measured on the local **opt** arch under the
+ghost-flux default (2026-09-25) and pinned exactly; until then the pins sat at
+measured + 1 like the other DSA pins, and CI ran green with that. Under
+Dirichlet-cell the crooked pipe was the one file whose reference count moved
+with the rank count (123 vs 95 — PCAIR on a strongly heterogeneous operator);
+under ghost-flux the two are 113 and 114, and its DSA count is 28 at both.
 
 The crooked pipe's counts were re-measured on 2026-08-04 when inflow went per
 face: the file used to be driven by a painted unit-`Source` strip in the first
@@ -986,15 +1101,17 @@ exactly — one bin per distinct ratio, which the driver reports on stderr as
 `worst mismatch 1` — `alpha_g * D_ref` IS `Sigma_t(g)` cell by cell, the pmat is
 the full one, and the run reproduces the DEFAULT (full-pmat) iteration counts
 exactly. Out of `k` matrices assembled once, with no assembly anywhere in the
-group sweep. Six problem files say so independently:
+group sweep. Six problem files say so independently, under Dirichlet-cell and again
+under the ghost-flux default (2026-09-25, local opt; Dirichlet-cell in brackets where it
+moved):
 
 | exact-coverage identity | ref-shift count | the full-pmat count it reproduces |
 |---|---|---|
 | `slab_st2.json` (1 group, so k = 1 always) | 6 | 6 |
 | `slab_mg4_t05.json`, `-precon_ref_k 2` (two distinct ratios) | 6, 6, 6, 6 | 6, 6, 6, 6 |
-| `slab_decades4.json`, `-precon_ref_k 4` | 4, 8, 14, 20 | 4, 8, 14, 20 |
-| `box_decades4.json`, `-precon_ref_k 4` | 4, 6, 15, 30 | 4, 6, 15, 30 |
-| `slab_diffusive.json` (1 group), no DSA / `-precon_dsa` | 20 / 11 | 20 / 11 |
+| `slab_decades4.json`, `-precon_ref_k 4` | 4, 8, 14, 22 (Dirichlet-cell 20) | 4, 8, 14, 22 |
+| `box_decades4.json`, `-precon_ref_k 4` | 4, 6, 15, 29 (Dirichlet-cell 30) | 4, 6, 15, 29 |
+| `slab_diffusive.json` (1 group), no DSA / `-precon_dsa` | 23 / 11 (Dirichlet-cell 20 / 11) | 23 / 11 |
 | `box_diffusive.json` (1 group), no DSA / `-precon_dsa` | 29 / 11 | 29 / 11 |
 
 Mind the pc side: these run with the DEFAULT (left) preconditioning, not the
@@ -1016,28 +1133,34 @@ physics one axis wider, in the way the diffusive trio is.
 
 The alphas are 1, 10, 100 and 1000, three decades, which is the point: covering
 them exactly costs four hierarchies and the default rule settles for two.
-Per-group counts, measured on the local opt arch; serial and `-n 2` agree
-throughout except the DSA runs' third group (6 serial, 5 at `-n 2`):
+Per-group counts, re-measured 2026-09-25 on the local opt arch under the ghost-flux
+default, the Dirichlet-cell counts in brackets where they moved. Serial and `-n 2` agree
+on every row measured at both (all but the bare-L and k = 1 rows) except the 2D k = 2
+DSA row's third group (9 serial, 8 at `-n 2`); under Dirichlet-cell the exception was
+the DSA runs' third group (6 serial, 5 at `-n 2`). The two bare-L rows without DSA run
+`-ksp_pc_side right` as their Dirichlet-cell measurement did; the bare-L + DSA row runs
+right-preconditioned too:
 
 | `slab_decades4.json` | per-group iterations |
 |---|---|
-| default pc (full pmat, the reference) | 4, 8, 14, 20 |
-| `-matfree_removal` alone (bare streaming pmat) | 10, 26, 208, **DIVERGED_ITS (300)** |
-| `-precon_ref_shift -precon_ref_k 4` (exact) | 4, 8, 14, 20 |
-| `-precon_ref_shift` (the default rule: k = 2, worst mismatch 3.16) | 13, 11, 26, 42 |
-| `-precon_ref_shift -precon_ref_k 1` (one shared pmat, mismatch 31.6) | 115, 22, 23, 76 |
-| `-precon_dsa` on the full pmat | 4, 4, 6, 11 |
+| default pc (full pmat, the reference) | 4, 8, 14, 22 (Dirichlet-cell 4, 8, 14, 20) |
+| `-matfree_removal` alone (bare streaming pmat) | 9, 25, 172, **DIVERGED_ITS (300)** (Dirichlet-cell 10, 26, 208) |
+| `-precon_ref_shift -precon_ref_k 4` (exact) | 4, 8, 14, 22 (Dirichlet-cell 4, 8, 14, 20) |
+| `-precon_ref_shift` (the default rule: k = 2, worst mismatch 3.16) | 13, 11, 28, 44 (Dirichlet-cell 13, 11, 26, 42) |
+| `-precon_ref_shift -precon_ref_k 1` (one shared pmat, mismatch 31.6) | 94, 21, 21, 68 (Dirichlet-cell 115, 22, 23, 76) |
+| `-precon_dsa` on the full pmat | 4, 4, 5, 11 (Dirichlet-cell 4, 4, 6, 11) |
 | `-matfree_removal -precon_dsa` (bare L + DSA) | 11, 30, **DIVERGED_ITS (300)** |
-| `-precon_ref_shift -precon_ref_k 4 -precon_dsa` | 4, 4, 6, 11 |
-| `-precon_ref_shift -precon_dsa` (k = 2) | 11, 11, 7, 13 |
+| `-precon_ref_shift -precon_ref_k 4 -precon_dsa` | 4, 4, 5, 11 (Dirichlet-cell 4, 4, 6, 11) |
+| `-precon_ref_shift -precon_dsa` (k = 2) | 11, 11, 7, 10 (Dirichlet-cell 11, 11, 7, 13) |
 
 | `box_decades4.json` | per-group iterations |
 |---|---|
-| default pc (full pmat, the reference) | 4, 6, 15, 30 |
-| `-matfree_removal` alone (bare streaming pmat) | 6, 17, 89, **DIVERGED_ITS (300)** |
-| `-precon_ref_shift -precon_ref_k 4` (exact) | 4, 6, 15, 30 |
-| `-precon_ref_shift` (the default rule: k = 2) | 7, 8, 24, 48 |
+| default pc (full pmat, the reference) | 4, 6, 15, 29 (Dirichlet-cell 4, 6, 15, 30) |
+| `-matfree_removal` alone (bare streaming pmat) | 5, 16, 82, **DIVERGED_ITS (300)** (Dirichlet-cell 6, 17, 89) |
+| `-precon_ref_shift -precon_ref_k 4` (exact) | 4, 6, 15, 29 (Dirichlet-cell 4, 6, 15, 30) |
+| `-precon_ref_shift` (the default rule: k = 2) | 7, 8, 27, 51 (Dirichlet-cell 7, 8, 24, 48) |
 | `-precon_ref_shift -precon_ref_k 4 -precon_dsa` | 4, 4, 6, 11 |
+| `-precon_ref_shift -precon_dsa` (k = 2; not a recipe) | 7, 8, 9, 10 (Dirichlet-cell 7, 8, 8, 179) |
 
 Read each table's second row against its third: that pair IS the test. The bare
 streaming pmat does not converge on the thick group at all, and the shift is
@@ -1047,8 +1170,8 @@ as a failure, and a recipe's pass/fail is its exit code. They are recorded here
 instead, and they are what makes the ref-shift pins mean something.
 
 The mismatch cost is the other thing these tables pin down: at a worst mismatch
-of 3.16 the thick group costs 42 against the exact 20 in 1D and 48 against 30 in
-2D, i.e. roughly a factor of two. That is worse than the campaign's 1.3-1.6x for
+of 3.16 the thick group costs 44 against the exact 22 in 1D and 51 against 29 in
+2D (Dirichlet-cell: 42 against 20, 48 against 30), i.e. roughly a factor of two. That is worse than the campaign's 1.3-1.6x for
 a factor-3 mismatch, and the difference is that the campaign measured one
 mismatched group on a homogeneous problem where these have two mismatched groups
 at once on a heterogeneous one at 10 mean free paths per cell.
@@ -1060,12 +1183,16 @@ DSA cannot attach to a bare streaming pmat — structurally, not by degree. Both
 pmat it lands on the full-pmat-plus-DSA counts exactly, 11 on the thick group in
 every table above, which is the re-attachment claim.
 
-On a MISMATCHED shifted pmat it is fragile, and that is a real caveat: 1D at
-k = 2 is fine (13 on the thick group against the 42 it takes without DSA) while
-2D at k = 2 takes **179** on the group where `-precon_ref_k 4` takes 11. **The
-DSA recipes therefore pin exact coverage only.** Untangling it is future work —
-it is very likely the same unexplained amat/pmat interaction recorded for
-`-precon_stream -precon_dsa` in `TODO.md`.
+On a MISMATCHED shifted pmat it was fragile under Dirichlet-cell: 1D at k = 2 was
+fine (13 on the thick group against the 42 it took without DSA) while 2D at k = 2
+took **179** on the group where `-precon_ref_k 4` takes 11. **The DSA recipes
+therefore pin exact coverage only.** Under the ghost-flux default the fragility is
+gone on these files — 10 on the thick group in 1D (against 44 without DSA) and 10 in
+2D (np 1 and 2), i.e. slightly better than exact coverage — which says the 179 lived
+in the Dirichlet boundary rows rather than in the mismatch itself. That is one
+problem pair, not a claim; the recipes still pin exact coverage only, and the
+amat/pmat interaction recorded for `-precon_stream -precon_dsa` in `TODO.md` is
+still open.
 
 ### Streaming-only groups
 A group whose `Sigma_t` is identically zero has no ratio to any reference — and
@@ -1081,11 +1208,11 @@ pure streaming (`Sigma_t[0] = 0` in both materials, and with it every scatter
 out of that group — a zero total admits none, so group 0 is a decoupled
 streaming solve):
 
-| `slab_decades4_stream0.json` | per-group iterations |
+| `slab_decades4_stream0.json` (ghost-flux; Dirichlet-cell in brackets) | per-group iterations |
 |---|---|
-| default pc (full pmat, the reference) | 1, 8, 14, 20 |
-| `-matfree_removal` alone (bare streaming pmat) | 1, 22, 116, **DIVERGED_ITS (300)** |
-| `-precon_ref_shift` (default rule — exact here) | 1, 8, 14, 20 |
+| default pc (full pmat, the reference) | 1, 8, 14, 22 (1, 8, 14, 20) |
+| `-matfree_removal` alone (bare streaming pmat, left-preconditioned) | 1, 22, 111, **DIVERGED_ITS (300)** (1, 22, 116) |
+| `-precon_ref_shift` (default rule — exact here) | 1, 8, 14, 22 (1, 8, 14, 20) |
 
 Group 0 solves in one iteration either way — the bare streaming pmat IS its
 exact operator — and the reference falls to group 1, whose three alphas span
@@ -1100,25 +1227,23 @@ same everything).
 |---|---|---|---|
 | 1D `slab_st2`, ref-shift (1 group) | 6 | — | 6 |
 | 1D `slab_mg4_t05`, `-precon_ref_k 2` | 6 | 6 | 6 |
-| 1D `slab_decades4`, `-precon_ref_k 4` | 20 | 20 | 20 |
-| 1D `slab_decades4`, default k | 42 | 42 | 43 |
-| 1D `slab_decades4`, `-precon_ref_k 4 -precon_dsa` | 11 | 11 | 12 |
-| 2D `box_decades4`, `-precon_ref_k 4` | 30 | 30 | 31 |
-| 2D `box_decades4`, default k | 48 | 48 | 49 |
-| 2D `box_decades4`, `-precon_ref_k 4 -precon_dsa` | 11 | 11 | 12 |
-| 2D `box_diffusive`, ref-shift, no DSA | 29 | — | 30 |
-| 2D `box_diffusive`, ref-shift + DSA | 11 | — | 12 |
-| 1D `slab_decades4_stream0`, default k | 20 | 20 | 20 |
+| 1D `slab_decades4`, `-precon_ref_k 4` | 22 (Dirichlet-cell 20) | 22 | 22 |
+| 1D `slab_decades4`, default k | 44 (Dirichlet-cell 42) | 44 | 44 |
+| 1D `slab_decades4`, `-precon_ref_k 4 -precon_dsa` | 11 | 11 | 11 |
+| 2D `box_decades4`, `-precon_ref_k 4` | 29 (Dirichlet-cell 30) | 29 | 29 |
+| 2D `box_decades4`, default k | 51 (Dirichlet-cell 48) | 51 | 51 |
+| 2D `box_decades4`, `-precon_ref_k 4 -precon_dsa` | 11 | 11 | 11 |
+| 2D `box_diffusive`, ref-shift, no DSA | 29 | — | 29 |
+| 2D `box_diffusive`, ref-shift + DSA | 11 | — | 11 |
+| 1D `slab_decades4_stream0`, default k | 22 (Dirichlet-cell 20) | 22 | 22 |
 | 1D `slab_st0`, ref-shift (all streaming-only) | 1 | — | 1 |
 
-The exact-coverage 1D pins sit on the measured count, as every other 1D pin
-does. Everything else carries one iteration of slack: the DSA rows for the
-PCGAMG reason the other DSA pins do, the 2D rows for the reason the other 2D
-pins do, and the two default-k rows because a PCAIR hierarchy set up on a
-deliberately mismatched operator is the most arch-sensitive setup in the suite.
-**CI-arch sweep pending** — these are local opt-arch measurements, and unlike
-the DSA and benchmark pins (closed Aug 2026, CI green as committed) they have
-not yet seen a CI run.
+Every pin sits on the local opt count since the 2026-09-25 ghost-flux re-pin. Before it,
+the exact-coverage 1D pins sat on the measured count and everything else carried one
+iteration of slack: the DSA rows for the PCGAMG reason the other DSA pins did, the 2D
+rows for the reason the other 2D pins did, and the two default-k rows because a PCAIR
+hierarchy set up on a deliberately mismatched operator looked like the most
+arch-sensitive setup in the suite. These are the rows to check first if CI asks for +1.
 
 The parallel variants are not just duplicates here. The alphas are a log-mean
 over every cell, so they come off an MPI reduction, and the binning is then

@@ -177,6 +177,12 @@ global-axis order, membership by boundary-cell centre and inclusive at both
 ends — the same rule `regions.paint` follows, so a window and a paint box
 agree about which cells they cover. A 1D face is a point and takes no window.
 
+How the inflow enters is the top-level `vacuum_treatment`, and the default
+(`"ghost_flux"`, the usual upwind face flux) is the right choice for a new
+problem. `"dirichlet_cell"` pins the boundary cell to the inflow instead — the
+default before Sep 2026, so it is what an older problem's published numbers
+were computed with. See `problem_files.md`, "Vacuum treatment".
+
 The one trap: **all faces reflective + scattering ratio 1 anywhere is
 singular** (the constants are in the operator's kernel). Keep a vacuum face,
 or give every group absorption. The multigroup corollary: the LAST group

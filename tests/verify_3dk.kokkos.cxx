@@ -117,7 +117,7 @@ static BCSpec AllVacuum(PetscBool ghost, PetscReal inflow = 0.0)
       bcs.set(faces[f], BCType::VACUUM);
       bcs.set_inflow(faces[f], inflow);
    }
-   if (ghost) bcs.set_vacuum_treatment(VacuumTreatment::GHOST_FLUX);
+   bcs.set_vacuum_treatment(ghost ? VacuumTreatment::GHOST_FLUX : VacuumTreatment::DIRICHLET_CELL);
    return bcs;
 }
 
@@ -313,7 +313,7 @@ static PetscErrorCode CheckOperatorAgainstReference(PetscInt n_cells_x, PetscInt
    bcs.set(StructuredFD3D::FACE_BACK, back);
    bcs.set(StructuredFD3D::FACE_BOTTOM, bottom);
    bcs.set(StructuredFD3D::FACE_TOP, top);
-   if (ghost) bcs.set_vacuum_treatment(VacuumTreatment::GHOST_FLUX);
+   bcs.set_vacuum_treatment(ghost ? VacuumTreatment::GHOST_FLUX : VacuumTreatment::DIRICHLET_CELL);
 
    PetscCall(quad.create(sn_order));
    const PetscInt n_angles = quad.n_angles();

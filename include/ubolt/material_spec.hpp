@@ -66,11 +66,11 @@ private:
 // UboltFillInflow), call this, and let UboltZeroReflectRows hold the
 // reflective rows at zero as usual
 //
-// It ADDS rather than assigns. Under the default vacuum treatment that is the
-// same thing bitwise - the rows it touches are exactly the rows UboltFillInflow
-// leaves at zero - but under VacuumTreatment::GHOST_FLUX a boundary cell is an
-// ordinary unknown whose rhs carries the external source AND the |Omega|/h
-// inflow, and assigning would wipe the latter
+// It ADDS rather than assigns. Under VacuumTreatment::DIRICHLET_CELL that is
+// the same thing bitwise - the rows it touches are exactly the rows
+// UboltFillInflow leaves at zero - but under the default GHOST_FLUX a boundary
+// cell is an ordinary unknown whose rhs carries the external source AND the
+// |Omega|/h inflow, and assigning would wipe the latter
 PETSC_EXTERN PetscErrorCode UboltFillSource(const PhaseSpace &ps, const BoundaryInfo &boundary, \
    const AngularQuadrature &quad, const MaterialSpec &mats, const PetscIntKokkosView &mat_id_d, \
    PetscInt g, Vec b);

@@ -301,9 +301,12 @@ previous one's verification has passed and been reviewed.
       at k = 2 takes 179 iterations on the thick group where exact coverage takes 11, while
       the 1D twin is fine. Likely the same unexplained amat/pmat interaction as
       `-precon_stream -precon_dsa`. The DSA recipes pin exact coverage only until it is
-      understood.
-- [ ] Follow-up: sweep the `-precon_ref_shift` pins over the CI arches (64-bit, OpenMP) —
-      they are local opt-arch measurements, and a pin is the max over the arches.
+      understood. UPDATE 2026-09-25: under the ghost-flux default the same run takes
+      7, 8, 9, 10 (np 2: 7, 8, 8, 10) — the 179 was tied to the Dirichlet-cell rows. One
+      problem, so left open until a mismatched-k DSA recipe is worth pinning.
+- [x] Follow-up: sweep the `-precon_ref_shift` pins over the CI arches — SUPERSEDED
+      2026-09-25: pins are now the local opt measurement and CI flags any arch that needs
+      +1 (docs/dev/testing.md, "Pass/fail contract").
 
 ## Phase 6 — DMPlex backends
 - [x] DECISION POINT (22 Sep 2026): hand-written Kokkos kernels over DMPlex, NOT MFEM, and
@@ -939,10 +942,21 @@ experiments stay on the campaign branch until PFLARE's PCAIR `PCApplyTranspose` 
       (0.0 relative, heterogeneous sigma_t, parallel too) under ghost-flux;
       `*_inf_medium_ghost.json` solves against the exact constant in 1D/2D/3D.
 - [x] Swept the ghost-flux pins over the 64-bit and OpenMP CI images (two went up by 1).
-- [ ] Make ghost-flux the default. It is the standard upwind FV inflow, differs from the
-      default by O(h) at the boundary cell, and is what DG does anyway. It changes every
-      solution at boundary cells, so: regenerate all 24 baselines deliberately, re-pin
-      every recipe, and rewrite `DSAPrecon`'s Marshak face. Its own commit series.
+- [x] Make ghost-flux the default — DONE 2026-09-25. It is the standard upwind FV inflow,
+      differs from Dirichlet-cell by O(h) at the boundary cell, and is what DG does
+      anyway. `"vacuum_treatment": "dirichlet_cell"` keeps the old numbers: its twins
+      reproduce the previous 1D baselines byte for byte and the previous counts exactly.
+      All 24 baselines re-captured on the debug arch; every recipe re-pinned to the max
+      over local opt and the four CI images. `DSAPrecon`'s Marshak face needed NO
+      rewrite: it already sits on the domain boundary, which is where ghost-flux puts
+      the transport boundary, so the refusal was simply dropped (scaling the face
+      coefficient over 0.25-1.0 moves no DSA count by more than 1). DSA got much
+      better on the heterogeneous problems (crooked pipe 72 -> 28, random8 11 -> 8,
+      cube_diffusive 10 -> 8) and worse on one (cube_diffusive_yreflect 10 -> 12);
+      the ratio-1 workhorses cost one more iteration (box 6 -> 7, cube 5 -> 6), the
+      streaming-only pmats one or two fewer, the default-k ref-shift runs two or three
+      more. The structured/plex 50x50 twins now agree (7 and 7, where Dirichlet-cell
+      gave 6 and 7). Full table: docs/dev/testing.md, "Switching the default".
 - [ ] Linear DG (DG1) upwind on the DMPlex backend — after ghost-flux is the default,
       because a DG face flux IS the ghost-flux inflow and there is no Dirichlet-cell
       analogue for a multi-dof cell. Phase 6a left it out ("DG1+" in the not-in-this-cut
