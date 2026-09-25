@@ -49,6 +49,12 @@ override SYCLC_FLAGS += $(SYCLC_FLAGS_INPUT) $(INCLUDE)
 # derived here the same way so make can also be called directly in tests/
 PETSC_HAVE_MPIUNI ?= $(if $(shell awk '/^[[:space:]]*\#define[[:space:]]+PETSC_HAVE_MPIUNI[[:space:]]+1/{print 1; exit}' $(PETSCCONF_H)),1,0)
 
+# The generated simplex boxes ("simplex": true) need PETSc's external meshers,
+# triangle in 2D and (c)tetgen in 3D. The CI images have neither, so those
+# recipes are skipped there; mesh FILES need no mesher and always run
+PETSC_HAVE_TRIANGLE ?= $(if $(shell awk '/^[[:space:]]*.define[[:space:]]+PETSC_HAVE_TRIANGLE[[:space:]]+1/{print 1; exit}' $(PETSCCONF_H)),1,0)
+PETSC_HAVE_TETMESHER ?= $(if $(shell awk '/^[[:space:]]*.define[[:space:]]+PETSC_HAVE_C?TETGEN[[:space:]]+1/{print 1; exit}' $(PETSCCONF_H)),1,0)
+
 # Link to ubolt and pflare - order is important
 # ubolt and then pflare must come first for static linking
 LDFLAGS += -Wl,-rpath,$(LIBDIR) -Wl,-rpath,$(PFLARE_DIR)/lib
@@ -448,25 +454,35 @@ run_tests_short_serial:
 	@echo "Test 2D unstructured quad box, pure scattering (ratio 1), twin of box_50_st2"
 	./transportk -problem problems/plex_box_50_st2.json -ksp_max_it 7
 	@echo "Test 2D unstructured quad box, streaming-only pmat"
-	./transportk -problem problems/plex_box_50_st2.json -precon_stream -ksp_pc_side right -ksp_max_it 9
+	./transportk -problem problems/plex_box_50_st2.json -precon_stream -ksp_pc_side right -ksp_max_it 10
 	@echo "Test 2D unstructured quad box, matrix-free removal (the twin of the line above)"
-	./transportk -problem problems/plex_box_50_st2.json -matfree_removal -ksp_pc_side right -ksp_max_it 9
+	./transportk -problem problems/plex_box_50_st2.json -matfree_removal -ksp_pc_side right -ksp_max_it 10
 	@echo "Test 2D unstructured quad box, reflective left + bottom faces"
 	./transportk -problem problems/plex_box_50_reflect_lb.json -ksp_max_it 6
+ifeq ($(PETSC_HAVE_TRIANGLE),1)
 	@echo "Test 2D unstructured triangles, S4, scattering ratio 0.5"
 	./transportk -problem problems/plex_tri_30_st2.json -ksp_max_it 5
+endif
 	@echo "Test 3D unstructured hex box, pure scattering (ratio 1), twin of cube_10_st2"
 	./transportk -problem problems/plex_cube_10_st2.json -ksp_max_it 5
+ifeq ($(PETSC_HAVE_TETMESHER),1)
 	@echo "Test 3D unstructured tetrahedra, scattering ratio 0.5"
 	./transportk -problem problems/plex_tet_6_st2.json -ksp_max_it 5
+endif
 	@echo "Test 2D unstructured Gmsh file, Cell Sets materials and Face Sets boundary conditions"
 	./transportk -problem problems/plex_square_msh.json -ksp_max_it 4
+ifeq ($(PETSC_HAVE_TRIANGLE),1)
 	@echo "Test 2D unstructured triangles, ghost-flux vacuum + reflective faces against the infinite-medium solution"
 	./transportk -problem problems/plex_tri_30_inf_medium_ghost.json -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 12
+endif
+ifeq ($(PETSC_HAVE_TRIANGLE),1)
 	@echo "Test 2D unstructured triangles, ghost-flux, matrix-free removal against the infinite-medium solution"
 	./transportk -problem problems/plex_tri_30_inf_medium_ghost.json -matfree_removal -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 33
+endif
+ifeq ($(PETSC_HAVE_TETMESHER),1)
 	@echo "Test 3D unstructured tetrahedra, ghost-flux vacuum + reflective faces against the infinite-medium solution"
 	./transportk -problem problems/plex_tet_6_inf_medium_ghost.json -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 11
+endif
 	@echo "Test 2D unstructured reference-shifted pmat, one hierarchy per group (twin of box_decades4)"
 	./transportk -problem problems/plex_decades4.json -matfree_removal -precon_ref_shift -precon_ref_k 4 -ksp_max_it 30
 	@echo "Test 2D unstructured reference-shifted pmat, the default k"
@@ -661,23 +677,31 @@ run_tests_short_parallel:
 	@echo "Test 2D unstructured quad box, pure scattering in parallel"
 	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_box_50_st2.json -ksp_max_it 7
 	@echo "Test 2D unstructured quad box, streaming-only pmat in parallel"
-	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_box_50_st2.json -precon_stream -ksp_pc_side right -ksp_max_it 9
+	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_box_50_st2.json -precon_stream -ksp_pc_side right -ksp_max_it 10
 	@echo "Test 2D unstructured quad box, matrix-free removal in parallel (the twin of the line above)"
-	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_box_50_st2.json -matfree_removal -ksp_pc_side right -ksp_max_it 9
+	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_box_50_st2.json -matfree_removal -ksp_pc_side right -ksp_max_it 10
 	@echo "Test 2D unstructured quad box, reflective left + bottom faces in parallel"
 	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_box_50_reflect_lb.json -ksp_max_it 6
+ifeq ($(PETSC_HAVE_TRIANGLE),1)
 	@echo "Test 2D unstructured triangles, S4, in parallel"
 	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_tri_30_st2.json -ksp_max_it 5
+endif
 	@echo "Test 3D unstructured hex box, pure scattering in parallel"
 	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_cube_10_st2.json -ksp_max_it 5
+ifeq ($(PETSC_HAVE_TETMESHER),1)
 	@echo "Test 3D unstructured tetrahedra in parallel"
 	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_tet_6_st2.json -ksp_max_it 5
+endif
 	@echo "Test 2D unstructured Gmsh file in parallel"
 	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_square_msh.json -ksp_max_it 4
+ifeq ($(PETSC_HAVE_TRIANGLE),1)
 	@echo "Test 2D unstructured triangles, ghost-flux against the infinite-medium solution in parallel"
 	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_tri_30_inf_medium_ghost.json -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 12
+endif
+ifeq ($(PETSC_HAVE_TETMESHER),1)
 	@echo "Test 3D unstructured tetrahedra, ghost-flux against the infinite-medium solution in parallel"
 	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_tet_6_inf_medium_ghost.json -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 11
+endif
 	@echo "Test 2D unstructured reference-shifted pmat, one hierarchy per group, in parallel"
 	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_decades4.json -matfree_removal -precon_ref_shift -precon_ref_k 4 -ksp_max_it 30
 	@echo "Test 2D unstructured reference-shifted pmat, the default k, in parallel"

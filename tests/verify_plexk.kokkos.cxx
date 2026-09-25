@@ -1233,9 +1233,10 @@ static PetscErrorCode CheckSlantedReflect(PetscBool ghost, PetscBool *ok)
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-// The third cosine of a 3D set; a 2D set has none (the caller only asks in 3D)
-static const PetscScalar *quad_xi(const SNQuadrature2D &) { return nullptr; }
-static const PetscScalar *quad_xi(const SNQuadrature3D &quad) { return quad.xi_host(); }
+// The third cosine of a 3D set; a 2D set has none (the caller only asks in 3D).
+// maybe_unused: without a tet mesher the only 3D caller is compiled out
+[[maybe_unused]] static const PetscScalar *quad_xi(const SNQuadrature2D &) { return nullptr; }
+[[maybe_unused]] static const PetscScalar *quad_xi(const SNQuadrature3D &quad) { return quad.xi_host(); }
 
 // The same spec with every vacuum face under the ghost-flux treatment
 static BCSpec GhostFlux(BCSpec bcs)
@@ -1542,8 +1543,29 @@ int main(int argc, char **args) {
    // 3 + 6. Simplex meshes, and the .vtu written from the 2D vacuum solve
    // ~~~~~~~~~~
    PetscCall(PetscSNPrintf(vtu, sizeof(vtu), "verify_plexk_tmp_%d.vtu", (int)size));
+   // A generated triangle box needs PETSc's external 2D mesher, which the CI
+   // images do not have. Triangles are still covered there through the mesh
+   // files (the irregular mesh below, tri_slanted, and the Gmsh recipe), and
+   // the .vtu check moves onto a quad box so it runs everywhere
+#if defined(PETSC_HAVE_TRIANGLE)
    PetscCall(CheckSimplex<SNQuadrature2D>(2, 6, 4, 4, vtu, &ok));
    PetscCall(CheckGhostSimplex<SNQuadrature2D>(2, 6, NULL, 2, &ok));
+#else
+   PetscCall(PetscPrintf(PETSC_COMM_WORLD, "  2D triangle boxes skipped: PETSc was configured without a 2D " \
+      "mesher (--download-triangle)\n"));
+   {
+      PlexMeshSpec quads;
+      BCSpec vacuum_all;
+      PlexSolveResult unused;
+      quads.dimension = 2;
+      for (PetscInt d = 0; d < 2; d++) {
+         quads.n_cells[d] = 6;
+         quads.lengths[d] = 1.0;
+      }
+      PetscCall(SolveOnPlex<SNQuadrature2D>("2D quads 6^2 box, S4, .vtu output", quads, 4, vacuum_all, 1.0, 0.0, \
+         1.0, PETSC_TRUE, 36, vtu, &unused, &ok));
+   }
+#endif
    PetscCall(CheckGhostSimplex<SNQuadrature2D>(2, 0, "meshes/square_irregular_tri.msh", 6, &ok));
 #if defined(PETSC_HAVE_CTETGEN) || defined(PETSC_HAVE_TETGEN)
    PetscCall(CheckSimplex<SNQuadrature3D>(3, 3, 2, 2, NULL, &ok));

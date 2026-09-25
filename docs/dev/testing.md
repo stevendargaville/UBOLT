@@ -663,7 +663,12 @@ contiguous ranges; both pass with the same measured differences as serial.
 
 ## Unstructured iteration counts
 Measured 2026-09-22 on the opt arch (`arch-linux-c-opt`), `-ksp_max_it 400
--ksp_converged_reason`. **Pinned on the measured count, exactly**: the contract says a
+-ksp_converged_reason`. Swept 2026-09-25 in the 64-bit and OpenMP CI images:
+only the two `plex_box_50_st2` streaming-only rows moved (9 to 10). The simplex-box
+rows (`plex_tri_*`, `plex_tet_*`) do NOT run in CI: generating them needs PETSc's
+triangle / (c)tetgen, which the CI images lack, so `tests/Makefile` skips them there
+(`PETSC_HAVE_TRIANGLE`, `PETSC_HAVE_TETMESHER`) and `verify_plexk` skips its
+generated-simplex checks. Triangles stay covered in CI through the Gmsh mesh files. **Pinned on the measured count, exactly**: the contract says a
 pin is the max over the CI arches, and these have not yet seen one — the first CI run is
 the sweep, and the hair-trigger rows below are where to expect a +1. The structured twin
 is the same file without `"type": "unstructured"`, run with the same options; its count
@@ -672,8 +677,8 @@ is the measured one here, not its pin (several structured pins carry +1 of CI sl
 | recipe | plex np=1 | plex np=2 | structured twin np=1 / np=2 | notes |
 |---|---|---|---|---|
 | `plex_box_50_st2` (50x50 quads, ratio 1) | 7 | 7 | `box_50_st2`: 6 / 6 | the twin difference, see below |
-| `plex_box_50_st2`, `-precon_stream -ksp_pc_side right` | 9 | 9 | 9 / 9 | hair-trigger (0.87 of rtol) |
-| `plex_box_50_st2`, `-matfree_removal -ksp_pc_side right` | 9 | 9 | 9 / 9 | identical history to the line above |
+| `plex_box_50_st2`, `-precon_stream -ksp_pc_side right` | 10 (opt 9) | 10 (opt 9) | 9 / 9 | hair-trigger (0.87 of rtol on opt); 10 on the 64-bit and OpenMP CI arches, np 1 and 2 |
+| `plex_box_50_st2`, `-matfree_removal -ksp_pc_side right` | 10 (opt 9) | 10 (opt 9) | 9 / 9 | identical history to the line above, 10 on the CI arches too |
 | `plex_box_50_reflect_lb` | 6 | 6 | `box_50_reflect_lb`: 6 / 6 | |
 | `plex_tri_30_st2` (1800 triangles, S4, ratio 0.5) | 5 | 5 | — | |
 | `plex_cube_10_st2` (1000 hexes, ratio 1) | 5 | 5 | `cube_10_st2`: 5 / 5 | 0.76 of rtol |

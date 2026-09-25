@@ -342,6 +342,32 @@ PetscErrorCode StreamingTermDG0::create(const PhaseSpace &ps, const Unstructured
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
+// Omega_a . nA_k, the upwind test and the face coefficient before 1 / V_c
+KOKKOS_INLINE_FUNCTION PetscScalar DG0FaceFlux(const PetscScalarKokkosView &omega_d, \
+   const PetscScalarKokkosView &face_nA_d, PetscInt a, PetscInt k)
+{
+   return omega_d(3 * a) * face_nA_d(3 * k) + omega_d(3 * a + 1) * face_nA_d(3 * k + 1) + \
+      omega_d(3 * a + 2) * face_nA_d(3 * k + 2);
+}
+
+// A row's diagonal: the outflow fluxes summed, then scaled by 1 / V_c once.
+// assemble_add and add_diagonal BOTH add exactly this value, so the composed
+// diagonal is bitwise the assembled one. Accumulating s / V_c face by face in
+// each kernel instead is not: under -ffp-contract=fast (the CI flags) the
+// compiler fuses the per-face multiply-add differently in the two kernels'
+// branch structures, and the results differ in the last bit
+KOKKOS_INLINE_FUNCTION PetscScalar DG0OutflowDiagonal(const PetscScalarKokkosView &omega_d, \
+   const PetscScalarKokkosView &face_nA_d, const PetscIntKokkosView &cell_face_offset_d, \
+   const PetscScalarKokkosView &inv_volume_d, PetscInt c, PetscInt a)
+{
+   PetscScalar outflow = 0.0;
+   for (PetscInt k = cell_face_offset_d(c); k < cell_face_offset_d(c + 1); k++) {
+      const PetscScalar s = DG0FaceFlux(omega_d, face_nA_d, a, k);
+      if (PetscRealPart(s) > 0.0) outflow += s;
+   }
+   return outflow * inv_volume_d(c);
+}
+
 // Add the upwind face fluxes into the shared COO values
 // This happens entirely on the device
 PetscErrorCode StreamingTermDG0::assemble_add(PetscScalarKokkosView &coo_v_d) const
@@ -371,15 +397,13 @@ PetscErrorCode StreamingTermDG0::assemble_add(PetscScalarKokkosView &coo_v_d) co
          const PetscInt diag = diag_slot_d(r);
          const PetscInt k0 = cell_face_offset_d(c);
 
+         // Outflow goes on the diagonal; inflow onto the face's slot, which
+         // the backend pointed at the upwind neighbour - or nulled, on a
+         // boundary face, so the entry is dropped. s == 0 adds nothing
+         coo_v_d(diag) += DG0OutflowDiagonal(omega_d, face_nA_d, cell_face_offset_d, inv_volume_d, c, a);
          for (PetscInt k = k0; k < cell_face_offset_d(c + 1); k++) {
-            const PetscScalar s = omega_d(3 * a) * face_nA_d(3 * k) + omega_d(3 * a + 1) * face_nA_d(3 * k + 1) + \
-               omega_d(3 * a + 2) * face_nA_d(3 * k + 2);
-            const PetscScalar coef = s * inv_volume_d(c);
-            // Outflow goes on the diagonal; inflow onto the face's slot, which
-            // the backend pointed at the upwind neighbour - or nulled, on a
-            // boundary face, so the entry is dropped. s == 0 adds nothing
-            if (PetscRealPart(s) > 0.0) coo_v_d(diag) += coef;
-            else coo_v_d(first + (k - k0)) += coef;
+            const PetscScalar s = DG0FaceFlux(omega_d, face_nA_d, a, k);
+            if (!(PetscRealPart(s) > 0.0)) coo_v_d(first + (k - k0)) += s * inv_volume_d(c);
          }
       });
 
@@ -389,8 +413,7 @@ PetscErrorCode StreamingTermDG0::assemble_add(PetscScalarKokkosView &coo_v_d) co
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 // The outflow terms this term writes into the diagonal slot above - the same
-// per-face += of the same expressions in the same (cone) order, so a composed
-// diagonal is bitwise the assembled one
+// DG0OutflowDiagonal value, so a composed diagonal is bitwise the assembled one
 // This happens entirely on the device
 PetscErrorCode StreamingTermDG0::add_diagonal(Vec d) const
 {
@@ -414,12 +437,7 @@ PetscErrorCode StreamingTermDG0::add_diagonal(Vec d) const
          const PetscInt c = r / n_angles;
          const PetscInt a = r % n_angles;
 
-         for (PetscInt k = cell_face_offset_d(c); k < cell_face_offset_d(c + 1); k++) {
-            const PetscScalar s = omega_d(3 * a) * face_nA_d(3 * k) + omega_d(3 * a + 1) * face_nA_d(3 * k + 1) + \
-               omega_d(3 * a + 2) * face_nA_d(3 * k + 2);
-            const PetscScalar coef = s * inv_volume_d(c);
-            if (PetscRealPart(s) > 0.0) d_d(r) += coef;
-         }
+         d_d(r) += DG0OutflowDiagonal(omega_d, face_nA_d, cell_face_offset_d, inv_volume_d, c, a);
       });
 
    PetscCall(VecRestoreKokkosView(d, &d_d));
