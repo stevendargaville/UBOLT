@@ -2,7 +2,8 @@
 // file (see docs/problem_files.md), everything about HOW it is solved stays on
 // the command line - PETSc options (-ksp_*, -pc_*) plus the strategy and
 // verification knobs below. One driver for every dimension and any number of
-// groups: the file picks the backend, and a single-group file IS the
+// groups: the file picks the backend (the structured DMDA ones by dimension,
+// or the unstructured DG0 one on a DMPlex), and a single-group file IS the
 // single-group problem, so there is no separate driver for it
 //
 // Strategy knobs: -precon_stream (precondition with a streaming-only pmat),
@@ -248,7 +249,7 @@ int main(int argc, char **args) {
    // problem file's output.flux_vtk. A single-group problem writes the
    // filename as given, multigroup writes one file per group: -flux_vtk
    // flux.vts writes flux_g0.vts, flux_g1.vts, ... The extension picks the
-   // format, .vts or .vtr
+   // format: .vts or .vtr on a structured mesh, .vtu on an unstructured one
    char flux_vtk_cli[PETSC_MAX_PATH_LEN];
    PetscBool have_flux_cli = PETSC_FALSE;
    PetscCall(PetscOptionsGetString(NULL, NULL, "-flux_vtk", flux_vtk_cli, sizeof(flux_vtk_cli), \
@@ -271,10 +272,13 @@ int main(int argc, char **args) {
       // whole-face vacuum face whose inflow IS the infinite-medium flux - a
       // boundary that feeds in exactly what the medium holds changes nothing,
       // in either vacuum treatment, which is what lets the same oracle check
-      // the vacuum rows. The face ids are 1 .. 2 * dimension in every
-      // structured backend
+      // the vacuum rows. The face ids are 1 .. 2 * dimension on every box,
+      // structured or unstructured, but a mesh file's "Face Sets" can be
+      // anything, so a mesh file is refused
       const PetscInt bg = spec.background_material;
       if (check_inf_medium) {
+         PetscCheck(spec.mesh_file.empty(), PETSC_COMM_WORLD, PETSC_ERR_ARG_INCOMP, \
+            "-check_inf_medium needs a box mesh, whose faces are \"Face Sets\" 1 .. 2 * dimension");
          PetscCheck(spec.intervals.empty() && spec.boxes.empty() && spec.boxes_3d.empty(), \
             PETSC_COMM_WORLD, \
             PETSC_ERR_ARG_INCOMP, "-check_inf_medium needs uniform xsections and source: no paint");
@@ -307,6 +311,8 @@ int main(int argc, char **args) {
       StreamingTerm streaming_1d;
       StreamingTerm2D streaming_2d;
       StreamingTerm3D streaming_3d;
+      UnstructuredDG0 disc_dg0;
+      StreamingTermDG0 streaming_dg0;
       const AngularQuadrature *quad = NULL;
       Discretisation *disc = NULL;
       OperatorTerm *streaming = NULL;
@@ -315,7 +321,51 @@ int main(int argc, char **args) {
       // The quadrature comes first in each branch: the file names an SN order
       // and how many ordinates that is, is the quadrature's answer - which is
       // what the phase space is sized on
-      if (spec.dimension == 1) {
+      //
+      // An unstructured mesh is checked BEFORE the dimension, and is the one
+      // backend constructed in two stages: the MESH decides the global cell
+      // count (a simplex box has 2 triangles or 6 tets per box cell, a file
+      // whatever it has), so the phase space is sized off n_global_cells(),
+      // never off n_cells_x * n_cells_y. Painting layers the file's "Cell
+      // Sets" under the paint boxes when there are any - a generated box has
+      // no "Cell Sets" label, so cell_sets on one is the backend's error
+      if (spec.mesh_unstructured) {
+         PlexMeshSpec mesh_spec;
+         mesh_spec.dimension = spec.dimension;
+         mesh_spec.n_cells[0] = spec.n_cells_x;
+         mesh_spec.n_cells[1] = spec.n_cells_y;
+         mesh_spec.n_cells[2] = spec.n_cells_z;
+         mesh_spec.lengths[0] = spec.length_x;
+         mesh_spec.lengths[1] = spec.length_y;
+         mesh_spec.lengths[2] = spec.length_z;
+         mesh_spec.simplex = spec.mesh_simplex;
+         mesh_spec.file = spec.mesh_file;
+         if (spec.dimension == 2) {
+            PetscCall(quad_2d.create(spec.sn_order));
+            quad = &quad_2d;
+         }
+         else if (spec.dimension == 3) {
+            PetscCall(quad_3d.create(spec.sn_order));
+            quad = &quad_3d;
+         }
+         else SETERRQ(PETSC_COMM_WORLD, PETSC_ERR_SUP, "no unstructured backend for dimension %" \
+            PetscInt_FMT, spec.dimension);
+         PetscCall(disc_dg0.create_mesh(PETSC_COMM_WORLD, mesh_spec));
+         PetscCall(ps.create(PETSC_COMM_WORLD, disc_dg0.n_global_cells(), quad->n_angles(), n_groups));
+         if (spec.dimension == 2) PetscCall(disc_dg0.create(ps, quad_2d, spec.bcs));
+         else PetscCall(disc_dg0.create(ps, quad_3d, spec.bcs));
+         if (!spec.cell_sets.empty()) {
+            PetscCall(disc_dg0.paint_cell_sets(bg, spec.cell_sets, mat_id_d));
+            if (spec.dimension == 2) PetscCall(disc_dg0.paint_boxes_over(spec.boxes, mat_id_d));
+            else PetscCall(disc_dg0.paint_boxes_over(spec.boxes_3d, mat_id_d));
+         }
+         else if (spec.dimension == 2) PetscCall(disc_dg0.paint_boxes(bg, spec.boxes, mat_id_d));
+         else PetscCall(disc_dg0.paint_boxes(bg, spec.boxes_3d, mat_id_d));
+         PetscCall(streaming_dg0.create(ps, disc_dg0));
+         disc = &disc_dg0;
+         streaming = &streaming_dg0;
+      }
+      else if (spec.dimension == 1) {
          PetscCall(quad_1d.create(spec.sn_order));
          PetscCall(ps.create(PETSC_COMM_WORLD, spec.n_cells_x, quad_1d.n_angles(), n_groups));
          PetscCall(disc_1d.create(PETSC_COMM_WORLD, ps, spec.length_x, quad_1d, spec.bcs));
@@ -374,7 +424,9 @@ int main(int argc, char **args) {
       // ~~~~~~~~~~~~~
       DSAPrecon dsa;
       if (precon_dsa) {
-         if (spec.dimension == 1) PetscCall(dsa.create(PETSC_COMM_WORLD, ps, disc_1d, \
+         if (spec.mesh_unstructured) SETERRQ(PETSC_COMM_WORLD, PETSC_ERR_SUP, \
+            "the DSA correction has no unstructured backend yet (it is a DMDA diffusion operator)");
+         else if (spec.dimension == 1) PetscCall(dsa.create(PETSC_COMM_WORLD, ps, disc_1d, \
             *quad, spec.bcs));
          else if (spec.dimension == 2) PetscCall(dsa.create(PETSC_COMM_WORLD, ps, disc_2d, \
             *quad, spec.bcs));

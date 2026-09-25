@@ -1,0 +1,30 @@
+{
+ "_comment": "The unstructured DG0 twin of box_50_reflect_lb.json: reflective left + bottom faces on the 50x50 quad box, so it pins the plex backend's reflect rows (the partner-angle column in the first incoming reflective face's slot) and the reflective corner against the structured count.",
+ "dimension": 2,
+ "mesh": {
+  "type": "unstructured",
+  "n_cells": [50, 50],
+  "lengths": [1.0, 1.0]
+ },
+ "sn_order": 2,
+ "materials": {
+  "n_groups": 1,
+  "materials": [
+   {
+    "id": 0,
+    "name": "st2_ss1",
+    "Sigma_t": [2.0],
+    "Sigma_s": [
+     [1.0]
+    ],
+    "Source": [1.0]
+   }
+  ]
+ },
+ "boundary_conditions": {
+  "left": "reflect",
+  "right": {"type": "vacuum", "inflow": 12.566370614359172},
+  "bottom": "reflect",
+  "top": {"type": "vacuum", "inflow": 12.566370614359172}
+ }
+}

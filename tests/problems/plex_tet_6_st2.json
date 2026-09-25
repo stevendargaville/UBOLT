@@ -1,0 +1,33 @@
+{
+ "_comment": "Unstructured DG0 on tetrahedra: a 6x6x6 simplex box (PETSc's box mesher, via CTetgen), S2, sigma_t 2, scattering ratio 0.5, 4 pi inflow on every face. No structured twin - pins the 3D plex count on non-hexahedral cells.",
+ "dimension": 3,
+ "mesh": {
+  "type": "unstructured",
+  "simplex": true,
+  "n_cells": [6, 6, 6],
+  "lengths": [1.0, 1.0, 1.0]
+ },
+ "sn_order": 2,
+ "materials": {
+  "n_groups": 1,
+  "materials": [
+   {
+    "id": 0,
+    "name": "st2_ss1",
+    "Sigma_t": [2.0],
+    "Sigma_s": [
+     [1.0]
+    ],
+    "Source": [1.0]
+   }
+  ]
+ },
+ "boundary_conditions": {
+  "left": {"type": "vacuum", "inflow": 12.566370614359172},
+  "right": {"type": "vacuum", "inflow": 12.566370614359172},
+  "front": {"type": "vacuum", "inflow": 12.566370614359172},
+  "back": {"type": "vacuum", "inflow": 12.566370614359172},
+  "bottom": {"type": "vacuum", "inflow": 12.566370614359172},
+  "top": {"type": "vacuum", "inflow": 12.566370614359172}
+ }
+}

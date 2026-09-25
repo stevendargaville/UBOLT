@@ -7,6 +7,7 @@
 #include "ubolt/structured_fd_1d.hpp"
 #include "ubolt/structured_fd_2d.hpp"
 #include "ubolt/structured_fd_3d.hpp"
+#include <map>
 #include <string>
 #include <vector>
 
@@ -39,6 +40,19 @@ public:
    PetscErrorCode create(MPI_Comm comm, const char *problem_path);
 
    PetscInt dimension = 0;
+   // mesh.type: PETSC_FALSE ("structured", the default) is the DMDA finite
+   // difference backends; PETSC_TRUE ("unstructured") is the DG0 backend on a
+   // DMPlex, 2D and 3D only. These are plain fields on purpose - this header
+   // does not include the unstructured backend, the driver builds its mesh
+   // description from them
+   PetscBool mesh_unstructured = PETSC_FALSE;
+   // Unstructured box only: triangles/tets instead of quads/hexes
+   PetscBool mesh_simplex = PETSC_FALSE;
+   // Unstructured only: a mesh file PETSc reads (Gmsh .msh, ...), resolved
+   // relative to the problem file's directory exactly as a materials path is.
+   // Empty = a box built in code, described by n_cells_* / length_* below;
+   // non-empty = the file decides the mesh and n_cells_* / length_* stay 0
+   std::string mesh_file;
    // Only the first `dimension` axes mean anything
    PetscInt n_cells_x = 0, n_cells_y = 0, n_cells_z = 0;
    PetscReal length_x = 0.0, length_y = 0.0, length_z = 0.0;
@@ -58,19 +72,31 @@ public:
 
    // The geometry half: the background everywhere, then the paint list in
    // order with later entries winning - exactly paint_intervals/paint_boxes
-   // semantics. One of the three lists is filled, by dimension
+   // semantics. One of the three lists is filled, by dimension. An
+   // unstructured mesh adds a layer between the two: background, then
+   // cell_sets, then the paint list
    PetscInt background_material = 0;
+   // Unstructured only (regions.cell_sets): "Cell Sets" label value ->
+   // material index. Cells whose label value is not a key keep the background
+   std::map<PetscInt, PetscInt> cell_sets;
    std::vector<MaterialInterval1D> intervals;
    std::vector<MaterialBox2D> boxes;
    std::vector<MaterialBox3D> boxes_3d;
 
    // Keyed with the dimension's FACE_* ids, ready for the backend's create.
+   // On an unstructured mesh the face names map onto the same ids (they are
+   // PETSc's box "Face Sets" values) and integer keys are "Face Sets" values
+   // stored as given, so an id is an id whichever way the file spelled it.
    // n_reflect_faces lets a driver ask "all faces reflective?" (the
-   // infinite-medium check) without re-walking the spec
+   // infinite-medium check) without re-walking the spec. It counts reflective
+   // LABEL IDS, which is a face count on a box (one id per face) but not
+   // necessarily on a file mesh, where one "Face Sets" value can cover any
+   // number of boundary faces
    BCSpec bcs;
    PetscInt n_reflect_faces = 0;
 
-   // Scalar flux output path (.vts/.vtr), empty = no output
+   // Scalar flux output path, empty = no output. .vts/.vtr on a structured
+   // mesh, .vtu on an unstructured one - the parser checks which
    std::string flux_vtk;
 };
 

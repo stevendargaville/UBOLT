@@ -305,15 +305,76 @@ previous one's verification has passed and been reviewed.
 - [ ] Follow-up: sweep the `-precon_ref_shift` pins over the CI arches (64-bit, OpenMP) —
       they are local opt-arch measurements, and a pin is the max over the arches.
 
-## Phase 6 — DMPlex FEM backends
-- [ ] DECISION POINT first: hand-written Kokkos DG/CG kernels over DMPlex (plan default)
-      vs MFEM as a Discretisation backend — see Research notes below. Recommended spike
-      before committing: assemble an MFEM DG advection matrix, convert to aijkokkos, feed
-      to PCAIR, measure the interop cost.
-- [ ] 6a DGUpwind: broken-PetscSection layout (cf. PFLARE tests/adv_dg_upwind.c) but
-      extraction-only — flattened device views (cell->dof offsets, face->(cell-,cell+),
-      normals/areas, volumes, boundary faces), variable-nnz COO pattern, Kokkos
-      volume + face kernels
+## Phase 6 — DMPlex backends
+- [x] DECISION POINT (22 Sep 2026): hand-written Kokkos kernels over DMPlex, NOT MFEM, and
+      no spike. Every MFEM friction in the research notes below (MATAIJ rather than
+      MATAIJKOKKOS out of its PETSc bridge, a second device runtime alongside Kokkos, the
+      per-group values-only refill needing plumbing across the hypre/PETSc boundary) fights
+      the COO + slot-map + refill architecture the library is built on, so the spike would
+      have measured what the notes already predict.
+- [x] 6a `UnstructuredDG0`: DG0 (one dof per cell) upwind streaming on a DMPlex, 2D and 3D,
+      box meshes built in code (quads/hexes or triangles/tets) or a mesh file read by
+      PETSc (Gmsh). Broken section with n_angles dof per cell, so the row convention
+      `row = cell * n_angles + angle` is unchanged and everything dimension-independent
+      carries over untouched. Variable-nnz COO pattern: `n_faces(c) + 1` slots per row in
+      cone order, diagonal last, through a new `Discretisation::set_pattern` that
+      `set_uniform_pattern` now wraps. Geometry (cell volumes, outward area-weighted face
+      normals, centroids) extracted on the host once by `DMPlexComputeCellGeometryFVM`
+      into flat device views; `StreamingTermDG0` is the per-backend streaming sibling and
+      reads the ordinates off the backend, never a quadrature of its own. BCs: the
+      existing Dirichlet-cell contract, keyed by real "Face Sets" values (the box ids ARE
+      the structured `FACE_*` ids); reflection needs an axis-aligned face. Materials:
+      `paint_boxes` by centroid plus "Cell Sets" -> material. Output: `.vtu`. Not in this
+      cut: DSA (a DMDA operator), DG1+. The ghost-flux vacuum BC landed afterwards, on
+      top of the structured ghost-flux commit (see the postscript below).
+  - Measured (22 Sep 2026, opt arch, pinned exactly pending the first CI sweep; table in
+    docs/dev/testing.md): the quad/hex twins match their structured counts (reflect_lb
+    6, cube 5, streaming-only pmat 9, ref-shift k=4 4/6/15/30) EXCEPT `plex_box_50_st2`,
+    7 against 6 — the matrices agree to ~1e-15 but the rows are permuted and PCAIR is
+    not permutation-invariant, and both solves sit on the rtol edge at iteration 6
+    (structured clears by 1.4%, plex misses by 0.4%); the partitioner moves the same
+    edge (parmetis gives 6 at np 2). Simplex: 1800 triangles S4 and 1296 tets S2, both
+    ratio 0.5, converge in 5, the 8-triangle Gmsh file in 4; np 2 equals np 1 on every
+    recipe but one group of the default-k ref-shift run. `-check_matfree` composes the
+    diagonal to exactly 0.0 on every plex file and `-ubolt_coo_two_call` is
+    history-identical.
+  - Measured by the experiments pass (23 Sep 2026, opt arch; tables in the campaign
+    report): DG0 is FIRST ORDER on every cell shape against the exact discrete-ordinates
+    solution (pure absorber, reflective y faces, left inflow) — L2 orders 1.00 quads,
+    1.02 triangles, 0.99 hexes, 0.99 tets — with plex quads reproducing the structured
+    errors to every printed digit; triangles carry 0.62x the quad L2 error at the same n
+    (12% better per cell), tets 8% better per cell than hexes; the Dirichlet-cell
+    boundary treatment costs nothing visible in L2 (1.5% at n = 8, 0.05% at n = 256).
+    Two things to watch: (i) the triangle L-INFINITY error converges below first order
+    (0.72-0.91 between the finest levels), largest along the reflective walls —
+    unexplained (a guess that every square is split along the same diagonal is refuted:
+    PETSc's simplex box mixes the two diagonal directions); (ii) tets on the pure absorber at rtol 1e-12 take 6 -> 19 -> 22
+    iterations for n = 8 -> 32 where hexes take 5 -> 7 (at the default rtol the counts
+    are normal, 5-6). Iteration counts on simplices creep up ~1 per 4x refinement (2D
+    ratio 1: 6, 7, 7, 8 at n = 30..240; tets 6, 7, 8) where quads/hexes match the
+    structured backend exactly and are flat. Without DSA a diffusive problem costs
+    simplices 3.3-3.5x the structured+DSA count (36 against 11 on box_diffusive),
+    quads/hexes 2.6x (29) — the size of the DSA gap this cut leaves open. The plex path
+    costs ~4% of a serial run in host-side create and 8-13% more peak memory than the
+    DMDA on the same mesh; PCAIR setup is 85-95% of both. Debug-arch sweep: every count
+    equals the opt pin at np 1 and 2, no leaks under -malloc_dump.
+  - Seen in the report figures (23 Sep 2026): a quarter box with reflective faces differs
+    from the full box's quadrant by O(h) — max 0.080 / 0.037 / 0.018 at n = 25 / 50 / 100
+    on a flux of order 10, unchanged by rtol — on the STRUCTURED and the unstructured
+    backend alike (the two agree to 2e-10 on the quarter problem). The reflective row
+    equates the two ordinates INSIDE the boundary cell where the full box sees the
+    mirror image one cell away: a first-order boundary approximation of the same kind
+    as the Dirichlet-cell vacuum row, and the same ghost-flux treatment would remove
+    both. Not a Phase 6a defect; recorded because "reflect = symmetry to solver
+    tolerance" is the natural test to reach for and it is not true of this convention.
+  - Found by the debug sweep and fixed (23 Sep 2026): the first cut rejected a reflective
+    axis plane wherever it met a slanted vacuum face (the partner row is Dirichlet there,
+    which is fine; only a REFLECTIVE partner is the unsupported single-cell-wide case),
+    and it silently accepted a boundary condition on a "Face Sets" value no face carries.
+    Both are now checked in `verify_plexk` on `tests/meshes/tri_slanted.msh`.
+  - Found in the driver pass: the plex `.vtu` arrays were named `scalar_flux(null)` —
+    PETSc's writer appends the section's field name, and a section with no fields gives
+    it a null one. Fixed by giving the output twin's section one empty-named field.
 - [ ] 6b CGSUPG: PetscFE/PetscDS host-only for quadrature/tabulations copied to device
       once; volume kernels; Dirichlet via identity-row mechanism
 - BCs: consume the existing `BCSpec` with real "Face Sets" label values (the structured
@@ -323,8 +384,22 @@ previous one's verification has passed and been reviewed.
       decision point predicted. This item survives only as the point where a DMPlex
       backend would widen it: `set_uniform_pattern` is the part that will not carry over
       (DG has a variable-nnz COO pattern), while `create_matrix` and the accessors should.
-- Verify: DG0 on uniform mesh reproduces the FD upwind matrix; manufactured-solution
-  convergence rates; pinned iterations.
+- [x] Ghost-flux vacuum BC on the DG0 backend (Sep 2026, rebased onto the structured
+      ghost-flux commit): a direction coming in only through vacuum faces keeps its
+      physical row, the rhs takes `|Omega . nA_f| / V_c` times each incoming vacuum
+      face's inflow; reflect wins mixed corners, mirrored over the reflective axes and
+      any axis-aligned incoming vacuum face (so the box still matches its twin). The
+      transpose groundwork: with V the cell volumes, `(V A)^T = P (V A) P` to rounding
+      on any mesh (checked on triangles, tets and a perturbed-node mesh where the
+      unweighted identity is off by 7%), so a half-quadrature PC built on `+Omega` serves
+      `-Omega` on DG as `y = V^{-1} M^{-T} (V x)` - the only DG-specific piece that PC
+      will need. Verified in `verify_plexk` check 7 and the `plex_*_inf_medium_ghost`
+      recipes.
+- Verify: DG0 on uniform quad/hex box meshes reproduces the FD upwind matrix to rounding
+  (`tests/verify_plexk`, serial and parallel, the plex rows permuted onto the DMDA's by
+  centroid); the infinite-medium closed form on triangles and tets through reflective
+  faces; layout, geometry and error-path checks; pinned iterations on the plex twins of
+  the structured recipes and on a Gmsh file with Cell Sets and Face Sets.
 
 ## Phase 7 — deferred
 - [ ] CI: clone PFLARE's docker model + docs/dev/ci.md
@@ -869,4 +944,6 @@ experiments stay on the campaign branch until PFLARE's PCAIR `PCApplyTranspose` 
       solution at boundary cells, so: regenerate all 24 baselines deliberately, re-pin
       every recipe, and rewrite `DSAPrecon`'s Marshak face. Its own commit series.
 - [ ] The half-quadrature preconditioner and an `-adjoint` path — blocked on PFLARE's
-      PCAIR `PCApplyTranspose`; see the campaign branch.
+      PCAIR `PCApplyTranspose`; see the campaign branch. On the DG0 backend the
+      transposed half needs the cell-volume similarity (`unstructured_dg0.hpp`):
+      `y = V^{-1} M^{-T} (V x)`, which reduces to the plain transpose on a uniform mesh.

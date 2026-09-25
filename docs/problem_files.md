@@ -34,15 +34,18 @@ ignored everywhere (JSON has no comments), holding provenance prose.
 
 | key | type | required | meaning |
 |---|---|---|---|
-| `dimension` | int, 1, 2 or 3 | yes | picks the backend: `StructuredFD1D`, `StructuredFD2D` or `StructuredFD3D` |
-| `mesh.n_cells` | int[dimension] | yes | `[nx]`, `[nx, ny]` or `[nx, ny, nz]`, all positive |
-| `mesh.lengths` | number[dimension] | yes | `[lx]`, `[lx, ly]` or `[lx, ly, lz]`, all positive |
+| `dimension` | int, 1, 2 or 3 | yes | with `mesh.type`, picks the backend: `StructuredFD1D`, `StructuredFD2D` or `StructuredFD3D` on a structured mesh, `UnstructuredDG0` (2 or 3 only) on an unstructured one |
+| `mesh.type` | `"structured"` or `"unstructured"` | no, default `"structured"` | the backend family: the DMDA finite-difference backends, or the DG0 upwind backend on a DMPlex - see "Unstructured meshes" below |
+| `mesh.n_cells` | int[dimension] | yes, except with `mesh.file` | `[nx]`, `[nx, ny]` or `[nx, ny, nz]`, all positive. On an unstructured mesh, the cells per axis of the box PETSc builds |
+| `mesh.lengths` | number[dimension] | yes, except with `mesh.file` | `[lx]`, `[lx, ly]` or `[lx, ly, lz]`, all positive; the box runs from the origin |
+| `mesh.simplex` | bool | no, default `false`; unstructured box only | triangles (2D) / tetrahedra (3D) instead of quads / hexes |
+| `mesh.file` | string | no; unstructured only | a mesh file PETSc reads (Gmsh `.msh`, ...), resolved relative to the problem file's own directory like a `materials` path. The file decides the mesh, so `n_cells`, `lengths` and `simplex` are errors alongside it; `dimension` is still required and must match the file |
 | `sn_order` | int, positive and even | yes | the SN order N, NOT the ordinate count - how many ordinates that is, is the quadrature's business and differs by dimension (N in 1D, N(N+2)/2 in 2D, N(N+2) in 3D, so S4 is 4, 12 and 24 ordinates; a 3D set has twice the ordinates of the same-order 2D set, because there is no xi > 0 half to fold over). 1D takes ANY even order - it is a Gauss-Legendre rule, generated at run time; 2D and 3D take the even orders 2 to 18, the level-symmetric (LQn) sets, which is as far as that family goes with all-positive weights |
 | `materials` | string or object | yes | a path to a materials file, resolved relative to the problem file's own directory, or the same schema inline |
-| `regions` | object | no | which cells are which material - see below; absent = uniform background |
-| `boundary_conditions` | object | no | per-face `"vacuum"`/`"reflect"`, or an object `{"type", "inflow", "window"}` - see below; unset faces are vacuum with inflow 0 |
+| `regions` | object | no | which cells are which material - see below; absent = uniform background. An unstructured mesh may also paint by `"Cell Sets"` label value, `regions.cell_sets` |
+| `boundary_conditions` | object | no | per-face `"vacuum"`/`"reflect"`, or an object `{"type", "inflow", "window"}` - see below; unset faces are vacuum with inflow 0. An unstructured mesh may also key faces by `"Face Sets"` label value (`"13": "reflect"`) |
 | `vacuum_treatment` | string | no | how every VACUUM face is discretised: `"dirichlet_cell"` (default) or `"ghost_flux"` - see below. Reflective faces are unaffected |
-| `output.flux_vtk` | string | no | output path, `.vts` or `.vtr`; `-flux_vtk` on the command line overrides it. A single-group problem writes the filename as given, multigroup writes one file per group (`flux.vts` becomes `flux_g0.vts`, ...). Each file carries three per-cell fields for its group: `scalar_flux`, `sigma_t` and `source` (the isotropic strength as written here, not the per-ordinate share) |
+| `output.flux_vtk` | string | no | output path: `.vts` or `.vtr` on a structured mesh, `.vtu` on an unstructured one (the parser checks the extension against `mesh.type`); `-flux_vtk` on the command line overrides it. A single-group problem writes the filename as given, multigroup writes one file per group (`flux.vts` becomes `flux_g0.vts`, ...). Each file carries three per-cell fields for its group: `scalar_flux`, `sigma_t` and `source` (the isotropic strength as written here, not the per-ordinate share) |
 
 ### Vacuum treatment
 
@@ -78,6 +81,9 @@ Restrictions:
   through, the opposite precedence to the default's "vacuum wins".
 - The DSA correction (`-precon_dsa`) has no ghost-flux vacuum boundary yet and
   errors if the two are combined.
+- On an unstructured mesh the same key works (see "Unstructured meshes"): the
+  coefficient is `|Omega . nA_f| / V_c` for each incoming vacuum face, whatever
+  its orientation, and the window is tested on the face centroid.
 
 ### Regions
 
@@ -159,6 +165,109 @@ object. The **top-level** `"inflow"` key of older files was removed in Aug 2026
 - it was one global per-angle value - and a file still carrying it errors with
 a migration message rather than being silently reinterpreted.
 
+### Unstructured meshes
+
+`"type": "unstructured"` in `mesh` selects the DG0 upwind backend on a DMPlex:
+one flux per cell and ordinate, upwind on every face - first order in space,
+like the structured finite differences, and on a uniform quad/hex box exactly
+the structured stencil (to rounding). The rows are still `cell * n_angles +
+angle`, so everything above the discretisation - scattering, removal, the
+group sweep, `-matfree_removal`, `-precon_stream`, `-precon_ref_shift`,
+`-diag_scale`, `-check_matfree`, `-check_inf_medium` - works unchanged. Only
+2D and 3D: a 1D unstructured mesh is an error (the structured slab IS the 1D
+backend). Not yet: `-precon_dsa` (the diffusion correction is a DMDA
+operator) errors on an unstructured mesh.
+
+The mesh comes one of two ways:
+- **A box built in code**: `n_cells` and `lengths` exactly as on a
+  structured mesh, plus `"simplex": true` for triangles/tetrahedra. PETSc's box
+  mesher labels the boundary with the same "Face Sets" ids the structured face
+  names map onto (2D: 1 bottom, 2 right, 3 top, 4 left; 3D: 1 bottom (z-), 2
+  top (z+), 3 front (y-), 4 back (y+), 5 right (x+), 6 left (x-)), so **a
+  structured problem becomes its unstructured twin by adding `"type":
+  "unstructured"` and nothing else** - `tests/problems/plex_box_50_st2.json`
+  is `box_50_st2.json` with that one line.
+- **A file**: `"file": "../meshes/square_2x2_tri.msh"`, relative to the
+  problem file's directory. Gmsh physical groups arrive as two labels: the
+  physical surfaces (3D: volumes) as **"Cell Sets"**, the physical lines (3D:
+  surfaces) as **"Face Sets"**. `n_cells`/`lengths`/`simplex` are errors next
+  to a file; `dimension` must match it.
+
+Materials: `regions.cell_sets` maps "Cell Sets" values - object keys, written
+as decimal strings - to a material id or name:
+
+```json
+"regions": {"cell_sets": {"1": "scatterer", "2": "absorber"}}
+```
+
+Painting is **background, then `cell_sets`, then `paint`**, later winning: a
+labelled cell takes its set's material, an unlisted value or an unlabelled cell
+keeps the background, and `paint` boxes then go over the top by cell
+**centroid** (the unstructured stand-in for the cell centre), so a box can
+still carve a region out of a labelled one. `cell_sets` on a structured mesh
+is an error.
+
+Boundary conditions: the face names work on an unstructured mesh too - they
+ARE the box's "Face Sets" ids - and so does any key that is a non-negative
+integer, taken as a "Face Sets" value as given; that is how a file mesh's own
+ids are named. The value is the same bare string or `{"type", "inflow",
+"window"}` object. A name and an integer reaching the same id (`"left"` and
+`"4"` in 2D) is an error, and an integer key on a structured mesh is an error.
+Boundary faces with no "Face Sets" value, or a value the file does not list,
+are cold vacuum - the same default as an unset face name. The other way round
+is an error: a boundary condition on a "Face Sets" value that NO boundary face
+of the mesh carries (a mistyped id) is rejected when the backend classifies
+the faces, rather than leaving the face you meant silently cold.
+
+Per face, what the rows do is the structured rule transplanted:
+- **reflect needs an axis-aligned face.** The mirrored direction of an
+  arbitrary face is not one of the quadrature's ordinates, so a reflective
+  face whose outward normal is not along x, y or z is an error when the
+  backend classifies it. Boxes of either cell shape have only axis-aligned
+  boundary faces; a file mesh can reflect on the straight axis-aligned parts
+  of its boundary, INCLUDING where such a plane meets a slanted or curved
+  vacuum boundary (the symmetry-reduced quarter geometry): the reflection
+  partner of a direction there may itself be a Dirichlet row, which is fine.
+  What is rejected is a partner that is itself reflective - a single-cell-wide
+  direction between two reflective faces.
+- **`"vacuum_treatment": "ghost_flux"`** is the natural DG0 vacuum condition:
+  a direction coming in only through vacuum faces keeps its physical row and
+  the face flux `|Omega . nA_f| / V_c` times the inflow goes on the rhs, for
+  every incoming vacuum face (slanted ones included). Reflect wins where a
+  direction also comes in through a reflective face; the row is then mirrored
+  over the reflective axes and any AXIS-ALIGNED incoming vacuum face (the
+  structured rule, so a box still matches its structured twin), while a slanted
+  incoming vacuum face is not mirrored over and the partner comes in through it
+  as an ordinary ghost-flux row. The upwind operator for `-Omega` is then the
+  transpose of the one for `+Omega` after weighting the rows by cell volume
+  (see `unstructured_dg0.hpp`) - exactly the transpose only where the cells
+  have equal volumes.
+- **a direction with nowhere to come from.** With the Dirichlet-cell BC
+  convention every row whose direction enters through a vacuum face is
+  prescribed, so a mesh that is one cell wide in a direction with vacuum on
+  both sides prescribes EVERY row of EVERY angle that has a component along
+  it; a 1 x N box with vacuum everywhere "solves" to its inflow (zero on cold
+  faces) in zero iterations. That is the convention, not a bug, and the
+  structured backends do the same - keep at least two cells per direction.
+- **a `window` is tested at the face centroid**: its coordinates along the
+  face's tangential axes - the axes other than the dominant axis of the
+  outward normal, ascending axis order - inclusive at both ends. On a quad/hex
+  box that is the structured boundary-cell-centre test exactly.
+- **a direction incoming through several vacuum faces** of one cell takes the
+  face whose outward normal's dominant axis comes first in x, y, z order (ties
+  by the faces' mesh point numbers) - on a box, the structured "first vacuum
+  incoming face in axis order" rule.
+
+Output is `.vtu` (an unstructured grid), with the same `scalar_flux`,
+`sigma_t` and `source` cell fields as the structured files, plus a `Rank`
+cell field PETSc's writer always adds (which rank owned the cell).
+
+Parallel: the mesh is distributed by PETSc's **`simple`** partitioner by
+default - deterministic on every machine and CI image, so iteration counts
+reproduce. `-petscpartitioner_type parmetis` (or any other PETSc partitioner)
+on the command line overrides it; the file does not name one, because the
+decomposition is how a problem is solved, not what it is.
+
 ## The materials schema
 
 The `materials` entry - standalone file or inline object - is a multigroup
@@ -225,3 +334,36 @@ mid-box in a scattering background, materials inline:
 The same problem with materials by path: `"materials": "materials/box.json"`,
 where the path is relative to the problem file's directory and the named file
 holds the `n_groups`/`materials` object above.
+
+### An unstructured file mesh
+
+`tests/problems/plex_square_msh.json` - the unit square as eight Gmsh
+triangles (`tests/meshes/square_2x2_tri.msh`), the left half scattering and
+the right half absorbing by "Cell Sets", driven through the left face and
+reflective along the top, every face named by its "Face Sets" value:
+
+```json
+{
+ "dimension": 2,
+ "mesh": {"type": "unstructured", "file": "../meshes/square_2x2_tri.msh"},
+ "sn_order": 4,
+ "materials": {
+  "n_groups": 1,
+  "materials": [
+   {"id": 0, "name": "scatterer", "Sigma_t": [2.0], "Sigma_s": [[1.0]], "Source": [1.0]},
+   {"id": 1, "name": "absorber", "Sigma_t": [10.0], "Sigma_s": [[1.0]], "Source": [0.0]}
+  ]
+ },
+ "regions": {"cell_sets": {"1": "scatterer", "2": "absorber"}},
+ "boundary_conditions": {
+  "13": {"type": "vacuum", "inflow": 1.0},
+  "12": "reflect",
+  "10": "vacuum",
+  "11": "vacuum"
+ }
+}
+```
+
+The mesh file's physical groups are what the integers mean: surfaces 1 (`x <
+0.5`) and 2 (`x >= 0.5`), lines 10 bottom, 11 right, 12 top, 13 left. The
+mesh path is relative to `tests/problems/`, where the problem file lives.

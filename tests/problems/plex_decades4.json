@@ -1,0 +1,25 @@
+{
+ "_comment": "The unstructured DG0 twin of box_decades4.json, for -matfree_removal -precon_ref_shift: the same 30x30 quad box over 3x3, the same four groups spanning three decades of Sigma_t and the same 5x dense block painted by cell centroid. Pins that the reference-shifted pmat carries over to the plex backend untouched (the rows are still cell * n_angles + angle).",
+ "dimension": 2,
+ "mesh": {
+  "type": "unstructured",
+  "n_cells": [30, 30],
+  "lengths": [3.0, 3.0]
+ },
+ "sn_order": 4,
+ "materials": "materials/decades4.json",
+ "regions": {
+  "paint": [
+   {
+    "material": 1,
+    "box": [1.2, 1.8, 1.2, 1.8]
+   }
+  ]
+ },
+ "boundary_conditions": {
+  "left": {"type": "vacuum", "inflow": 12.566370614359172},
+  "right": {"type": "vacuum", "inflow": 12.566370614359172},
+  "bottom": {"type": "vacuum", "inflow": 12.566370614359172},
+  "top": {"type": "vacuum", "inflow": 12.566370614359172}
+ }
+}

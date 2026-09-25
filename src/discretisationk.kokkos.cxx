@@ -59,18 +59,6 @@ PetscErrorCode Discretisation::set_uniform_pattern(PetscInt slots_per_row, const
    PetscCall(ps_.check_decomposed());
 
    const PetscInt local_rows = ps_.local_rows();
-   PetscCheck((PetscInt)is_bc_row.size() == local_rows, comm_, PETSC_ERR_ARG_INCOMP, \
-      "BC row mask has %" PetscInt_FMT " entries but there are %" PetscInt_FMT " local rows", \
-      (PetscInt)is_bc_row.size(), local_rows);
-   PetscCheck((PetscInt)reflect_slot.size() == local_rows, comm_, PETSC_ERR_ARG_INCOMP, \
-      "reflect slots have %" PetscInt_FMT " entries but there are %" PetscInt_FMT " local rows", \
-      (PetscInt)reflect_slot.size(), local_rows);
-   PetscCheck((PetscInt)dirichlet_value.size() == local_rows, comm_, PETSC_ERR_ARG_INCOMP, \
-      "Dirichlet values have %" PetscInt_FMT " entries but there are %" PetscInt_FMT " local rows", \
-      (PetscInt)dirichlet_value.size(), local_rows);
-   PetscCheck((PetscInt)ghost_inflow.size() == local_rows, comm_, PETSC_ERR_ARG_INCOMP, \
-      "ghost inflows have %" PetscInt_FMT " entries but there are %" PetscInt_FMT " local rows", \
-      (PetscInt)ghost_inflow.size(), local_rows);
    PetscCheck((PetscInt)oor_.size() == slots_per_row * local_rows && oor_.size() == ooc_.size(), \
       comm_, PETSC_ERR_ARG_INCOMP, "COO coordinates are %" PetscInt_FMT " long, not %" PetscInt_FMT \
       " slots x %" PetscInt_FMT " local rows", (PetscInt)oor_.size(), slots_per_row, local_rows);
@@ -84,7 +72,56 @@ PetscErrorCode Discretisation::set_uniform_pattern(PetscInt slots_per_row, const
    }
    row_slot_offset[local_rows] = slots_per_row * local_rows;
 
-   pattern_.n_slots = slots_per_row * local_rows;
+   PetscCall(set_pattern(row_slot_offset, diag_slot, is_bc_row, reflect_slot, dirichlet_value, ghost_inflow, \
+      ghost_flux_vacuum));
+
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+// The general slot maps: whatever CSR layout the backend chose, as long as
+// every slot belongs to exactly one row and the diagonal is one of that row's
+// slots. The terms only ever see these maps, so a backend with a varying
+// number of entries per row costs them nothing
+PetscErrorCode Discretisation::set_pattern(const std::vector<PetscInt> &row_slot_offset, \
+   const std::vector<PetscInt> &diag_slot, const std::vector<PetscInt> &is_bc_row, \
+   const std::vector<PetscInt> &reflect_slot, const std::vector<PetscScalar> &dirichlet_value, \
+   const std::vector<PetscScalar> &ghost_inflow, PetscBool ghost_flux_vacuum)
+{
+   PetscFunctionBeginUser;
+
+   PetscCall(ps_.check_decomposed());
+
+   const PetscInt local_rows = ps_.local_rows();
+   PetscCheck((PetscInt)is_bc_row.size() == local_rows, comm_, PETSC_ERR_ARG_INCOMP, \
+      "BC row mask has %" PetscInt_FMT " entries but there are %" PetscInt_FMT " local rows", \
+      (PetscInt)is_bc_row.size(), local_rows);
+   PetscCheck((PetscInt)reflect_slot.size() == local_rows, comm_, PETSC_ERR_ARG_INCOMP, \
+      "reflect slots have %" PetscInt_FMT " entries but there are %" PetscInt_FMT " local rows", \
+      (PetscInt)reflect_slot.size(), local_rows);
+   PetscCheck((PetscInt)dirichlet_value.size() == local_rows, comm_, PETSC_ERR_ARG_INCOMP, \
+      "Dirichlet values have %" PetscInt_FMT " entries but there are %" PetscInt_FMT " local rows", \
+      (PetscInt)dirichlet_value.size(), local_rows);
+   PetscCheck((PetscInt)ghost_inflow.size() == local_rows, comm_, PETSC_ERR_ARG_INCOMP, \
+      "ghost inflows have %" PetscInt_FMT " entries but there are %" PetscInt_FMT " local rows", \
+      (PetscInt)ghost_inflow.size(), local_rows);
+   PetscCheck((PetscInt)row_slot_offset.size() == local_rows + 1 && (PetscInt)diag_slot.size() == local_rows, \
+      comm_, PETSC_ERR_ARG_INCOMP, "slot maps are sized %" PetscInt_FMT " / %" PetscInt_FMT \
+      " but there are %" PetscInt_FMT " local rows", (PetscInt)row_slot_offset.size(), \
+      (PetscInt)diag_slot.size(), local_rows);
+   PetscCheck(oor_.size() == ooc_.size() && row_slot_offset[0] == 0 && \
+      row_slot_offset[local_rows] == (PetscInt)oor_.size(), comm_, PETSC_ERR_ARG_INCOMP, \
+      "COO coordinates are %" PetscInt_FMT " long but the slot maps cover [%" PetscInt_FMT ", %" \
+      PetscInt_FMT ")", (PetscInt)oor_.size(), row_slot_offset[0], row_slot_offset[local_rows]);
+   for (PetscInt r = 0; r < local_rows; r++) {
+      PetscCheck(row_slot_offset[r] < row_slot_offset[r + 1] && diag_slot[r] >= row_slot_offset[r] && \
+         diag_slot[r] < row_slot_offset[r + 1], comm_, PETSC_ERR_ARG_INCOMP, "row %" PetscInt_FMT \
+         " owns slots [%" PetscInt_FMT ", %" PetscInt_FMT ") but its diagonal is slot %" PetscInt_FMT, \
+         r, row_slot_offset[r], row_slot_offset[r + 1], diag_slot[r]);
+   }
+
+   pattern_.n_slots = (PetscCount)oor_.size();
    pattern_.row_slot_offset_d = PetscIntKokkosView("row_slot_offset_d", local_rows + 1);
    pattern_.diag_slot_d = PetscIntKokkosView("diag_slot_d", local_rows);
    boundary_.is_bc_row_d = PetscIntKokkosView("is_bc_row_d", local_rows);
@@ -99,10 +136,10 @@ PetscErrorCode Discretisation::set_uniform_pattern(PetscInt slots_per_row, const
    boundary_.ghost_flux_vacuum = ghost_flux_vacuum;
    if (ghost_flux_vacuum) boundary_.ghost_inflow_d = PetscScalarKokkosView("ghost_inflow_d", local_rows);
 
-   PetscIntKokkosViewHostUnmanaged row_slot_offset_h(row_slot_offset.data(), local_rows + 1);
-   PetscIntKokkosViewHostUnmanaged diag_slot_h(diag_slot.data(), local_rows);
    // const_cast only because the unmanaged host view type is non-const; the
    // deep_copy below reads it
+   PetscIntKokkosViewHostUnmanaged row_slot_offset_h(const_cast<PetscInt *>(row_slot_offset.data()), local_rows + 1);
+   PetscIntKokkosViewHostUnmanaged diag_slot_h(const_cast<PetscInt *>(diag_slot.data()), local_rows);
    PetscIntKokkosViewHostUnmanaged is_bc_row_h(const_cast<PetscInt *>(is_bc_row.data()), local_rows);
    PetscIntKokkosViewHostUnmanaged reflect_slot_h(const_cast<PetscInt *>(reflect_slot.data()), local_rows);
    PetscScalarKokkosViewHostUnmanaged dirichlet_value_h(const_cast<PetscScalar *>(dirichlet_value.data()), local_rows);

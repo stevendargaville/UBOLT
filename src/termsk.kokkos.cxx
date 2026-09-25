@@ -311,6 +311,141 @@ PetscErrorCode StreamingTerm3D::add_diagonal(Vec d) const
 }
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+// StreamingTermDG0
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+PetscErrorCode StreamingTermDG0::create(const PhaseSpace &ps, const UnstructuredDG0 &disc)
+{
+   PetscFunctionBeginUser;
+
+   PetscCall(ps.check_decomposed());
+
+   PetscCheck((PetscInt)disc.inv_volume_d().extent(0) == ps.local_cells, PETSC_COMM_SELF, \
+      PETSC_ERR_ARG_INCOMP, "the discretisation covers %" PetscInt_FMT " local cells but the phase " \
+      "space %" PetscInt_FMT " - create the backend first", (PetscInt)disc.inv_volume_d().extent(0), \
+      ps.local_cells);
+   PetscCheck((PetscInt)disc.omega_d().extent(0) == 3 * ps.n_angles, PETSC_COMM_SELF, \
+      PETSC_ERR_ARG_INCOMP, "the discretisation was classified with %" PetscInt_FMT " angles, the " \
+      "phase space has %" PetscInt_FMT, (PetscInt)disc.omega_d().extent(0) / 3, ps.n_angles);
+
+   n_angles_ = ps.n_angles;
+   local_rows_ = ps.local_rows();
+   omega_d_ = disc.omega_d();
+   cell_face_offset_d_ = disc.cell_face_offset_d();
+   face_nA_d_ = disc.face_nA_d();
+   inv_volume_d_ = disc.inv_volume_d();
+   pattern_ = disc.coo_pattern();
+   boundary_ = disc.boundary_info();
+
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+// Omega_a . nA_k, the upwind test and the face coefficient before 1 / V_c
+KOKKOS_INLINE_FUNCTION PetscScalar DG0FaceFlux(const PetscScalarKokkosView &omega_d, \
+   const PetscScalarKokkosView &face_nA_d, PetscInt a, PetscInt k)
+{
+   return omega_d(3 * a) * face_nA_d(3 * k) + omega_d(3 * a + 1) * face_nA_d(3 * k + 1) + \
+      omega_d(3 * a + 2) * face_nA_d(3 * k + 2);
+}
+
+// A row's diagonal: the outflow fluxes summed, then scaled by 1 / V_c once.
+// assemble_add and add_diagonal BOTH add exactly this value, so the composed
+// diagonal is bitwise the assembled one. Accumulating s / V_c face by face in
+// each kernel instead is not: under -ffp-contract=fast (the CI flags) the
+// compiler fuses the per-face multiply-add differently in the two kernels'
+// branch structures, and the results differ in the last bit
+KOKKOS_INLINE_FUNCTION PetscScalar DG0OutflowDiagonal(const PetscScalarKokkosView &omega_d, \
+   const PetscScalarKokkosView &face_nA_d, const PetscIntKokkosView &cell_face_offset_d, \
+   const PetscScalarKokkosView &inv_volume_d, PetscInt c, PetscInt a)
+{
+   PetscScalar outflow = 0.0;
+   for (PetscInt k = cell_face_offset_d(c); k < cell_face_offset_d(c + 1); k++) {
+      const PetscScalar s = DG0FaceFlux(omega_d, face_nA_d, a, k);
+      if (PetscRealPart(s) > 0.0) outflow += s;
+   }
+   return outflow * inv_volume_d(c);
+}
+
+// Add the upwind face fluxes into the shared COO values
+// This happens entirely on the device
+PetscErrorCode StreamingTermDG0::assemble_add(PetscScalarKokkosView &coo_v_d) const
+{
+   const PetscInt n_angles = n_angles_;
+   const PetscScalarKokkosView omega_d = omega_d_;
+   const PetscIntKokkosView cell_face_offset_d = cell_face_offset_d_;
+   const PetscScalarKokkosView face_nA_d = face_nA_d_;
+   const PetscScalarKokkosView inv_volume_d = inv_volume_d_;
+   const PetscIntKokkosView row_slot_offset_d = pattern_.row_slot_offset_d;
+   const PetscIntKokkosView diag_slot_d = pattern_.diag_slot_d;
+   const PetscIntKokkosView is_bc_row_d = boundary_.is_bc_row_d;
+
+   PetscFunctionBeginUser;
+
+   Kokkos::parallel_for(
+      Kokkos::RangePolicy<>(0, local_rows_), KOKKOS_LAMBDA(PetscInt r) {
+
+         // BC rows carry only what the assembly puts on them
+         if (is_bc_row_d(r)) return;
+
+         const PetscInt c = r / n_angles;
+         const PetscInt a = r % n_angles;
+         // Slot order is the discretisation's: one per face in cone order,
+         // then the diagonal
+         const PetscInt first = row_slot_offset_d(r);
+         const PetscInt diag = diag_slot_d(r);
+         const PetscInt k0 = cell_face_offset_d(c);
+
+         // Outflow goes on the diagonal; inflow onto the face's slot, which
+         // the backend pointed at the upwind neighbour - or nulled, on a
+         // boundary face, so the entry is dropped. s == 0 adds nothing
+         coo_v_d(diag) += DG0OutflowDiagonal(omega_d, face_nA_d, cell_face_offset_d, inv_volume_d, c, a);
+         for (PetscInt k = k0; k < cell_face_offset_d(c + 1); k++) {
+            const PetscScalar s = DG0FaceFlux(omega_d, face_nA_d, a, k);
+            if (!(PetscRealPart(s) > 0.0)) coo_v_d(first + (k - k0)) += s * inv_volume_d(c);
+         }
+      });
+
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+// The outflow terms this term writes into the diagonal slot above - the same
+// DG0OutflowDiagonal value, so a composed diagonal is bitwise the assembled one
+// This happens entirely on the device
+PetscErrorCode StreamingTermDG0::add_diagonal(Vec d) const
+{
+   const PetscInt n_angles = n_angles_;
+   const PetscScalarKokkosView omega_d = omega_d_;
+   const PetscIntKokkosView cell_face_offset_d = cell_face_offset_d_;
+   const PetscScalarKokkosView face_nA_d = face_nA_d_;
+   const PetscScalarKokkosView inv_volume_d = inv_volume_d_;
+   const PetscIntKokkosView is_bc_row_d = boundary_.is_bc_row_d;
+
+   PetscFunctionBeginUser;
+
+   PetscScalarKokkosView d_d;
+   PetscCall(VecGetKokkosView(d, &d_d));
+
+   Kokkos::parallel_for(
+      Kokkos::RangePolicy<>(0, local_rows_), KOKKOS_LAMBDA(PetscInt r) {
+
+         if (is_bc_row_d(r)) return;
+
+         const PetscInt c = r / n_angles;
+         const PetscInt a = r % n_angles;
+
+         d_d(r) += DG0OutflowDiagonal(omega_d, face_nA_d, cell_face_offset_d, inv_volume_d, c, a);
+      });
+
+   PetscCall(VecRestoreKokkosView(d, &d_d));
+
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 // RemovalTerm
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 

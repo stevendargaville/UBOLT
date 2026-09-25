@@ -60,10 +60,24 @@ protected:
    // rhs carries, 0.0 on every other row)
    //
    // ps_ must already carry the decomposition, and oor_/ooc_ must already be
-   // filled - this only turns them into the device-side maps terms read
+   // filled - this only turns them into the device-side maps terms read. A
+   // thin wrapper: it computes the two slot-map arrays and hands them to
+   // set_pattern below, so both kinds of backend upload through one path
    PetscErrorCode set_uniform_pattern(PetscInt slots_per_row, const std::vector<PetscInt> &is_bc_row, \
       const std::vector<PetscInt> &reflect_slot, const std::vector<PetscScalar> &dirichlet_value, \
       const std::vector<PetscScalar> &ghost_inflow, PetscBool ghost_flux_vacuum);
+
+   // Build the slot maps for a backend whose rows carry DIFFERENT numbers of
+   // COO entries (DG on a mesh with mixed cell shapes, or simply "faces + 1"
+   // per row). row_slot_offset is CSR-shaped (local_rows + 1, last entry ==
+   // oor_.size()), diag_slot is per row and must lie inside that row's range.
+   // Uploads the BC row mask, reflect slots, Dirichlet values and (under
+   // VacuumTreatment::GHOST_FLUX) the ghost inflows exactly as
+   // set_uniform_pattern does - same preconditions too
+   PetscErrorCode set_pattern(const std::vector<PetscInt> &row_slot_offset, const std::vector<PetscInt> &diag_slot, \
+      const std::vector<PetscInt> &is_bc_row, const std::vector<PetscInt> &reflect_slot, \
+      const std::vector<PetscScalar> &dirichlet_value, const std::vector<PetscScalar> &ghost_inflow, \
+      PetscBool ghost_flux_vacuum);
 
    MPI_Comm comm_ = MPI_COMM_NULL;
    // Taken once the DM has said what the decomposition is
