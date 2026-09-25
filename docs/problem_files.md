@@ -34,10 +34,11 @@ ignored everywhere (JSON has no comments), holding provenance prose.
 
 | key | type | required | meaning |
 |---|---|---|---|
-| `dimension` | int, 1, 2 or 3 | yes | with `mesh.type`, picks the backend: `StructuredFD1D`, `StructuredFD2D` or `StructuredFD3D` on a structured mesh, `UnstructuredDG0` (2 or 3 only) on an unstructured one |
-| `mesh.type` | `"structured"` or `"unstructured"` | no, default `"structured"` | the backend family: the DMDA finite-difference backends, or the DG0 upwind backend on a DMPlex - see "Unstructured meshes" below |
+| `dimension` | int, 1, 2 or 3 | yes | with `mesh.type`, picks the backend: `StructuredFD1D`, `StructuredFD2D` or `StructuredFD3D` on a structured mesh, `UnstructuredDG` (2 or 3 only) on an unstructured one |
+| `mesh.type` | `"structured"` or `"unstructured"` | no, default `"structured"` | the backend family: the DMDA finite-difference backends, or the upwind DG backend on a DMPlex - see "Unstructured meshes" below |
 | `mesh.n_cells` | int[dimension] | yes, except with `mesh.file` | `[nx]`, `[nx, ny]` or `[nx, ny, nz]`, all positive. On an unstructured mesh, the cells per axis of the box PETSc builds |
 | `mesh.lengths` | number[dimension] | yes, except with `mesh.file` | `[lx]`, `[lx, ly]` or `[lx, ly, lz]`, all positive; the box runs from the origin |
+| `mesh.order` | int, 0 or 1 | no, default 0; unstructured only | the DG order: 0 is DG0 (one flux per cell and ordinate), 1 is linear DG (dimension + 1 per cell) - see "Linear DG" below |
 | `mesh.simplex` | bool | no, default `false`; unstructured box only | triangles (2D) / tetrahedra (3D) instead of quads / hexes |
 | `mesh.file` | string | no; unstructured only | a mesh file PETSc reads (Gmsh `.msh`, ...), resolved relative to the problem file's own directory like a `materials` path. The file decides the mesh, so `n_cells`, `lengths` and `simplex` are errors alongside it; `dimension` is still required and must match the file |
 | `sn_order` | int, positive and even | yes | the SN order N, NOT the ordinate count - how many ordinates that is, is the quadrature's business and differs by dimension (N in 1D, N(N+2)/2 in 2D, N(N+2) in 3D, so S4 is 4, 12 and 24 ordinates; a 3D set has twice the ordinates of the same-order 2D set, because there is no xi > 0 half to fold over). 1D takes ANY even order - it is a Gauss-Legendre rule, generated at run time; 2D and 3D take the even orders 2 to 18, the level-symmetric (LQn) sets, which is as far as that family goes with all-positive weights |
@@ -172,8 +173,9 @@ a migration message rather than being silently reinterpreted.
 
 ### Unstructured meshes
 
-`"type": "unstructured"` in `mesh` selects the DG0 upwind backend on a DMPlex:
-one flux per cell and ordinate, upwind on every face - first order in space,
+`"type": "unstructured"` in `mesh` selects the upwind DG backend on a DMPlex,
+at DG0 by default (`"order": 1` is linear DG, below): one flux per cell and
+ordinate, upwind on every face - first order in space,
 like the structured finite differences, and on a uniform quad/hex box exactly
 the structured stencil (to rounding). The rows are still `cell * n_angles +
 angle`, so everything above the discretisation - scattering, removal, the
@@ -245,7 +247,7 @@ Per face, what the rows do is the structured rule transplanted:
   incoming vacuum face is not mirrored over and the partner comes in through it
   as an ordinary ghost-flux row. The upwind operator for `-Omega` is then the
   transpose of the one for `+Omega` after weighting the rows by cell volume
-  (see `unstructured_dg0.hpp`) - exactly the transpose only where the cells
+  (see `unstructured_dg.hpp`) - exactly the transpose only where the cells
   have equal volumes.
 - **a direction with nowhere to come from** (`"dirichlet_cell"` only - under
   the default ghost-flux those rows stay unknowns). With the Dirichlet-cell BC
@@ -268,6 +270,33 @@ Per face, what the rows do is the structured rule transplanted:
 Output is `.vtu` (an unstructured grid), with the same `scalar_flux`,
 `sigma_t` and `source` cell fields as the structured files, plus a `Rank`
 cell field PETSc's writer always adds (which rank owned the cell).
+
+#### Linear DG
+
+`"order": 1` in `mesh` makes the unstructured backend linear DG: in each cell
+the flux of every ordinate is a linear function, `dimension + 1` unknowns per
+cell and ordinate, second order in space (DG0 is first order). The basis is
+modal - the cell average plus orthonormal slopes - so the cross sections and
+the isotropic source act exactly as they do at DG0, and everything above the
+discretisation (the group sweep, `-matfree_removal`, `-precon_stream`,
+`-precon_ref_shift`, `-check_matfree`, `-check_inf_medium`) works unchanged.
+What differs from DG0:
+- **the vacuum treatment is ghost-flux only.** A face's inflow enters through
+  the face integral, which IS the ghost-flux condition; there is no single
+  row per cell to replace, so `"vacuum_treatment": "dirichlet_cell"` is an
+  error at order 1.
+- **no boundary-condition rows at all, reflective faces included.** A
+  reflective face feeds each direction coming in through it the mirrored
+  direction's flux on the face, from the same cell - mirrored over THAT face's
+  axis only, so the DG0 caveats about composed partners at corners and a
+  single-cell-wide direction between two reflective faces do not arise.
+  Reflective faces must still be axis-aligned.
+- **`scalar_flux` in the output is the cell average**, and the slope rides
+  along as `scalar_flux_grad_x`, `_y` (and `_z`) cell fields: the flux at a
+  point x of a cell is `scalar_flux + grad . (x - x_c)`, x_c the cell's
+  centroid. A multigroup file writes them per group like the rest.
+- the mesh's faces must be planar (every box, simplex and Gmsh mesh here is);
+  a cell whose faces are not is an error when the backend builds the basis.
 
 Parallel: the mesh is distributed by PETSc's **`simple`** partitioner by
 default - deterministic on every machine and CI image, so iteration counts

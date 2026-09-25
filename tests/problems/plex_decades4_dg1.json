@@ -1,0 +1,26 @@
+{
+ "_comment": "The DG1 twin of plex_decades4.json, for -matfree_removal -precon_ref_shift: four groups spanning three decades of Sigma_t on the 30x30 quad box. Pins that the reference-shifted pmat carries over to three dofs per cell (the shift is per CELL, row / rows_per_cell).",
+ "dimension": 2,
+ "mesh": {
+  "type": "unstructured",
+  "n_cells": [30, 30],
+  "lengths": [3.0, 3.0],
+  "order": 1
+ },
+ "sn_order": 4,
+ "materials": "materials/decades4.json",
+ "regions": {
+  "paint": [
+   {
+    "material": 1,
+    "box": [1.2, 1.8, 1.2, 1.8]
+   }
+  ]
+ },
+ "boundary_conditions": {
+  "left": {"type": "vacuum", "inflow": 12.566370614359172},
+  "right": {"type": "vacuum", "inflow": 12.566370614359172},
+  "bottom": {"type": "vacuum", "inflow": 12.566370614359172},
+  "top": {"type": "vacuum", "inflow": 12.566370614359172}
+ }
+}

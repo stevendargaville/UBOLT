@@ -314,12 +314,14 @@ PetscErrorCode StreamingTerm3D::add_diagonal(Vec d) const
 // StreamingTermDG0
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-PetscErrorCode StreamingTermDG0::create(const PhaseSpace &ps, const UnstructuredDG0 &disc)
+PetscErrorCode StreamingTermDG0::create(const PhaseSpace &ps, const UnstructuredDG &disc)
 {
    PetscFunctionBeginUser;
 
    PetscCall(ps.check_decomposed());
 
+   PetscCheck(disc.order() == 0, PETSC_COMM_SELF, PETSC_ERR_ARG_INCOMP, "StreamingTermDG0 needs the " \
+      "backend at order 0, it was built at order %" PetscInt_FMT " - use StreamingTermDG1", disc.order());
    PetscCheck((PetscInt)disc.inv_volume_d().extent(0) == ps.local_cells, PETSC_COMM_SELF, \
       PETSC_ERR_ARG_INCOMP, "the discretisation covers %" PetscInt_FMT " local cells but the phase " \
       "space %" PetscInt_FMT " - create the backend first", (PetscInt)disc.inv_volume_d().extent(0), \
@@ -446,6 +448,155 @@ PetscErrorCode StreamingTermDG0::add_diagonal(Vec d) const
 }
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+// StreamingTermDG1
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+PetscErrorCode StreamingTermDG1::create(const PhaseSpace &ps, const UnstructuredDG &disc)
+{
+   PetscFunctionBeginUser;
+
+   PetscCall(ps.check_decomposed());
+
+   PetscCheck(disc.order() == 1, PETSC_COMM_SELF, PETSC_ERR_ARG_INCOMP, "StreamingTermDG1 needs the " \
+      "backend at order 1, it was built at order %" PetscInt_FMT " - use StreamingTermDG0", disc.order());
+   PetscCheck(ps.n_basis == disc.n_basis(), PETSC_COMM_SELF, PETSC_ERR_ARG_INCOMP, "the phase space has %" \
+      PetscInt_FMT " basis functions per cell, the discretisation %" PetscInt_FMT " - create the backend first", \
+      ps.n_basis, disc.n_basis());
+   PetscCheck((PetscInt)disc.basis_grad_d().extent(0) == ps.local_cells * ps.n_basis * 3, PETSC_COMM_SELF, \
+      PETSC_ERR_ARG_INCOMP, "the discretisation covers %" PetscInt_FMT " local cells but the phase space %" \
+      PetscInt_FMT, (PetscInt)disc.basis_grad_d().extent(0) / (3 * ps.n_basis), ps.local_cells);
+   PetscCheck((PetscInt)disc.omega_d().extent(0) == 3 * ps.n_angles, PETSC_COMM_SELF, \
+      PETSC_ERR_ARG_INCOMP, "the discretisation was classified with %" PetscInt_FMT " angles, the " \
+      "phase space has %" PetscInt_FMT, (PetscInt)disc.omega_d().extent(0) / 3, ps.n_angles);
+
+   n_angles_ = ps.n_angles;
+   n_basis_ = ps.n_basis;
+   local_rows_ = ps.local_rows();
+   omega_d_ = disc.omega_d();
+   cell_face_offset_d_ = disc.cell_face_offset_d();
+   face_nA_d_ = disc.face_nA_d();
+   face_own_d_ = disc.face_own_d();
+   face_up_d_ = disc.face_up_d();
+   basis_grad_d_ = disc.basis_grad_d();
+   pattern_ = disc.coo_pattern();
+   boundary_ = disc.boundary_info();
+
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+// A row's diagonal: the outflow faces' own-cell (i, i) entries. assemble_add
+// and add_diagonal BOTH add exactly this value - see DG0OutflowDiagonal for why
+// it is one function
+KOKKOS_INLINE_FUNCTION PetscScalar DG1OutflowDiagonal(const PetscScalarKokkosView &omega_d, \
+   const PetscScalarKokkosView &face_nA_d, const PetscIntKokkosView &cell_face_offset_d, \
+   const PetscScalarKokkosView &face_own_d, PetscInt nb, PetscInt c, PetscInt i, PetscInt a)
+{
+   PetscScalar diag = 0.0;
+   for (PetscInt k = cell_face_offset_d(c); k < cell_face_offset_d(c + 1); k++) {
+      const PetscScalar s = DG0FaceFlux(omega_d, face_nA_d, a, k);
+      if (PetscRealPart(s) > 0.0) diag += s * face_own_d((k * nb + i) * nb + i);
+   }
+   return diag;
+}
+
+// Add the DG1 face and volume terms into the shared COO values
+// This happens entirely on the device
+PetscErrorCode StreamingTermDG1::assemble_add(PetscScalarKokkosView &coo_v_d) const
+{
+   const PetscInt n_angles = n_angles_;
+   const PetscInt nb = n_basis_;
+   const PetscScalarKokkosView omega_d = omega_d_;
+   const PetscIntKokkosView cell_face_offset_d = cell_face_offset_d_;
+   const PetscScalarKokkosView face_nA_d = face_nA_d_;
+   const PetscScalarKokkosView face_own_d = face_own_d_;
+   const PetscScalarKokkosView face_up_d = face_up_d_;
+   const PetscScalarKokkosView basis_grad_d = basis_grad_d_;
+   const PetscIntKokkosView row_slot_offset_d = pattern_.row_slot_offset_d;
+   const PetscIntKokkosView is_bc_row_d = boundary_.is_bc_row_d;
+
+   PetscFunctionBeginUser;
+
+   Kokkos::parallel_for(
+      Kokkos::RangePolicy<>(0, local_rows_), KOKKOS_LAMBDA(PetscInt r) {
+
+         // DG1 has no BC rows, but the contract costs nothing to keep
+         if (is_bc_row_d(r)) return;
+
+         const PetscInt node = r / n_angles;
+         const PetscInt a = r % n_angles;
+         const PetscInt c = node / nb;
+         const PetscInt i = node % nb;
+         // Slot order is the discretisation's: n_basis per face in cone
+         // order, then this cell's own n_basis
+         const PetscInt first = row_slot_offset_d(r);
+         const PetscInt k0 = cell_face_offset_d(c);
+         const PetscInt own = first + (cell_face_offset_d(c + 1) - k0) * nb;
+
+         // Outflow faces couple this cell's own basis functions - everything
+         // but the diagonal here, which gets its one shared value below; inflow
+         // faces the upwind block the backend pointed the face's slots at
+         for (PetscInt k = k0; k < cell_face_offset_d(c + 1); k++) {
+            const PetscScalar s = DG0FaceFlux(omega_d, face_nA_d, a, k);
+            if (PetscRealPart(s) > 0.0) {
+               for (PetscInt j = 0; j < nb; j++) {
+                  if (j != i) coo_v_d(own + j) += s * face_own_d((k * nb + i) * nb + j);
+               }
+            } else {
+               for (PetscInt j = 0; j < nb; j++) {
+                  coo_v_d(first + (k - k0) * nb + j) += s * face_up_d((k * nb + i) * nb + j);
+               }
+            }
+         }
+         // The volume term, -(Omega . grad phi_i) onto basis 0 (zero for i = 0,
+         // whose gradient is zero - and whose basis-0 slot is the diagonal)
+         if (i > 0) {
+            coo_v_d(own) -= omega_d(3 * a) * basis_grad_d((c * nb + i) * 3) + \
+               omega_d(3 * a + 1) * basis_grad_d((c * nb + i) * 3 + 1) + \
+               omega_d(3 * a + 2) * basis_grad_d((c * nb + i) * 3 + 2);
+         }
+         coo_v_d(own + i) += DG1OutflowDiagonal(omega_d, face_nA_d, cell_face_offset_d, face_own_d, nb, c, i, a);
+      });
+
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+// The diagonal this term writes above - the same DG1OutflowDiagonal value
+// This happens entirely on the device
+PetscErrorCode StreamingTermDG1::add_diagonal(Vec d) const
+{
+   const PetscInt n_angles = n_angles_;
+   const PetscInt nb = n_basis_;
+   const PetscScalarKokkosView omega_d = omega_d_;
+   const PetscIntKokkosView cell_face_offset_d = cell_face_offset_d_;
+   const PetscScalarKokkosView face_nA_d = face_nA_d_;
+   const PetscScalarKokkosView face_own_d = face_own_d_;
+   const PetscIntKokkosView is_bc_row_d = boundary_.is_bc_row_d;
+
+   PetscFunctionBeginUser;
+
+   PetscScalarKokkosView d_d;
+   PetscCall(VecGetKokkosView(d, &d_d));
+
+   Kokkos::parallel_for(
+      Kokkos::RangePolicy<>(0, local_rows_), KOKKOS_LAMBDA(PetscInt r) {
+
+         if (is_bc_row_d(r)) return;
+
+         const PetscInt node = r / n_angles;
+         d_d(r) += DG1OutflowDiagonal(omega_d, face_nA_d, cell_face_offset_d, face_own_d, nb, node / nb, \
+            node % nb, r % n_angles);
+      });
+
+   PetscCall(VecRestoreKokkosView(d, &d_d));
+
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 // RemovalTerm
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -455,7 +606,7 @@ PetscErrorCode RemovalTerm::create(const PhaseSpace &ps, const Discretisation &d
 
    PetscCall(ps.check_decomposed());
 
-   n_angles_ = ps.n_angles;
+   rows_per_cell_ = ps.rows_per_cell();
    local_rows_ = ps.local_rows();
    sigma_t_d_ = sigma_t_d;
    pattern_ = disc.coo_pattern();
@@ -470,7 +621,7 @@ PetscErrorCode RemovalTerm::create(const PhaseSpace &ps, const Discretisation &d
 // This happens entirely on the device
 PetscErrorCode RemovalTerm::assemble_add(PetscScalarKokkosView &coo_v_d) const
 {
-   const PetscInt n_angles = n_angles_;
+   const PetscInt rows_per_cell = rows_per_cell_;
    const PetscScalarKokkosView sigma_t_d = sigma_t_d_;
    const PetscIntKokkosView diag_slot_d = pattern_.diag_slot_d;
    const PetscIntKokkosView is_bc_row_d = boundary_.is_bc_row_d;
@@ -483,8 +634,8 @@ PetscErrorCode RemovalTerm::assemble_add(PetscScalarKokkosView &coo_v_d) const
          // Add nothing to the bcs
          if (is_bc_row_d(r)) return;
 
-         // The xsections are per cell, the rows are per cell and angle
-         coo_v_d(diag_slot_d(r)) += sigma_t_d(r / n_angles);
+         // The xsections are per cell, the rows are per cell, basis and angle
+         coo_v_d(diag_slot_d(r)) += sigma_t_d(r / rows_per_cell);
       });
 
    PetscFunctionReturn(PETSC_SUCCESS);
@@ -499,7 +650,7 @@ PetscErrorCode RemovalTerm::assemble_add(PetscScalarKokkosView &coo_v_d) const
 // This happens entirely on the device
 PetscErrorCode RemovalTerm::apply_add(Vec x, Vec y) const
 {
-   const PetscInt n_angles = n_angles_;
+   const PetscInt rows_per_cell = rows_per_cell_;
    const PetscScalarKokkosView sigma_t_d = sigma_t_d_;
    const PetscIntKokkosView is_bc_row_d = boundary_.is_bc_row_d;
 
@@ -518,8 +669,8 @@ PetscErrorCode RemovalTerm::apply_add(Vec x, Vec y) const
          // would take that straight back off
          if (is_bc_row_d(r)) return;
 
-         // The xsections are per cell, the rows are per cell and angle
-         y_d(r) += sigma_t_d(r / n_angles) * x_d(r);
+         // The xsections are per cell, the rows are per cell, basis and angle
+         y_d(r) += sigma_t_d(r / rows_per_cell) * x_d(r);
       });
 
    PetscCall(VecRestoreKokkosView(x, &x_d));
@@ -536,7 +687,7 @@ PetscErrorCode RemovalTerm::apply_add(Vec x, Vec y) const
 // This happens entirely on the device
 PetscErrorCode RemovalTerm::add_diagonal(Vec d) const
 {
-   const PetscInt n_angles = n_angles_;
+   const PetscInt rows_per_cell = rows_per_cell_;
    const PetscScalarKokkosView sigma_t_d = sigma_t_d_;
    const PetscIntKokkosView is_bc_row_d = boundary_.is_bc_row_d;
 
@@ -550,7 +701,7 @@ PetscErrorCode RemovalTerm::add_diagonal(Vec d) const
 
          if (is_bc_row_d(r)) return;
 
-         d_d(r) += sigma_t_d(r / n_angles);
+         d_d(r) += sigma_t_d(r / rows_per_cell);
       });
 
    PetscCall(VecRestoreKokkosView(d, &d_d));
@@ -573,13 +724,15 @@ PetscErrorCode ScatteringTerm::create(const PhaseSpace &ps, const Discretisation
    PetscCall(ps.check_decomposed());
 
    n_angles_ = ps.n_angles;
+   n_basis_ = ps.n_basis;
    sum_weights_ = quad.sum_weights();
    sigma_s_d_ = sigma_s_d;
    w_d_ = quad.w_d();
    boundary_ = disc.boundary_info();
-   // Persistent scratch for the scalar flux, sized by the local cells - the
+   // Persistent scratch for the scalar flux, sized by the local NODES - one
+   // per (cell, basis) pair, the cells themselves when n_basis is 1 - the
    // scatter is applied to the local part of the vectors only
-   scalar_flux_d_ = PetscScalar2DKokkosView("scalar_flux_d", ps.local_cells, 1);
+   scalar_flux_d_ = PetscScalar2DKokkosView("scalar_flux_d", ps.local_nodes(), 1);
 
    PetscFunctionReturn(PETSC_SUCCESS);
 }
@@ -592,6 +745,7 @@ PetscErrorCode ScatteringTerm::create(const PhaseSpace &ps, const Discretisation
 PetscErrorCode ScatteringTerm::apply_add(Vec x, Vec y) const
 {
    const PetscInt n_angles = n_angles_;
+   const PetscInt n_basis = n_basis_;
    const PetscScalar sum_weights = sum_weights_;
    const PetscScalarKokkosView sigma_s_d = sigma_s_d_;
    const PetscScalar2DKokkosView scalar_flux_d = scalar_flux_d_;
@@ -600,10 +754,13 @@ PetscErrorCode ScatteringTerm::apply_add(Vec x, Vec y) const
    PetscFunctionBeginUser;
 
    // All the kernels below operate on the local part of the vectors only -
-   // this is how many local cells we have
+   // this is how many local nodes (cell, basis pairs) we have. With a modal
+   // basis orthonormal on each cell the scatter is the same per node as it is
+   // per cell at DG0: the mass matrix is the identity, and the xsection is
+   // constant on the cell
    PetscInt local_rows;
    PetscCall(VecGetLocalSize(x, &local_rows));
-   const PetscInt local_cells = local_rows / n_angles;
+   const PetscInt local_nodes = local_rows / n_angles;
 
    // Now let's integrate the angular flux to get the scalar flux
    PetscCall(UboltAngularIntegral(x, n_angles, w_d_, scalar_flux_d));
@@ -613,19 +770,19 @@ PetscErrorCode ScatteringTerm::apply_add(Vec x, Vec y) const
 
    // Now let's multiply by the scattering xsection
    Kokkos::parallel_for(
-      Kokkos::RangePolicy<>(0, local_cells), KOKKOS_LAMBDA(PetscInt i) {
+      Kokkos::RangePolicy<>(0, local_nodes), KOKKOS_LAMBDA(PetscInt i) {
 
          // We have to divide by the sum of weights to get the amount going
-         // into each angle
-         scalar_flux_d(i, 0) *= sigma_s_d(i) / sum_weights;
+         // into each angle. The xsection is per cell
+         scalar_flux_d(i, 0) *= sigma_s_d(i / n_basis) / sum_weights;
       });
 
    // Now let's put the scatter back into y
    Kokkos::parallel_for(
-      Kokkos::TeamPolicy<>(PetscGetKokkosExecutionSpace(), local_cells, Kokkos::AUTO()),
+      Kokkos::TeamPolicy<>(PetscGetKokkosExecutionSpace(), local_nodes, Kokkos::AUTO()),
       KOKKOS_LAMBDA(const KokkosTeamMemberType &t) {
 
-         // cell
+         // node
          PetscInt i = t.league_rank();
 
          // For all the angles

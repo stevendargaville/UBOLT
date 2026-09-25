@@ -1,5 +1,5 @@
-// Phase 6a verification for the unstructured DG0 backend (UnstructuredDG0 +
-// StreamingTermDG0)
+// Verification for the unstructured DG backend (UnstructuredDG +
+// StreamingTermDG0 at order 0, Phase 6a; + StreamingTermDG1 at order 1)
 //
 // Every check fails the process rather than printing something a human has to
 // read, and every one runs serially AND in parallel - nothing below assumes
@@ -39,6 +39,18 @@
 //     on every face with a source sigma_t psi_in, whose exact discrete
 //     solution is psi = psi_in, through the library-built rhs. Plus the
 //     slanted-face mesh of 5 in ghost mode: no Dirichlet rows left
+//  8. DG1, which has no FD twin, on quads, hexes, the irregular triangle file
+//     and (where PETSc can mesh them) triangles and tets, each with two or
+//     three reflective faces meeting at a corner and the rest driven vacuum:
+//     no BC rows; (V A)^T = P (V A) P with the reflective couplings inside
+//     it; the constant through the library rhs; and a LINEAR field through
+//     the streaming matrix giving exactly Omega . b in every interior cell
+//     (the volume term and both face matrices across differing bases)
+//  9. DG1 is second order: a pure absorber with left inflow and reflective
+//     top/bottom against its exact discrete-ordinates solution, at n = 8, 16,
+//     32, on quads (and triangles where available)
+//  Plus two DG1 error paths in 5: Dirichlet-cell vacuum, and the DG0
+//  streaming term on a DG1 backend
 //
 // The FD twin comparison is exact in structure (the flags, which rows are
 // which) and to rounding in value: the two backends reach the same
@@ -445,7 +457,7 @@ static PetscErrorCode CompareTwins(const char *desc, PetscInt n_cells, PetscInt 
 // area-weighted normals close (sum to zero - a closed polytope, and a normal
 // that failed to be flipped outward would show up here as 2 nA), and on a
 // quad/hex box the cell count is the box's (expected_cells < 0 skips that)
-static PetscErrorCode CheckGeometry(const char *desc, const UnstructuredDG0 &disc, PetscReal box_volume, \
+static PetscErrorCode CheckGeometry(const char *desc, const UnstructuredDG &disc, PetscReal box_volume, \
    PetscInt expected_cells, PetscBool *ok)
 {
    PetscReal volume = 0.0, total = 0.0, closure = 0.0, max_closure = 0.0;
@@ -492,7 +504,7 @@ static PetscErrorCode CheckGeometry(const char *desc, const UnstructuredDG0 &dis
 
 // The natural (lexicographic) index of each plex local cell on a uniform box,
 // from its centroid - the join key BuildTwinPerm matches the FD twin by
-static void PlexKeys(const UnstructuredDG0 &disc, PetscInt dim, const PetscInt *n, const PetscReal *h, \
+static void PlexKeys(const UnstructuredDG &disc, PetscInt dim, const PetscInt *n, const PetscReal *h, \
    std::vector<PetscInt> &key)
 {
    const std::vector<PetscReal> &cen = disc.centroid_host();
@@ -524,7 +536,7 @@ static PetscErrorCode CheckTwin2D(PetscInt nx, PetscInt ny, PetscInt sn_order, c
    MaterialSpec mats;
    PhaseSpace ps_fd, ps_plex;
    StructuredFD2D fd;
-   UnstructuredDG0 plex;
+   UnstructuredDG plex;
    StreamingTerm2D streaming_fd;
    StreamingTermDG0 streaming_plex;
    PetscIntKokkosView mat_id_fd, mat_id_plex;
@@ -603,7 +615,7 @@ static PetscErrorCode CheckTwin3D(PetscInt nx, PetscInt ny, PetscInt nz, PetscIn
    MaterialSpec mats;
    PhaseSpace ps_fd, ps_plex;
    StructuredFD3D fd;
-   UnstructuredDG0 plex;
+   UnstructuredDG plex;
    StreamingTerm3D streaming_fd;
    StreamingTermDG0 streaming_plex;
    PetscIntKokkosView mat_id_fd, mat_id_plex;
@@ -723,7 +735,7 @@ static PetscErrorCode CheckVTU(const char *filename, PetscInt expected_cells, Pe
 // face the structured backends' FACE_* constant v names - PETSc's box
 // convention, which simplex boxes get from a different code path
 // (DMPlexSetBoxLabel_Internal) than tensor ones - and every id is used
-static PetscErrorCode CheckFaceSets(const char *desc, const UnstructuredDG0 &disc, const PlexMeshSpec &mesh, PetscBool *ok)
+static PetscErrorCode CheckFaceSets(const char *desc, const UnstructuredDG &disc, const PlexMeshSpec &mesh, PetscBool *ok)
 {
    const PetscInt dim = mesh.dimension, n_ids = 2 * dim;
    // (axis, 0 = lower / 1 = upper) of each id, 1-based
@@ -768,7 +780,7 @@ static PetscErrorCode CheckFaceSets(const char *desc, const UnstructuredDG0 &dis
 }
 
 // Paint material 1 over the central box [L/4, 3L/4] on every axis
-static PetscErrorCode PaintCentral(const UnstructuredDG0 &disc, const PlexMeshSpec &mesh, PetscIntKokkosView &mat_id_d)
+static PetscErrorCode PaintCentral(const UnstructuredDG &disc, const PlexMeshSpec &mesh, PetscIntKokkosView &mat_id_d)
 {
    PetscFunctionBeginUser;
 
@@ -807,7 +819,7 @@ static PetscErrorCode SolveOnPlex(const char *desc, const PlexMeshSpec &mesh, Pe
    Quad quad;
    MaterialSpec mats;
    PhaseSpace ps;
-   UnstructuredDG0 disc;
+   UnstructuredDG disc;
    StreamingTermDG0 streaming;
    PetscIntKokkosView mat_id_d;
    Solve s;
@@ -1002,7 +1014,7 @@ static PetscErrorCode CheckErrorPaths(PetscBool *ok)
    {
       SNQuadrature2D quad;
       PhaseSpace ps;
-      UnstructuredDG0 disc;
+      UnstructuredDG disc;
       BCSpec bcs;
       PlexMeshSpec mesh;
       mesh.dimension = 2;
@@ -1026,7 +1038,7 @@ static PetscErrorCode CheckErrorPaths(PetscBool *ok)
    {
       SNQuadrature2D quad;
       PhaseSpace ps;
-      UnstructuredDG0 disc;
+      UnstructuredDG disc;
       PlexMeshSpec mesh;
       PetscIntKokkosView mat_id_d;
       std::map<PetscInt, PetscInt> cell_sets;
@@ -1051,7 +1063,7 @@ static PetscErrorCode CheckErrorPaths(PetscBool *ok)
       SNQuadrature2D quad_2d;
       SNQuadrature3D quad_3d;
       PhaseSpace ps;
-      UnstructuredDG0 disc;
+      UnstructuredDG disc;
       PlexMeshSpec mesh;
       Mat A = NULL;
       Vec psi = NULL;
@@ -1099,7 +1111,7 @@ static PetscErrorCode CheckErrorPaths(PetscBool *ok)
 
       {
          PhaseSpace ps;
-         UnstructuredDG0 disc;
+         UnstructuredDG disc;
          BCSpec bcs;
          bcs.set(12, BCType::REFLECT);
          n_cases++;
@@ -1110,7 +1122,7 @@ static PetscErrorCode CheckErrorPaths(PetscBool *ok)
       }
       {
          PhaseSpace ps;
-         UnstructuredDG0 disc;
+         UnstructuredDG disc;
          BCSpec bcs;
          bcs.set(99, BCType::REFLECT);
          n_cases++;
@@ -1121,12 +1133,48 @@ static PetscErrorCode CheckErrorPaths(PetscBool *ok)
       }
    }
 
+   // DG1 under the Dirichlet-cell vacuum treatment (a cell with several dofs
+   // has no one row to replace), and the DG0 streaming term handed a DG1
+   // backend (its slot convention is not the backend's)
+   {
+      SNQuadrature2D quad;
+      PlexMeshSpec mesh;
+      mesh.dimension = 2;
+      for (PetscInt d = 0; d < 2; d++) {
+         mesh.n_cells[d] = 2;
+         mesh.lengths[d] = 1.0;
+      }
+      {
+         PhaseSpace ps;
+         UnstructuredDG disc;
+         BCSpec bcs;
+         bcs.set_vacuum_treatment(VacuumTreatment::DIRICHLET_CELL);
+         n_cases++;
+         if (quad.create(2) || disc.create_mesh(PETSC_COMM_WORLD, mesh) || \
+             ps.create(PETSC_COMM_WORLD, disc.n_global_cells(), quad.n_angles())) *ok = PETSC_FALSE;
+         else if (disc.create(ps, quad, bcs, 1)) n_rejected++;
+         if (disc.destroy()) *ok = PETSC_FALSE;
+      }
+      {
+         PhaseSpace ps;
+         UnstructuredDG disc;
+         StreamingTermDG0 streaming;
+         n_cases++;
+         if (disc.create_mesh(PETSC_COMM_WORLD, mesh) || \
+             ps.create(PETSC_COMM_WORLD, disc.n_global_cells(), quad.n_angles()) || \
+             disc.create(ps, quad, BCSpec(), 1)) *ok = PETSC_FALSE;
+         else if (streaming.create(ps, disc)) n_rejected++;
+         if (disc.destroy()) *ok = PETSC_FALSE;
+      }
+   }
+
    PetscCall(PetscPopErrorHandler());
 
    if (n_rejected != n_cases) *ok = PETSC_FALSE;
    PetscCall(PetscPrintf(PETSC_COMM_WORLD, \
       "  error paths (reflection partner on a reflective row, cell sets without the label, 2D quadrature on " \
-      "a 3D mesh, .vts on the plex, reflect on a slanted face, a Face Sets value no face carries): %" \
+      "a 3D mesh, .vts on the plex, reflect on a slanted face, a Face Sets value no face carries, DG1 under " \
+      "Dirichlet-cell, the DG0 streaming term on a DG1 backend): %" \
       PetscInt_FMT " of %" PetscInt_FMT " rejected\n", n_rejected, n_cases));
 
    PetscFunctionReturn(PETSC_SUCCESS);
@@ -1149,7 +1197,7 @@ static PetscErrorCode CheckSlantedReflect(PetscBool ghost, PetscBool *ok)
    SNQuadrature2D quad;
    MaterialSpec mats;
    PhaseSpace ps;
-   UnstructuredDG0 disc;
+   UnstructuredDG disc;
    StreamingTermDG0 streaming;
    PetscIntKokkosView mat_id_d;
    BCSpec bcs;
@@ -1270,7 +1318,7 @@ static PetscErrorCode CheckGhostSimplex(PetscInt dim, PetscInt n, const char *fi
 {
    Quad quad;
    PhaseSpace ps;
-   UnstructuredDG0 disc;
+   UnstructuredDG disc;
    StreamingTermDG0 streaming;
    RemovalTerm removal;
    TransportOperator op;
@@ -1438,6 +1486,388 @@ static PetscErrorCode CheckGhostSimplex(PetscInt dim, PetscInt n, const char *fi
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
+// Check 8: DG1 (UnstructuredDG at order 1 + StreamingTermDG1). No FD twin, so
+// three identities that pin every piece of the operator on any mesh, with the
+// faces in reflect_ids reflective and those in vacuum_ids vacuum, all driven
+// by the same inflow:
+//  (a) the opposite-ordinate symmetry (V A)^T = P (V A) P on streaming +
+//      removal with sigma_t varying cell to cell - at DG1 the reflective faces
+//      are face couplings, so they are IN the identity rather than excluded
+//      rows. The own-cell block only closes by the divergence theorem on the
+//      cell, so this also checks the face moments against the cell moments
+//  (b) the constant psi = psi_in (basis 0; zero slope) against the rhs from
+//      UboltFillInflow + UboltFillSource with source sigma_t psi_in: the
+//      boundary half - ghost inflow weights phi_i(x_f) and the reflective
+//      couplings
+//  (c) consistency: the projection of a LINEAR field psi = alpha + b . x (the
+//      same in every direction) through the streaming matrix alone is exactly
+//      Omega . b on basis 0 and zero on the slopes, in every cell with no
+//      boundary face - the volume term and both face matrices, across cells
+//      whose bases differ
+template <class Quad>
+static PetscErrorCode CheckDG1(const char *where, const PlexMeshSpec &mesh, const std::vector<PetscInt> &reflect_ids, \
+   const std::vector<PetscInt> &vacuum_ids, PetscInt sn_order, PetscBool *ok)
+{
+   Quad quad;
+   PhaseSpace ps;
+   UnstructuredDG disc;
+   StreamingTermDG1 streaming;
+   MaterialSpec mats;
+   BCSpec bcs;
+   const PetscInt dim = mesh.dimension;
+   const PetscReal inflow = 2.5, sigma_t = 1.3;
+   const PetscReal sym_tol = 1e-12, const_tol = 1e-12, lin_tol = 1e-11;
+
+   PetscFunctionBeginUser;
+
+   for (const PetscInt f : reflect_ids) bcs.set(f, BCType::REFLECT);
+   for (const PetscInt f : vacuum_ids) {
+      bcs.set(f, BCType::VACUUM);
+      bcs.set_inflow(f, inflow);
+   }
+
+   PetscCall(quad.create(sn_order));
+   const PetscInt n_angles = quad.n_angles();
+   PetscCall(disc.create_mesh(PETSC_COMM_WORLD, mesh));
+   PetscCall(ps.create(PETSC_COMM_WORLD, disc.n_global_cells(), n_angles));
+   PetscCall(disc.create(ps, quad, bcs, 1));
+   PetscCall(streaming.create(ps, disc));
+   const PetscInt nb = ps.n_basis;
+
+   // DG1 has no boundary-condition rows at all
+   {
+      auto is_bc_h = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), disc.boundary_info().is_bc_row_d);
+      PetscInt n_bc = 0;
+      for (PetscInt r = 0; r < ps.local_rows(); r++) n_bc += is_bc_h(r);
+      PetscCallMPI(MPIU_Allreduce(MPI_IN_PLACE, &n_bc, 1, MPIU_INT, MPI_SUM, PETSC_COMM_WORLD));
+      const PetscBool pass = (PetscBool)(nb == dim + 1 && n_bc == 0);
+      if (!pass) *ok = PETSC_FALSE;
+      PetscCall(PetscPrintf(PETSC_COMM_WORLD, "  DG1, %s: %" PetscInt_FMT " basis functions per cell, %" PetscInt_FMT \
+         " BC rows%s\n", where, nb, n_bc, pass ? "" : " FAILED"));
+   }
+
+   // (a) the opposite-ordinate symmetry, heterogeneous sigma_t
+   {
+      RemovalTerm removal;
+      TransportOperator op;
+      Mat A = NULL, S = NULL, St = NULL, PSP = NULL;
+      IS perm = NULL;
+      Vec vol = NULL;
+      PetscReal norm_s = 0.0, diff_s = 0.0;
+
+      PetscScalarKokkosView sigma_t_d("sigma_t_d", ps.local_cells);
+      auto sigma_t_h = Kokkos::create_mirror_view(sigma_t_d);
+      for (PetscInt c = 0; c < ps.local_cells; c++) sigma_t_h(c) = 1.0 + 0.25 * (PetscScalar)(c % 7);
+      Kokkos::deep_copy(sigma_t_d, sigma_t_h);
+      PetscCall(removal.create(ps, disc, sigma_t_d));
+      PetscCall(op.create(PETSC_COMM_WORLD, ps, disc));
+      PetscCall(op.add_term(&streaming));
+      PetscCall(op.add_term(&removal));
+      PetscCall(op.assemble());
+
+      std::vector<PetscInt> opp(n_angles, -1);
+      const PetscScalar *mu = quad.mu_host();
+      const PetscScalar *eta = quad.eta_host();
+      const PetscScalar *xi = (dim == 3) ? quad_xi(quad) : nullptr;
+      for (PetscInt a = 0; a < n_angles; a++)
+         for (PetscInt c = 0; c < n_angles; c++)
+            if (mu[c] == -mu[a] && eta[c] == -eta[a] && (!xi || xi[c] == -xi[a])) { opp[a] = c; break; }
+      for (PetscInt a = 0; a < n_angles; a++)
+         PetscCheck(opp[a] >= 0, PETSC_COMM_WORLD, PETSC_ERR_PLIB, "no opposite ordinate for angle %" \
+            PetscInt_FMT, a);
+
+      PetscCall(MatConvert(op.assembled_mat(), MATAIJ, MAT_INITIAL_MATRIX, &A));
+      PetscInt rstart, rend;
+      PetscCall(MatGetOwnershipRange(A, &rstart, &rend));
+      std::vector<PetscInt> idx;
+      for (PetscInt r = rstart; r < rend; r++) idx.push_back(r - r % n_angles + opp[r % n_angles]);
+      PetscCall(ISCreateGeneral(PETSC_COMM_WORLD, (PetscInt)idx.size(), idx.data(), PETSC_COPY_VALUES, &perm));
+
+      PetscCall(MatCreateVecs(A, NULL, &vol));
+      {
+         PetscScalar *v;
+         PetscCall(VecGetArray(vol, &v));
+         for (PetscInt r = 0; r < rend - rstart; r++) v[r] = disc.volume_host()[r / ps.rows_per_cell()];
+         PetscCall(VecRestoreArray(vol, &v));
+      }
+      PetscCall(MatDuplicate(A, MAT_COPY_VALUES, &S));
+      PetscCall(MatDiagonalScale(S, vol, NULL));
+      PetscCall(MatTranspose(S, MAT_INITIAL_MATRIX, &St));
+      PetscCall(MatPermute(S, perm, perm, &PSP));
+      PetscCall(MatNorm(S, NORM_FROBENIUS, &norm_s));
+      PetscCall(MatAXPY(St, -1.0, PSP, DIFFERENT_NONZERO_PATTERN));
+      PetscCall(MatNorm(St, NORM_FROBENIUS, &diff_s));
+
+      const PetscReal rel_s = diff_s / norm_s;
+      const PetscBool pass = (PetscBool)(rel_s <= sym_tol);
+      if (!pass) *ok = PETSC_FALSE;
+      PetscCall(PetscPrintf(PETSC_COMM_WORLD, "  DG1, %s, S%" PetscInt_FMT ", heterogeneous sigma_t: " \
+         "||(VA)^T - P(VA)P|| / ||VA|| %.3e (tol %.0e)%s\n", where, sn_order, (double)rel_s, (double)sym_tol, \
+         pass ? "" : " FAILED"));
+
+      PetscCall(MatDestroy(&A));
+      PetscCall(MatDestroy(&S));
+      PetscCall(MatDestroy(&St));
+      PetscCall(MatDestroy(&PSP));
+      PetscCall(ISDestroy(&perm));
+      PetscCall(VecDestroy(&vol));
+      PetscCall(op.destroy());
+   }
+
+   // (b) the constant, through the library-built rhs
+   {
+      RemovalTerm removal;
+      TransportOperator op;
+      Vec psi = NULL, b = NULL, work = NULL;
+      PetscReal resid = 0.0, scale = 0.0;
+
+      PetscScalarKokkosView sigma_t_d("sigma_t_d", ps.local_cells);
+      Kokkos::deep_copy(sigma_t_d, (PetscScalar)sigma_t);
+      PetscCall(removal.create(ps, disc, sigma_t_d));
+      PetscCall(op.create(PETSC_COMM_WORLD, ps, disc));
+      PetscCall(op.add_term(&streaming));
+      PetscCall(op.add_term(&removal));
+      PetscCall(op.assemble());
+
+      PetscCall(mats.create(1, 1));
+      PetscCall(mats.set_sigma_t(0, 0, sigma_t));
+      PetscCall(mats.set_source(0, 0, sigma_t * inflow));
+      PetscIntKokkosView mat_id_d("mat_id_d", ps.local_cells);
+
+      const PetscScalar psi_in = inflow / quad.sum_weights();
+      PetscCall(MatCreateVecs(op.assembled_mat(), &psi, &b));
+      PetscCall(VecDuplicate(psi, &work));
+      {
+         PetscScalar *p;
+         PetscCall(VecGetArray(psi, &p));
+         for (PetscInt r = 0; r < ps.local_rows(); r++) p[r] = ((r / n_angles) % nb == 0) ? psi_in : 0.0;
+         PetscCall(VecRestoreArray(psi, &p));
+      }
+      PetscCall(FillRhs(ps, disc, quad, mats, mat_id_d, b));
+      PetscCall(MatMult(op.mat(), psi, work));
+      PetscCall(VecAXPY(work, -1.0, b));
+      PetscCall(VecNorm(work, NORM_INFINITY, &resid));
+      PetscCall(VecNorm(b, NORM_INFINITY, &scale));
+
+      const PetscBool pass = (PetscBool)(resid <= const_tol * scale);
+      if (!pass) *ok = PETSC_FALSE;
+      PetscCall(PetscPrintf(PETSC_COMM_WORLD, "  DG1, %s, S%" PetscInt_FMT ", psi = psi_in through the library rhs: " \
+         "residual %.3e (tol %.0e x ||b|| %.3e)%s\n", where, sn_order, (double)resid, (double)const_tol, \
+         (double)scale, pass ? "" : " FAILED"));
+
+      PetscCall(VecDestroy(&psi));
+      PetscCall(VecDestroy(&b));
+      PetscCall(VecDestroy(&work));
+      PetscCall(op.destroy());
+   }
+
+   // (c) a linear field through the streaming matrix, interior cells
+   {
+      TransportOperator op;
+      Vec psi = NULL, y = NULL;
+      const PetscReal alpha = 0.7, grad[3] = {1.1, -0.4, 0.3};
+      PetscReal err = 0.0, scale = 0.0;
+      PetscInt n_interior = 0;
+
+      PetscCall(op.create(PETSC_COMM_WORLD, ps, disc));
+      PetscCall(op.add_term(&streaming));
+      PetscCall(op.assemble());
+      PetscCall(MatCreateVecs(op.assembled_mat(), &psi, &y));
+
+      // The projection, per owned cell: basis 0 is the value at the centroid
+      // (the cell average of a linear field), and the slopes c solve
+      // sum_k c_k grad phi_{1+k} = b
+      auto grad_h = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), disc.basis_grad_d());
+      const std::vector<PetscReal> &cen = disc.centroid_host();
+      {
+         PetscScalar *p;
+         PetscCall(VecGetArray(psi, &p));
+         for (PetscInt c = 0; c < ps.local_cells; c++) {
+            PetscReal coef[4] = {alpha, 0.0, 0.0, 0.0};
+            for (PetscInt d = 0; d < dim; d++) coef[0] += grad[d] * cen[3 * c + d];
+            // B^T coef = b, B's rows the gradients - Gaussian elimination
+            PetscReal M[3][4];
+            for (PetscInt d = 0; d < dim; d++) {
+               for (PetscInt k = 0; k < dim; k++) M[d][k] = PetscRealPart(grad_h((c * nb + 1 + k) * 3 + d));
+               M[d][dim] = grad[d];
+            }
+            for (PetscInt col = 0; col < dim; col++) {
+               PetscInt piv = col;
+               for (PetscInt row = col + 1; row < dim; row++) if (PetscAbsReal(M[row][col]) > PetscAbsReal(M[piv][col])) piv = row;
+               for (PetscInt k = 0; k <= dim; k++) { const PetscReal t = M[col][k]; M[col][k] = M[piv][k]; M[piv][k] = t; }
+               for (PetscInt row = col + 1; row < dim; row++) {
+                  const PetscReal f = M[row][col] / M[col][col];
+                  for (PetscInt k = col; k <= dim; k++) M[row][k] -= f * M[col][k];
+               }
+            }
+            for (PetscInt row = dim - 1; row >= 0; row--) {
+               PetscReal v = M[row][dim];
+               for (PetscInt k = row + 1; k < dim; k++) v -= M[row][k] * coef[1 + k];
+               coef[1 + row] = v / M[row][row];
+            }
+            for (PetscInt i = 0; i < nb; i++)
+               for (PetscInt a = 0; a < n_angles; a++) p[(c * nb + i) * n_angles + a] = coef[i];
+         }
+         PetscCall(VecRestoreArray(psi, &p));
+      }
+      PetscCall(MatMult(op.mat(), psi, y));
+
+      // Omega . b on basis 0, zero on the slopes, in every cell with no
+      // boundary face (there the missing inflow trace is the rhs's business)
+      const PetscScalar *mu = quad.mu_host();
+      const PetscScalar *eta = quad.eta_host();
+      const PetscScalar *xi = (dim == 3) ? quad_xi(quad) : nullptr;
+      {
+         const PetscScalar *y_a;
+         PetscCall(VecGetArrayRead(y, &y_a));
+         for (PetscInt c = 0; c < ps.local_cells; c++) {
+            const PetscInt point = disc.cell_point_host()[c];
+            const PetscInt *cone = nullptr;
+            PetscInt n_cone = 0;
+            PetscBool boundary = PETSC_FALSE;
+            PetscCall(DMPlexGetConeSize(disc.dm(), point, &n_cone));
+            PetscCall(DMPlexGetCone(disc.dm(), point, &cone));
+            for (PetscInt lf = 0; lf < n_cone; lf++) {
+               PetscInt n_support = 0;
+               PetscCall(DMPlexGetSupportSize(disc.dm(), cone[lf], &n_support));
+               if (n_support == 1) boundary = PETSC_TRUE;
+            }
+            if (boundary) continue;
+            n_interior++;
+            for (PetscInt i = 0; i < nb; i++) {
+               for (PetscInt a = 0; a < n_angles; a++) {
+                  const PetscReal o_b = PetscRealPart(mu[a]) * grad[0] + PetscRealPart(eta[a]) * grad[1] + \
+                     (xi ? PetscRealPart(xi[a]) * grad[2] : 0.0);
+                  const PetscReal expected = (i == 0) ? o_b : 0.0;
+                  err = PetscMax(err, PetscAbsScalar(y_a[(c * nb + i) * n_angles + a] - expected));
+                  scale = PetscMax(scale, PetscAbsReal(o_b));
+               }
+            }
+         }
+         PetscCall(VecRestoreArrayRead(y, &y_a));
+      }
+      PetscCallMPI(MPIU_Allreduce(MPI_IN_PLACE, &err, 1, MPIU_REAL, MPIU_MAX, PETSC_COMM_WORLD));
+      PetscCallMPI(MPIU_Allreduce(MPI_IN_PLACE, &scale, 1, MPIU_REAL, MPIU_MAX, PETSC_COMM_WORLD));
+      PetscCallMPI(MPIU_Allreduce(MPI_IN_PLACE, &n_interior, 1, MPIU_INT, MPI_SUM, PETSC_COMM_WORLD));
+
+      const PetscBool pass = (PetscBool)(n_interior > 0 && err <= lin_tol * scale);
+      if (!pass) *ok = PETSC_FALSE;
+      PetscCall(PetscPrintf(PETSC_COMM_WORLD, "  DG1, %s, S%" PetscInt_FMT ", linear field through the streaming " \
+         "matrix on %" PetscInt_FMT " interior cells: max |A psi - Omega . b| %.3e (tol %.0e x %.3e)%s\n", where, \
+         sn_order, n_interior, (double)err, (double)lin_tol, (double)scale, pass ? "" : " FAILED"));
+
+      PetscCall(VecDestroy(&psi));
+      PetscCall(VecDestroy(&y));
+      PetscCall(op.destroy());
+   }
+
+   PetscCall(disc.destroy());
+
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+// Check 9: DG1 is SECOND order. The exact discrete-ordinates solution of a pure
+// absorber on [0, 1]^2 with inflow on the left face, reflective bottom and top
+// (the solution does not depend on y, so reflecting it is exact) and a cold
+// right face: psi_a = psi_in exp(-sigma x / mu_a) for mu_a > 0, zero
+// otherwise. Measured on the cell averages (basis 0) against the exact scalar
+// flux at the centroids - the two differ by O(h^2) even for the exact
+// solution, so this is a second-order measure and no better - in the
+// volume-weighted RMS, at n = 8, 16, 32. DG0 on the same measure is first
+// order (the Phase 6a campaign)
+template <class Quad>
+static PetscErrorCode CheckDG1Order(const char *where, PetscBool simplex, PetscInt sn_order, PetscBool *ok)
+{
+   const PetscInt n_levels = 3;
+   const PetscInt n_base = 8;
+   const PetscReal sigma = 1.0, inflow = 1.0, min_order = 1.8;
+   PetscReal err[n_levels];
+   PetscBool converged_all = PETSC_TRUE;
+
+   PetscFunctionBeginUser;
+
+   for (PetscInt l = 0; l < n_levels; l++) {
+      Quad quad;
+      PhaseSpace ps;
+      UnstructuredDG disc;
+      StreamingTermDG1 streaming;
+      MaterialSpec mats;
+      BCSpec bcs;
+      PlexMeshSpec mesh;
+      Solve s;
+      Vec psi = NULL, b = NULL;
+      PetscBool converged = PETSC_FALSE;
+      const PetscInt n = n_base << l;
+
+      mesh.dimension = 2;
+      mesh.simplex = simplex;
+      for (PetscInt d = 0; d < 2; d++) {
+         mesh.n_cells[d] = n;
+         mesh.lengths[d] = 1.0;
+      }
+      bcs.set(StructuredFD2D::FACE_LEFT, BCType::VACUUM);
+      bcs.set_inflow(StructuredFD2D::FACE_LEFT, inflow);
+      bcs.set(StructuredFD2D::FACE_BOTTOM, BCType::REFLECT);
+      bcs.set(StructuredFD2D::FACE_TOP, BCType::REFLECT);
+
+      PetscCall(quad.create(sn_order));
+      PetscCall(disc.create_mesh(PETSC_COMM_WORLD, mesh));
+      PetscCall(ps.create(PETSC_COMM_WORLD, disc.n_global_cells(), quad.n_angles()));
+      PetscCall(disc.create(ps, quad, bcs, 1));
+      PetscCall(streaming.create(ps, disc));
+      PetscCall(mats.create(1, 1));
+      PetscCall(mats.set_sigma_t(0, 0, sigma));
+      PetscIntKokkosView mat_id_d("mat_id_d", ps.local_cells);
+      PetscCall(BuildSolve(ps, disc, streaming, quad, mats, mat_id_d, s));
+      PetscCall(MatCreateVecs(s.op.assembled_mat(), &psi, &b));
+      PetscCall(FillRhs(ps, disc, quad, mats, mat_id_d, b));
+      PetscCall(SolveTight(s, b, psi, &converged));
+      if (!converged) converged_all = PETSC_FALSE;
+
+      // The cell average of the scalar flux, from basis 0 of each cell
+      auto w_h = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), quad.w_d());
+      const PetscScalar *mu = quad.mu_host();
+      const PetscScalar psi_in = inflow / quad.sum_weights();
+      PetscReal sum[2] = {0.0, 0.0};
+      const PetscScalar *p;
+      PetscCall(VecGetArrayRead(psi, &p));
+      for (PetscInt c = 0; c < ps.local_cells; c++) {
+         const PetscReal x = disc.centroid_host()[3 * c];
+         PetscReal phi_h = 0.0, phi_exact = 0.0;
+         for (PetscInt a = 0; a < quad.n_angles(); a++) {
+            phi_h += PetscRealPart(w_h(a, 0) * p[c * ps.rows_per_cell() + a]);
+            if (PetscRealPart(mu[a]) > 0.0) \
+               phi_exact += PetscRealPart(w_h(a, 0) * psi_in) * PetscExpReal(-sigma * x / PetscRealPart(mu[a]));
+         }
+         const PetscReal vol = disc.volume_host()[c];
+         sum[0] += vol * (phi_h - phi_exact) * (phi_h - phi_exact);
+         sum[1] += vol;
+      }
+      PetscCall(VecRestoreArrayRead(psi, &p));
+      PetscCallMPI(MPIU_Allreduce(MPI_IN_PLACE, sum, 2, MPIU_REAL, MPIU_SUM, PETSC_COMM_WORLD));
+      err[l] = PetscSqrtReal(sum[0] / sum[1]);
+
+      PetscCall(VecDestroy(&psi));
+      PetscCall(VecDestroy(&b));
+      PetscCall(DestroySolve(s));
+      PetscCall(disc.destroy());
+   }
+
+   const PetscReal order = PetscLog2Real(err[n_levels - 2] / err[n_levels - 1]);
+   const PetscBool pass = (PetscBool)(converged_all && order >= min_order);
+   if (!pass) *ok = PETSC_FALSE;
+   PetscCall(PetscPrintf(PETSC_COMM_WORLD, "  DG1 order, %s, S%" PetscInt_FMT ", pure absorber with left inflow: " \
+      "RMS cell-average error %.3e / %.3e / %.3e at n = %d / %d / %d, observed order %.2f (min %.1f)%s\n", where, \
+      sn_order, (double)err[0], (double)err[1], (double)err[2], (int)n_base, (int)(2 * n_base), (int)(4 * n_base), \
+      (double)order, (double)min_order, pass ? "" : " FAILED"));
+
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
 int main(int argc, char **args) {
 
    PetscBool ok = PETSC_TRUE;
@@ -1453,7 +1883,7 @@ int main(int argc, char **args) {
 
    // No block scope here, unlike the solve drivers: every device view lives
    // and dies inside the Check* functions, well before PetscFinalize
-   PetscCall(PetscPrintf(PETSC_COMM_WORLD, "Unstructured DG0 verification on %d rank(s)\n", (int)size));
+   PetscCall(PetscPrintf(PETSC_COMM_WORLD, "Unstructured DG verification on %d rank(s)\n", (int)size));
 
    const BCType V = BCType::VACUUM, R = BCType::REFLECT;
 
@@ -1576,13 +2006,57 @@ int main(int argc, char **args) {
 #endif
 
    // ~~~~~~~~~~
+   // 8 + 9. DG1: quads and hexes everywhere, the irregular triangle file
+   // (unequal volumes), generated triangles and tets where PETSc can mesh them
+   // ~~~~~~~~~~
+   {
+      PlexMeshSpec quads, hexes, irregular;
+      quads.dimension = 2;
+      hexes.dimension = 3;
+      for (PetscInt d = 0; d < 2; d++) {
+         quads.n_cells[d] = 5 + d;
+         quads.lengths[d] = 1.0 + 0.5 * d;
+      }
+      for (PetscInt d = 0; d < 3; d++) {
+         hexes.n_cells[d] = 4;
+         hexes.lengths[d] = 1.0 + 0.25 * d;
+      }
+      irregular.dimension = 2;
+      irregular.file = "meshes/square_irregular_tri.msh";
+      // Reflect left + bottom (the corner where two reflective faces meet),
+      // vacuum on the rest. The file's Face Sets: 10 bottom, 11 right, 12 top,
+      // 13 left
+      PetscCall(CheckDG1<SNQuadrature2D>("2D quads 5x6", quads, {StructuredFD2D::FACE_LEFT, StructuredFD2D::FACE_BOTTOM}, \
+         {StructuredFD2D::FACE_RIGHT, StructuredFD2D::FACE_TOP}, 4, &ok));
+      PetscCall(CheckDG1<SNQuadrature2D>("meshes/square_irregular_tri.msh", irregular, {10, 13}, {11, 12}, 6, &ok));
+      PetscCall(CheckDG1<SNQuadrature3D>("3D hexes 4^3", hexes, {StructuredFD3D::FACE_LEFT, StructuredFD3D::FACE_FRONT, \
+         StructuredFD3D::FACE_BOTTOM}, {StructuredFD3D::FACE_RIGHT, StructuredFD3D::FACE_BACK, StructuredFD3D::FACE_TOP}, \
+         2, &ok));
+      PetscCall(CheckDG1Order<SNQuadrature2D>("2D quads", PETSC_FALSE, 4, &ok));
+#if defined(PETSC_HAVE_TRIANGLE)
+      PlexMeshSpec triangles = quads;
+      triangles.simplex = PETSC_TRUE;
+      PetscCall(CheckDG1<SNQuadrature2D>("2D triangles 5x6", triangles, {StructuredFD2D::FACE_LEFT, \
+         StructuredFD2D::FACE_BOTTOM}, {StructuredFD2D::FACE_RIGHT, StructuredFD2D::FACE_TOP}, 4, &ok));
+      PetscCall(CheckDG1Order<SNQuadrature2D>("2D triangles", PETSC_TRUE, 4, &ok));
+#endif
+#if defined(PETSC_HAVE_CTETGEN) || defined(PETSC_HAVE_TETGEN)
+      PlexMeshSpec tets = hexes;
+      tets.simplex = PETSC_TRUE;
+      PetscCall(CheckDG1<SNQuadrature3D>("3D tets 4^3", tets, {StructuredFD3D::FACE_LEFT, StructuredFD3D::FACE_FRONT, \
+         StructuredFD3D::FACE_BOTTOM}, {StructuredFD3D::FACE_RIGHT, StructuredFD3D::FACE_BACK, StructuredFD3D::FACE_TOP}, \
+         4, &ok));
+#endif
+   }
+
+   // ~~~~~~~~~~
    // 5. Error paths
    // ~~~~~~~~~~
    PetscCall(CheckSlantedReflect(PETSC_FALSE, &ok));
    PetscCall(CheckSlantedReflect(PETSC_TRUE, &ok));
    PetscCall(CheckErrorPaths(&ok));
 
-   if (!ok) PetscCall(PetscFPrintf(PETSC_COMM_WORLD, stderr, "Unstructured DG0 verification FAILED\n"));
+   if (!ok) PetscCall(PetscFPrintf(PETSC_COMM_WORLD, stderr, "Unstructured DG verification FAILED\n"));
 
    PetscCall(PetscFinalize());
    return ok ? 0 : 1;

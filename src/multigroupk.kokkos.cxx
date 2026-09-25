@@ -182,17 +182,20 @@ PetscErrorCode GroupTransfer::create(const PhaseSpace &ps, const AngularQuadratu
    PetscCall(ps.check_decomposed());
 
    n_angles_ = ps.n_angles;
-   local_cells_ = ps.local_cells;
+   n_basis_ = ps.n_basis;
+   local_nodes_ = ps.local_nodes();
    sum_weights_ = quad.sum_weights();
    xs_ = &xs;
    w_d_ = quad.w_d();
    is_bc_row_d_ = boundary.is_bc_row_d;
-   scalar_flux_d_ = PetscScalar2DKokkosView("scalar_flux_d", local_cells_, 1);
+   // Per NODE, (cell, basis) - the scatter's rule: with an orthonormal modal
+   // basis the transfer is the same per node as per cell at one dof per cell
+   scalar_flux_d_ = PetscScalar2DKokkosView("scalar_flux_d", local_nodes_, 1);
 
    phi_.resize(ps.n_groups);
    phi_set_.assign(ps.n_groups, PETSC_FALSE);
    for (PetscInt g = 0; g < ps.n_groups; g++) {
-      phi_[g] = PetscScalar2DKokkosView("phi_d", local_cells_, 1);
+      phi_[g] = PetscScalar2DKokkosView("phi_d", local_nodes_, 1);
    }
 
    PetscFunctionReturn(PETSC_SUCCESS);
@@ -221,7 +224,8 @@ PetscErrorCode GroupTransfer::set_scalar_flux(PetscInt g, Vec psi_g)
 PetscErrorCode GroupTransfer::add_source(PetscInt g_from, PetscInt g_to, Vec b) const
 {
    const PetscInt n_angles = n_angles_;
-   const PetscInt local_cells = local_cells_;
+   const PetscInt n_basis = n_basis_;
+   const PetscInt local_nodes = local_nodes_;
    const PetscScalar sum_weights = sum_weights_;
    const PetscScalar2DKokkosView scalar_flux_d = scalar_flux_d_;
    const PetscIntKokkosView is_bc_row_d = is_bc_row_d_;
@@ -244,9 +248,10 @@ PetscErrorCode GroupTransfer::add_source(PetscInt g_from, PetscInt g_to, Vec b) 
    // amount going into each angle. Into the scratch, not the cache: the source
    // group scatters into every group below it and each wants its own xsection
    Kokkos::parallel_for(
-      Kokkos::RangePolicy<>(0, local_cells), KOKKOS_LAMBDA(PetscInt i) {
+      Kokkos::RangePolicy<>(0, local_nodes), KOKKOS_LAMBDA(PetscInt i) {
 
-         scalar_flux_d(i, 0) = phi_d(i, 0) * (sigma_s_d(i) / sum_weights);
+         // The xsection is per cell
+         scalar_flux_d(i, 0) = phi_d(i, 0) * (sigma_s_d(i / n_basis) / sum_weights);
       });
 
    PetscScalarKokkosView b_d;
@@ -254,10 +259,10 @@ PetscErrorCode GroupTransfer::add_source(PetscInt g_from, PetscInt g_to, Vec b) 
 
    // Plus the source, unlike the within-group scatter which is on the lhs
    Kokkos::parallel_for(
-      Kokkos::TeamPolicy<>(PetscGetKokkosExecutionSpace(), local_cells, Kokkos::AUTO()),
+      Kokkos::TeamPolicy<>(PetscGetKokkosExecutionSpace(), local_nodes, Kokkos::AUTO()),
       KOKKOS_LAMBDA(const KokkosTeamMemberType &t) {
 
-         // cell
+         // node
          PetscInt i = t.league_rank();
 
          // For all the angles

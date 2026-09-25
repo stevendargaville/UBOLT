@@ -41,13 +41,15 @@ public:
 
    PetscInt dimension = 0;
    // mesh.type: PETSC_FALSE ("structured", the default) is the DMDA finite
-   // difference backends; PETSC_TRUE ("unstructured") is the DG0 backend on a
+   // difference backends; PETSC_TRUE ("unstructured") is the DG backend on a
    // DMPlex, 2D and 3D only. These are plain fields on purpose - this header
    // does not include the unstructured backend, the driver builds its mesh
    // description from them
    PetscBool mesh_unstructured = PETSC_FALSE;
    // Unstructured box only: triangles/tets instead of quads/hexes
    PetscBool mesh_simplex = PETSC_FALSE;
+   // Unstructured only: the DG order, 0 (one dof per cell) or 1 (linear)
+   PetscInt mesh_order = 0;
    // Unstructured only: a mesh file PETSc reads (Gmsh .msh, ...), resolved
    // relative to the problem file's directory exactly as a materials path is.
    // Empty = a box built in code, described by n_cells_* / length_* below;

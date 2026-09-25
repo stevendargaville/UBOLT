@@ -151,10 +151,11 @@ private:
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-// The angular integral: scalar_flux(cell, 0) = sum_a w_a psi(cell, a), over the
-// LOCAL part of psi only. Runs on the device
+// The angular integral: scalar_flux(node, 0) = sum_a w_a psi(node, a), over the
+// LOCAL part of psi only, a node being a (cell, basis) pair (PhaseSpace) - so
+// the cell itself on a one-dof-per-cell backend. Runs on the device
 //
-// scalar_flux_d is caller-owned persistent scratch sized (local_cells, 1) -
+// scalar_flux_d is caller-owned persistent scratch sized (local_nodes, 1) -
 // never allocate device memory inside an apply. Shared by every term that needs
 // a scalar flux, so they all do bit-identical arithmetic
 PETSC_EXTERN PetscErrorCode UboltAngularIntegral(Vec psi, PetscInt n_angles, \

@@ -398,10 +398,10 @@ PetscErrorCode UboltAngularIntegral(Vec psi, PetscInt n_angles, \
    PetscFunctionBeginUser;
 
    // Everything here works on the local part of psi only - this is how many
-   // local cells we have
+   // local nodes (cells, on a one-dof-per-cell backend) we have
    PetscInt local_rows;
    PetscCall(VecGetLocalSize(psi, &local_rows));
-   const PetscInt local_cells = local_rows / n_angles;
+   const PetscInt local_nodes = local_rows / n_angles;
 
    // Get the device view, const since we only read it
    PetscScalarConstKokkosView psi_d;
@@ -409,7 +409,7 @@ PetscErrorCode UboltAngularIntegral(Vec psi, PetscInt n_angles, \
 
    // Reshape (without copying) the 1D view into a 2D one. The 2D view uses
    // LayoutRight so we get the correct ordering of contiguous in angle
-   PetscScalar2DConstKokkosView psi_d_2d(psi_d.data(), local_cells, n_angles);
+   PetscScalar2DConstKokkosView psi_d_2d(psi_d.data(), local_nodes, n_angles);
 
    // The integral over angle is just a dgemm (on the device)
    const PetscScalar alpha = 1.0;

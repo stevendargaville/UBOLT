@@ -83,10 +83,11 @@ fill runs on device (MATAIJKOKKOS dispatches `MatSetValuesCOO` to the GPU):
   overlap ghost's as `-(g + 1)`, so one lookup serves the owned cells and the ghost
   neighbours a column points into. The mesh is distributed with face adjacency and a
   one-cell overlap, which is exactly the set of neighbours an upwind face flux reads.
-  `CheckPlexLayout` (`src/unstructured_dg0k.kokkos.cxx`) is the layout assert there: the
+  `CheckPlexLayout` (`src/unstructured_dgk.kokkos.cxx`) is the layout assert there: the
   section and the point SF agree on ownership, the owned cells sum to the phase space's,
-  and the owned cells in increasing POINT order sit at `rstart + k * n_angles` — which is
-  what makes "local cell k = the k-th owned cell in point order" the per-cell indexing.
+  and the owned cells in increasing POINT order sit at `rstart + k * rows_per_cell`
+  (`n_basis * n_angles`, the section's dof per cell) — which is what makes "local cell
+  k = the k-th owned cell in point order" the per-cell indexing.
 - Dirichlet trick: a `-1` row/col index in the preallocation means "ignore this entry", so
   Dirichlet boundary rows keep only their diagonal. The same `-1` covers a slot a row
   genuinely does not have — in 2D, a direction whose `mu` or `eta` is zero has no upwind
@@ -108,7 +109,7 @@ fill runs on device (MATAIJKOKKOS dispatches `MatSetValuesCOO` to the GPU):
   builds the slot maps from that convention, so a fixed-entries-per-row backend states it
   once — the backend hands it the BC row mask and the repurposed reflection slots along
   with the slot count.
-- The unstructured backend (`UnstructuredDG0`, DG0 on a DMPlex) does not have a fixed
+- The unstructured backend (`UnstructuredDG`, DG0 on a DMPlex) does not have a fixed
   count: a row of cell c carries `n_faces(c) + 1` slots — one per face in the cell's CONE
   order, then the diagonal LAST — so a mesh with mixed cell shapes has rows of different
   lengths. It builds its slot maps with the general `Discretisation::set_pattern(row_slot_offset,
@@ -122,6 +123,25 @@ fill runs on device (MATAIJKOKKOS dispatches `MatSetValuesCOO` to the GPU):
   `s = Omega . nA_f`, outflow (s > 0) onto the diagonal, anything else onto the face's
   slot (dropped if that slot was nulled). A reflective row repurposes the slot of its first
   incoming reflective face in cone order, a Dirichlet row keeps only its diagonal.
+- At DG1 (`UnstructuredDG` at order 1) every one of those entries widens to `n_basis`:
+  a row of (cell c, basis i, angle a) carries `(n_faces(c) + 1) * n_basis` slots — the
+  upwind cell's basis j = 0 .. n_basis - 1 per face in cone order, then this cell's own
+  n_basis at the same angle, LAST, the diagonal being own slot i (so `diag_slot_d` is no
+  longer "the last slot"; nothing may assume it is). The -1 nulls still do the upwind
+  selection, and a reflective face is a face like any other: its slots point at (same
+  cell, basis j, mirrored angle) — rank-local — and the streaming term fills them with
+  the same face matrix it uses for the own block. There are no BC rows at all.
+  `StreamingTermDG1` branches only on the sign of `s`, as DG0 does. Its geometry is
+  flat rank-1 views too (`face_own_d`, `face_up_d`: n_basis x n_basis per (cell, face);
+  `basis_grad_d`: 3 per (cell, basis)).
+- The dimension-independent terms work per NODE — a (cell, basis) pair, the cell itself
+  when `PhaseSpace::n_basis` is 1 — because the angles of a node are contiguous: the
+  angular integral, the scatter and the group transfer are sized `local_nodes()` and
+  read the per-cell xsection at `node / n_basis`, removal at `row / rows_per_cell()`.
+  That is only valid because the DG1 basis is ORTHONORMAL on each cell (the mass matrix
+  is the identity) and the xsections are cell-constant; `UboltFillSource` writes basis 0
+  only (a constant projects onto nothing else). Keep both true, or those terms stop
+  being diagonal per node.
 - Terms address entries through the `CooPattern` slot maps — `row_slot_offset_d`
   (CSR-shaped COO slot ranges per row) and `diag_slot_d` (which slot is the diagonal) —
   never through raw COO positions. With more than one off-diagonal a term has to address

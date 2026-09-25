@@ -15,7 +15,7 @@
 #include "ubolt/structured_fd_1d.hpp"
 #include "ubolt/structured_fd_2d.hpp"
 #include "ubolt/structured_fd_3d.hpp"
-#include "ubolt/unstructured_dg0.hpp"
+#include "ubolt/unstructured_dg.hpp"
 #include "ubolt/problem_spec.hpp"
 #include "ubolt/operator_term.hpp"
 #include "ubolt/terms.hpp"

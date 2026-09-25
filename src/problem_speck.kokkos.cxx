@@ -446,7 +446,7 @@ PetscErrorCode ProblemSpec::create(MPI_Comm comm, const char *problem_path)
    if (!mesh_unstructured) {
       // Name the missing "type" rather than calling the key a typo - these
       // are real keys, just not for this backend
-      for (const char *k : {"file", "simplex"}) {
+      for (const char *k : {"file", "simplex", "order"}) {
          PetscCheck(!mesh.contains(k), PETSC_COMM_SELF, PETSC_ERR_ARG_WRONG, \
             "%s: mesh \"%s\" is for an unstructured mesh only - add \"type\": \"unstructured\" " \
             "to \"mesh\"", problem_path, k);
@@ -455,11 +455,20 @@ PetscErrorCode ProblemSpec::create(MPI_Comm comm, const char *problem_path)
    }
    else {
       PetscCall(JsonCheckKeys(mesh, "\"mesh\"", problem_path, \
-         {"type", "n_cells", "lengths", "simplex", "file"}));
+         {"type", "n_cells", "lengths", "simplex", "file", "order"}));
       PetscCheck(dimension >= 2, PETSC_COMM_SELF, PETSC_ERR_ARG_OUTOFRANGE, \
          "%s: an unstructured mesh must have dimension 2 or 3, was given %" PetscInt_FMT \
          " - the 1D backend is the structured slab, drop \"type\": \"unstructured\"", \
          problem_path, dimension);
+   }
+
+   // The DG order of the unstructured backend: 0 (the default) or 1
+   if (mesh_unstructured && mesh.contains("order")) {
+      const json &o = mesh.at("order");
+      PetscCheck(o.is_number_integer() && (o.get<std::int64_t>() == 0 || o.get<std::int64_t>() == 1), \
+         PETSC_COMM_SELF, PETSC_ERR_ARG_WRONG, "%s: mesh \"order\" must be 0 (DG0, the default) or 1 (DG1)", \
+         problem_path);
+      mesh_order = (PetscInt)o.get<std::int64_t>();
    }
 
    if (mesh_unstructured && mesh.contains("file")) {

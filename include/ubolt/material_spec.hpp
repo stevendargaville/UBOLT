@@ -71,6 +71,10 @@ private:
 // UboltFillInflow leaves at zero - but under the default GHOST_FLUX a boundary
 // cell is an ordinary unknown whose rhs carries the external source AND the
 // |Omega|/h inflow, and assigning would wipe the latter
+//
+// With more than one spatial dof per cell (ps.n_basis > 1, DG1) only the rows
+// of basis 0 are touched: the basis is modal and orthonormal on each cell with
+// basis 0 the constant, so a cell-constant source projects onto basis 0 alone
 PETSC_EXTERN PetscErrorCode UboltFillSource(const PhaseSpace &ps, const BoundaryInfo &boundary, \
    const AngularQuadrature &quad, const MaterialSpec &mats, const PetscIntKokkosView &mat_id_d, \
    PetscInt g, Vec b);

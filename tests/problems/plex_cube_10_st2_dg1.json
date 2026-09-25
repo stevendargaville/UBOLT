@@ -1,0 +1,33 @@
+{
+ "_comment": "The DG1 twin of plex_cube_10_st2.json: the 10x10x10 hex box, S2, pure scattering, 4 pi inflow on every face - four dofs per cell. CAREFUL: bottom/top are the Z faces in 3D.",
+ "dimension": 3,
+ "mesh": {
+  "type": "unstructured",
+  "n_cells": [10, 10, 10],
+  "lengths": [1.0, 1.0, 1.0],
+  "order": 1
+ },
+ "sn_order": 2,
+ "materials": {
+  "n_groups": 1,
+  "materials": [
+   {
+    "id": 0,
+    "name": "st2",
+    "Sigma_t": [2.0],
+    "Sigma_s": [
+     [2.0]
+    ],
+    "Source": [1.0]
+   }
+  ]
+ },
+ "boundary_conditions": {
+  "left": {"type": "vacuum", "inflow": 12.566370614359172},
+  "right": {"type": "vacuum", "inflow": 12.566370614359172},
+  "front": {"type": "vacuum", "inflow": 12.566370614359172},
+  "back": {"type": "vacuum", "inflow": 12.566370614359172},
+  "bottom": {"type": "vacuum", "inflow": 12.566370614359172},
+  "top": {"type": "vacuum", "inflow": 12.566370614359172}
+ }
+}

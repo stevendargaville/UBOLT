@@ -22,6 +22,11 @@ struct UboltCellField {
 // source), so a file can be read without going back to the problem definition
 // to find out what was solved
 //
+// With more than one spatial dof per cell (DG1) the scalar_flux field is the
+// CELL AVERAGE - basis 0 of the modal basis. The in-cell slope is not a
+// PhaseSpace concept, so a caller that wants it passes it as extra fields
+// (UnstructuredDG::scalar_flux_gradient, which the driver writes)
+//
 // The angular integral is UboltAngularIntegral - the same one the terms use -
 // and the result goes onto a dof-1 twin of the discretisation's DM, so PETSc's
 // own VTK viewer does the parallel gather and the writing. That makes the
@@ -29,7 +34,7 @@ struct UboltCellField {
 // - a DMDA backend (the structured ones) is a structured grid: .vts or .vtr.
 //   The twin is DMDACreateCompatibleDMDA, which also carries over the mesh
 //   coordinates the backend set
-// - the DMPlex backend (UnstructuredDG0) is an unstructured grid: .vtu. The
+// - the DMPlex backend (UnstructuredDG) is an unstructured grid: .vtu. The
 //   twin is a DMClone with one dof per cell, and only OWNED cells are written
 //   (PETSc's VTU writer would otherwise write the one-cell overlap twice)
 // The wrong extension for the backend is an error saying which one to use.

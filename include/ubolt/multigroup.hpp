@@ -86,12 +86,13 @@ public:
 
 private:
    PetscInt n_angles_ = 0;
-   PetscInt local_cells_ = 0;
+   PetscInt n_basis_ = 1;
+   PetscInt local_nodes_ = 0;
    PetscScalar sum_weights_ = 0.0;
    const GroupXSections *xs_ = nullptr;
    PetscScalar2DKokkosView w_d_;
    PetscIntKokkosView is_bc_row_d_;
-   // The cached scalar flux of each group, (local_cells, 1) apiece. Separate
+   // The cached scalar flux of each group, (local_nodes, 1) apiece. Separate
    // allocations rather than one (group, cell) table: the angular integral
    // writes a 2D gemm output, and a slice of a 2D table would be a rank-2 view
    // whose layout no longer matches the default one on a device backend

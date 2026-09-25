@@ -5,13 +5,12 @@ Each phase is a reviewable unit with its own verification. Do not start a phase 
 previous one's verification has passed and been reviewed.
 
 ## Current state (updated 2026-09-25)
-Last landed: Phase 6a (DG0 on DMPlex, PR #2) and the ghost-flux vacuum treatment as the
-default (PR #4, Phase 5 postscript), which also closed the mismatched ref-shift + DSA
-follow-up and the `-precon_stream -precon_dsa` interaction (both Dirichlet-cell
-artefacts, now pinned). Next up: **linear DG (DG1) on the plex backend** — the item
-under the ghost-flux postscript; decide the row layout first. Other open items: DSA on
-the plex backend and 6b CG-SUPG (Phase 6), and the half-quadrature transposed PC
-(blocked on PFLARE's PCAIR `PCApplyTranspose`).
+Last landed: **linear DG (DG1) on the plex backend** (the item under the ghost-flux
+postscript: `UnstructuredDG` at `order` 1, rows `(cell, basis, angle)`, second order on
+every cell shape), on top of Phase 6a (DG0 on DMPlex, PR #2) and the ghost-flux vacuum
+treatment as the default (PR #4). Next up: DSA on the plex backend (the biggest gap both
+orders share), then 6b CG-SUPG (Phase 6); the half-quadrature transposed PC stays
+blocked on PFLARE's PCAIR `PCApplyTranspose`. The DG1 pins await a CI-image sweep.
 
 ## Phase 0 — Scaffolding + baseline capture (no behavior change)
 - [x] Directory tree, top Makefile (library skeleton), tests/Makefile (PFLARE-style recipes)
@@ -354,8 +353,9 @@ the plex backend and 6b CG-SUPG (Phase 6), and the half-quadrature transposed PC
       existing Dirichlet-cell contract, keyed by real "Face Sets" values (the box ids ARE
       the structured `FACE_*` ids); reflection needs an axis-aligned face. Materials:
       `paint_boxes` by centroid plus "Cell Sets" -> material. Output: `.vtu`. Not in this
-      cut: DSA (a DMDA operator), DG1+. The ghost-flux vacuum BC landed afterwards, on
-      top of the structured ghost-flux commit (see the postscript below).
+      cut: DSA (a DMDA operator), DG1+ (DG1 landed later, under the ghost-flux
+      postscript). The ghost-flux vacuum BC landed afterwards, on top of the structured
+      ghost-flux commit (see the postscript below).
   - Measured (22 Sep 2026, opt arch, under the then-default Dirichlet-cell treatment;
     the pins have since run green on every CI arch, and were re-pinned for the
     ghost-flux default — the plex_box_50_st2 gap below closed there, both boxes take 7;
@@ -993,19 +993,36 @@ experiments stay on the campaign branch until PFLARE's PCAIR `PCApplyTranspose` 
       streaming-only pmats one or two fewer, the default-k ref-shift runs two or three
       more. The structured/plex 50x50 twins now agree (7 and 7, where Dirichlet-cell
       gave 6 and 7). Full table: docs/dev/testing.md, "Switching the default".
-- [ ] Linear DG (DG1) upwind on the DMPlex backend — after ghost-flux is the default,
-      because a DG face flux IS the ghost-flux inflow and there is no Dirichlet-cell
-      analogue for a multi-dof cell. Phase 6a left it out ("DG1+" in the not-in-this-cut
-      list). The broken section and the variable-nnz COO (`Discretisation::set_pattern`)
-      carry over; `row = cell * n_angles + angle` does NOT, since a DG1 cell has
-      `n_basis` dofs. Decide the layout first — `(cell, basis, angle)` rows vs a per-cell
-      dof block — because it reaches everything that goes through the slot maps
-      (removal, scattering, `UboltAngularIntegral`, `GroupTransfer`, the BC masks,
-      output). New work: volume + face quadrature kernels, per-cell mass matrices,
-      reflective faces at the same order. Verify: second order against the exact
-      discrete-ordinates solution DG0 was measured on (DG0 is first order on every cell
-      shape), and pinned iterations on the plex recipes.
+- [x] Linear DG (DG1) upwind on the DMPlex backend (Sep 2026) — after ghost-flux became
+      the default, because a DG face flux IS the ghost-flux inflow and there is no
+      Dirichlet-cell analogue for a multi-dof cell. DECISION: layout A, rows
+      `(cell * n_basis + basis) * n_angles + angle` — angle fastest, so a (cell, basis)
+      "node" is a contiguous run of angles, over a per-(cell, angle) dof block (layout B,
+      which would have made streaming's dense block contiguous but rewritten every
+      dimension-independent term's stride). `PhaseSpace` gained `n_basis` (written by the
+      backend, like `local_cells`), `local_nodes()` and `rows_per_cell()`; removal,
+      scatter, `GroupTransfer`, `UboltAngularIntegral`, the ref-shift and the output work
+      per node with the xsection per cell, unchanged at `n_basis` 1. What makes that
+      valid is the basis: MODAL and ORTHONORMAL on each cell (phi_0 = 1, the linear ones
+      orthonormalised through the Cholesky factor of the cell's second moments), so the
+      mass matrix is the identity and removal/scatter stay diagonal per node, and a
+      cell-constant source lands on basis 0 only. `UnstructuredDG0` became
+      `UnstructuredDG` with an `order` (0 or 1; `mesh.order` in a problem file) and
+      `StreamingTermDG1` beside `StreamingTermDG0`. Geometry: exact cell and face moments
+      from a fan of simplices (planar faces required), per (cell, face) the two
+      n_basis x n_basis face matrices, per cell the basis gradients. Boundaries: ghost-flux
+      only, and NO BC rows at all — a reflective face is a face coupling to the mirrored
+      angle's trace in the same cell, over that face's own axis, which removes DG0's
+      composed-partner corner rule and its single-cell-wide rejection. Output: the cell
+      average as `scalar_flux`, the slope as `scalar_flux_grad_*` fields. Verified
+      (`verify_plexk` 8 and 9): zero BC rows; `(VA)^T = P(VA)P` to ~1e-15 with the
+      reflective couplings in it; the constant through the library rhs; a linear field
+      through the streaming matrix exact in interior cells on quads, hexes, triangles,
+      tets and the irregular file; observed order 2.02 (quads) and 2.01 (triangles)
+      against the exact SN solution DG0 is first order on. Pinned: every plex recipe's
+      DG1 twin, serial and np 2 (docs/dev/testing.md, "Unstructured iteration counts" —
+      DG1 costs 0 to 3 iterations more than DG0 at the default rtol).
 - [ ] The half-quadrature preconditioner and an `-adjoint` path — blocked on PFLARE's
-      PCAIR `PCApplyTranspose`; see the campaign branch. On the DG0 backend the
-      transposed half needs the cell-volume similarity (`unstructured_dg0.hpp`):
+      PCAIR `PCApplyTranspose`; see the campaign branch. On the DG backend (either
+      order) the transposed half needs the cell-volume similarity (`unstructured_dg.hpp`):
       `y = V^{-1} M^{-T} (V x)`, which reduces to the plain transpose on a uniform mesh.
