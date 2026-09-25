@@ -1047,6 +1047,11 @@ experiments stay on the campaign branch until PFLARE's PCAIR `PCApplyTranspose` 
       deficit streams across the domain along the ordinates leaving the corner, while
       the mean halves (L2 still first order).
       Structured and plex agree to 1e-10, so it is the shared rule, not the plex backend.
+      It also breaks the DG0 convergence study (pure absorber, left inflow meeting
+      reflective top/bottom at (0,0) and (0,1)): the corner cell holds 3.11 where the
+      exact flux is 6.26 - it loses the half of the inflow entering through both faces -
+      so L-infinity is stuck at 3.14 for every n (0.028 at n = 256 under Dirichlet-cell)
+      and the L2 order falls from 1.00 to 0.91, on FD, quads and triangles alike.
       Under Dirichlet-cell the corner took the vacuum inflow (vacuum wins) and the error
       was O(h) everywhere. DG1 has no such rule (per-face couplings) and its quarter box
       equals the full box to solver tolerance. Candidate fix for DG0: mirror only over the
