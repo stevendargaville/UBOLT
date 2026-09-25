@@ -863,7 +863,7 @@ experiments stay on the campaign branch until PFLARE's PCAIR `PCApplyTranspose` 
       treatments, the library-built rhs against a constant solution, and `A^T = P A P`
       (0.0 relative, heterogeneous sigma_t, parallel too) under ghost-flux;
       `*_inf_medium_ghost.json` solves against the exact constant in 1D/2D/3D.
-- [ ] Sweep the ghost-flux pins over the CI arches (opt-arch measurements).
+- [x] Swept the ghost-flux pins over the 64-bit and OpenMP CI images (two went up by 1).
 - [ ] Make ghost-flux the default. It is the standard upwind FV inflow, differs from the
       default by O(h) at the boundary cell, and is what DG does anyway. It changes every
       solution at boundary cells, so: regenerate all 24 baselines deliberately, re-pin

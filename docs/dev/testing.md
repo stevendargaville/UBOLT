@@ -433,13 +433,15 @@ matches one from the unmodified library).
 - `DSAPrecon` refuses ghost mode (its Marshak face is written against the Dirichlet-cell
   boundary), so no DSA recipe runs it.
 
-Opt-arch counts, measured 2026-09-25 (not yet swept over the CI arches):
+Pins, measured 2026-09-25 and swept the same day in the 64-bit and OpenMP CI images; a
+pin is the max over the arches, and the two that sit above the opt reference say which
+arch set them:
 
 | ghost-flux config (rtol 1e-12, `-check_inf_medium`) | np=1 | np=2 |
 |---|---|---|
 | 1D slab, both faces ghost vacuum | 8 | 8 |
-| 1D slab, both faces ghost vacuum, `-matfree_removal` | 17 | — |
-| 2D 50x50, left+bottom reflect, right+top ghost vacuum | 12 | 11 |
+| 1D slab, both faces ghost vacuum, `-matfree_removal` | 18 (opt 17, 64-bit 18) | — |
+| 2D 50x50, left+bottom reflect, right+top ghost vacuum | 12 | 12 (opt/64-bit 11, OpenMP 12) |
 | 2D same, `-matfree_removal` | 25 | — |
 | 3D 10^3, left+front+bottom reflect, others ghost vacuum | 11 | 11 |
 | 3D same, `-matfree_removal` | 21 | — |

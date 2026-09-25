@@ -164,7 +164,7 @@ run_tests_short_serial:
 	@echo "Test 1D slab, ghost-flux vacuum faces against the infinite-medium solution"
 	./transportk -problem problems/slab_inf_medium_ghost.json -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 8
 	@echo "Test 1D slab, ghost-flux vacuum faces, matrix-free removal against the infinite-medium solution"
-	./transportk -problem problems/slab_inf_medium_ghost.json -matfree_removal -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 17
+	./transportk -problem problems/slab_inf_medium_ghost.json -matfree_removal -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 18
 #
 # DSA. slab_diffusive.json is ten mean free paths per cell at a scattering
 # ratio of 0.99 - the regime nothing in the composite preconditioner addressed
@@ -505,7 +505,7 @@ run_tests_short_parallel:
 	@echo "Test 2D box, pure scattering in parallel"
 	$(MPIEXEC) -n 2 ./transportk -problem problems/box_50_st2.json -ksp_max_it 6
 	@echo "Test 2D box, ghost-flux vacuum + reflective faces against the infinite-medium solution in parallel"
-	$(MPIEXEC) -n 2 ./transportk -problem problems/box_50_inf_medium_ghost.json -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 11
+	$(MPIEXEC) -n 2 ./transportk -problem problems/box_50_inf_medium_ghost.json -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 12
 	@echo "Test 2D box, scattering ratio 0.5 in parallel"
 	$(MPIEXEC) -n 2 ./transportk -problem problems/box_50_ratio05.json -ksp_max_it 5
 	@echo "Test 2D box, non-square grid in parallel"
