@@ -30,4 +30,13 @@ using KokkosTeamMemberType = Kokkos::TeamPolicy<Kokkos::DefaultExecutionSpace>::
 using PetscIntKokkosView      = Kokkos::View<PetscInt *, DefaultMemorySpace>;
 using PetscIntKokkosViewHostUnmanaged = Kokkos::View<PetscInt *, HostMirrorMemorySpace, Kokkos::MemoryTraits<Kokkos::Unmanaged>>;
 
+// A MATSEQAIJKOKKOS matrix's own device CSR (ElementBlockInverse). The value
+// views are EXACTLY the types MatSeqAIJGetKokkosView takes - no memory space
+// argument, which makes them different types from the ones above even where
+// the space is the same - and the row offsets / columns come from
+// MatSeqAIJGetCSRAndMemType as raw device pointers, wrapped unmanaged
+using PetscScalarMatKokkosView      = Kokkos::View<PetscScalar *>;
+using PetscScalarMatConstKokkosView = Kokkos::View<const PetscScalar *>;
+using PetscIntConstKokkosViewUnmanaged = Kokkos::View<const PetscInt *, DefaultMemorySpace, Kokkos::MemoryTraits<Kokkos::Unmanaged>>;
+
 #endif

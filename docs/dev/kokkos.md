@@ -196,6 +196,23 @@ fill runs on device (MATAIJKOKKOS dispatches `MatSetValuesCOO` to the GPU):
 - PETSc brings Kokkos up lazily, so anything that allocates device memory before the first
   Kokkos-typed PETSc object exists must call `PetscKokkosInitializeCheck()` first.
 
+## Reading and writing an assembled matrix on the device
+`ElementBlockInverse` is the one place UBOLT touches a MATAIJKOKKOS matrix's storage
+rather than filling it through COO, the way PFLARE does:
+- Split an MPI matrix with `MatMPIAIJGetSeqAIJ` (owned part, local column indices over the
+  same layout as the rows; off-process part, compacted columns). Anything cell-local lives
+  in the owned part.
+- Row offsets and columns from `MatSeqAIJGetCSRAndMemType` (device pointers on a Kokkos
+  matrix; wrap them in `PetscIntConstKokkosViewUnmanaged`). Values through
+  `MatSeqAIJGetKokkosView` with a CONST view to read (it syncs the device) and
+  `MatSeqAIJGetKokkosViewWrite` to overwrite — its restore marks the device modified and
+  bumps the SEQ part's state. Those value views are `PetscScalarMatKokkosView` /
+  `PetscScalarMatConstKokkosView`: PETSc declares them without a memory space, which is a
+  different C++ type from `PetscScalarKokkosView` even where the space is the same.
+- The MPI wrapper's own state is NOT bumped by writing its parts, and a PC compares the
+  wrapper's state, so a PC built on it would keep a stale setup. `PetscObjectStateIncrease`
+  is private; a `MAT_FINAL_ASSEMBLY` (nothing stashed, same pattern) is the public way.
+
 ## pflare / GPU dispatch
 - pflare dispatches on the matrix type at RUNTIME: PCAIR only takes its Kokkos/GPU paths
   when handed MATAIJKOKKOS matrices and VECKOKKOS vectors. UBOLT sets these types in code,

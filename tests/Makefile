@@ -115,7 +115,7 @@ endif
 	@echo "Check 2D unstructured quad box, the DG0 twin of box_50_st2"
 	./transportk -problem problems/plex_box_50_st2.json -ksp_max_it 7
 	@echo "Check 2D unstructured quad box at DG1"
-	./transportk -problem problems/plex_box_50_st2_dg1.json -sub_1_pc_air_strong_threshold 0.25 -ksp_max_it 8
+	./transportk -problem problems/plex_box_50_st2_dg1.json -ksp_max_it 7
 	@echo "Check 3D cube streaming/removal + matrix-free scatter with AIRG"
 	./transportk -problem problems/cube_10_st2.json -ksp_max_it 6
 	@echo "Check 3D cube, reflective left + front + bottom faces"
@@ -193,7 +193,7 @@ run_tests_short_serial:
 	@echo "Test 3D cube, Dirichlet-cell vacuum treatment"
 	./transportk -problem problems/cube_10_st2_dirichlet_cell.json -ksp_max_it 5
 	@echo "Test 2D unstructured quad box, Dirichlet-cell vacuum treatment"
-	./transportk -problem problems/plex_box_50_st2_dirichlet_cell.json -ksp_max_it 7
+	./transportk -problem problems/plex_box_50_st2_dirichlet_cell.json -ksp_max_it 6
 #
 # DSA. slab_diffusive.json is ten mean free paths per cell at a scattering
 # ratio of 0.99 - the regime nothing in the composite preconditioner addressed
@@ -514,7 +514,7 @@ endif
 	./transportk -problem problems/plex_square_msh.json -ksp_max_it 4
 ifeq ($(PETSC_HAVE_TRIANGLE),1)
 	@echo "Test 2D unstructured triangles, ghost-flux vacuum + reflective faces against the infinite-medium solution"
-	./transportk -problem problems/plex_tri_30_inf_medium_ghost.json -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 11
+	./transportk -problem problems/plex_tri_30_inf_medium_ghost.json -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 12
 endif
 ifeq ($(PETSC_HAVE_TRIANGLE),1)
 	@echo "Test 2D unstructured triangles, ghost-flux, matrix-free removal against the infinite-medium solution"
@@ -532,51 +532,51 @@ endif
 # dofs per cell in 2D, four in 3D. No structured twin at this order, and DG1
 # has no BC rows (a reflective face is a face coupling), so the counts are
 # pinned on their own - local opt counts, see ../docs/dev/testing.md,
-# "Unstructured iteration counts". Every DG1 line passes PCAIR strong
-# threshold 0.25: at the default 0.5 PCAIR's coarsening stalls on DG1 (the AIR
-# levels grow linearly with n), which made these the slowest lines in the
-# suite, 3-6x slower and 1-3 iterations worse. A stopgap until the streaming
-# operator is scaled by its element-block inverses - see TODO.md
+# "Unstructured iteration counts". PCAIR runs at its default strong threshold:
+# the driver builds it on the element-block-scaled pmat on the DG backend
+# (-precon_block_scale, the default there), without which the coarsening
+# stalls on DG1 - the AIR levels grow linearly with n. These lines passed
+# -sub_1_pc_air_strong_threshold 0.25 as a stopgap until that landed
 	@echo "Test 2D unstructured quad box at DG1, pure scattering"
-	./transportk -problem problems/plex_box_50_st2_dg1.json -sub_1_pc_air_strong_threshold 0.25 -ksp_max_it 8
+	./transportk -problem problems/plex_box_50_st2_dg1.json -ksp_max_it 7
 	@echo "Test 2D unstructured quad box at DG1, one MatSetValuesCOO per term"
-	./transportk -problem problems/plex_box_50_st2_dg1.json -ubolt_coo_two_call -sub_1_pc_air_strong_threshold 0.25 -ksp_max_it 8
+	./transportk -problem problems/plex_box_50_st2_dg1.json -ubolt_coo_two_call -ksp_max_it 7
 	@echo "Test 2D unstructured quad box at DG1, streaming-only pmat"
-	./transportk -problem problems/plex_box_50_st2_dg1.json -precon_stream -ksp_pc_side right -sub_1_pc_air_strong_threshold 0.25 -ksp_max_it 10
+	./transportk -problem problems/plex_box_50_st2_dg1.json -precon_stream -ksp_pc_side right -ksp_max_it 9
 	@echo "Test 2D unstructured quad box at DG1, matrix-free removal (the twin of the line above)"
-	./transportk -problem problems/plex_box_50_st2_dg1.json -matfree_removal -ksp_pc_side right -sub_1_pc_air_strong_threshold 0.25 -ksp_max_it 10
+	./transportk -problem problems/plex_box_50_st2_dg1.json -matfree_removal -ksp_pc_side right -ksp_max_it 9
 	@echo "Test 2D unstructured quad box at DG1, the matrix-free removal is the same operator and diagonal"
-	./transportk -problem problems/plex_box_50_st2_dg1.json -check_matfree -sub_1_pc_air_strong_threshold 0.25 -ksp_max_it 8
+	./transportk -problem problems/plex_box_50_st2_dg1.json -check_matfree -ksp_max_it 7
 	@echo "Test 2D unstructured quad box at DG1, reflective left + bottom faces"
-	./transportk -problem problems/plex_box_50_reflect_lb_dg1.json -sub_1_pc_air_strong_threshold 0.25 -ksp_max_it 6
+	./transportk -problem problems/plex_box_50_reflect_lb_dg1.json -ksp_max_it 6
 ifeq ($(PETSC_HAVE_TRIANGLE),1)
 	@echo "Test 2D unstructured triangles at DG1, S4, scattering ratio 0.5"
-	./transportk -problem problems/plex_tri_30_st2_dg1.json -sub_1_pc_air_strong_threshold 0.25 -ksp_max_it 5
+	./transportk -problem problems/plex_tri_30_st2_dg1.json -ksp_max_it 5
 endif
 	@echo "Test 3D unstructured hex box at DG1, pure scattering"
-	./transportk -problem problems/plex_cube_10_st2_dg1.json -sub_1_pc_air_strong_threshold 0.25 -ksp_max_it 7
+	./transportk -problem problems/plex_cube_10_st2_dg1.json -ksp_max_it 7
 ifeq ($(PETSC_HAVE_TETMESHER),1)
 	@echo "Test 3D unstructured tetrahedra at DG1, scattering ratio 0.5"
-	./transportk -problem problems/plex_tet_6_st2_dg1.json -sub_1_pc_air_strong_threshold 0.25 -ksp_max_it 5
+	./transportk -problem problems/plex_tet_6_st2_dg1.json -ksp_max_it 5
 endif
 	@echo "Test 2D unstructured Gmsh file at DG1, Cell Sets materials and Face Sets boundary conditions"
-	./transportk -problem problems/plex_square_msh_dg1.json -sub_1_pc_air_strong_threshold 0.25 -ksp_max_it 5
+	./transportk -problem problems/plex_square_msh_dg1.json -ksp_max_it 5
 	@echo "Test 2D unstructured quad box at DG1, vacuum + reflective faces against the infinite-medium solution"
-	./transportk -problem problems/plex_box_30_inf_medium_dg1.json -check_inf_medium -ksp_rtol 1e-12 -sub_1_pc_air_strong_threshold 0.25 -ksp_max_it 13
+	./transportk -problem problems/plex_box_30_inf_medium_dg1.json -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 12
 	@echo "Test 2D unstructured quad box at DG1, matrix-free removal against the infinite-medium solution"
-	./transportk -problem problems/plex_box_30_inf_medium_dg1.json -matfree_removal -check_inf_medium -ksp_rtol 1e-12 -sub_1_pc_air_strong_threshold 0.25 -ksp_max_it 42
+	./transportk -problem problems/plex_box_30_inf_medium_dg1.json -matfree_removal -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 42
 ifeq ($(PETSC_HAVE_TRIANGLE),1)
 	@echo "Test 2D unstructured triangles at DG1 against the infinite-medium solution"
-	./transportk -problem problems/plex_tri_30_inf_medium_dg1.json -check_inf_medium -ksp_rtol 1e-12 -sub_1_pc_air_strong_threshold 0.25 -ksp_max_it 13
+	./transportk -problem problems/plex_tri_30_inf_medium_dg1.json -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 13
 endif
 ifeq ($(PETSC_HAVE_TETMESHER),1)
 	@echo "Test 3D unstructured tetrahedra at DG1 against the infinite-medium solution"
-	./transportk -problem problems/plex_tet_6_inf_medium_dg1.json -check_inf_medium -ksp_rtol 1e-12 -sub_1_pc_air_strong_threshold 0.25 -ksp_max_it 12
+	./transportk -problem problems/plex_tet_6_inf_medium_dg1.json -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 12
 endif
 	@echo "Test 2D unstructured reference-shifted pmat at DG1, one hierarchy per group"
-	./transportk -problem problems/plex_decades4_dg1.json -matfree_removal -precon_ref_shift -precon_ref_k 4 -sub_1_pc_air_strong_threshold 0.25 -ksp_max_it 36
+	./transportk -problem problems/plex_decades4_dg1.json -matfree_removal -precon_ref_shift -precon_ref_k 4 -ksp_max_it 36
 	@echo "Test 2D unstructured reference-shifted pmat at DG1, the default k"
-	./transportk -problem problems/plex_decades4_dg1.json -matfree_removal -precon_ref_shift -sub_1_pc_air_strong_threshold 0.25 -ksp_max_it 66
+	./transportk -problem problems/plex_decades4_dg1.json -matfree_removal -precon_ref_shift -ksp_max_it 66
 
 # ~~~~~~~~~~~
 # ~~~~~~~~~~~
@@ -777,9 +777,9 @@ run_tests_short_parallel:
 	@echo "Test 2D unstructured quad box, pure scattering in parallel"
 	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_box_50_st2.json -ksp_max_it 7
 	@echo "Test 2D unstructured quad box, streaming-only pmat in parallel"
-	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_box_50_st2.json -precon_stream -ksp_pc_side right -ksp_max_it 8
+	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_box_50_st2.json -precon_stream -ksp_pc_side right -ksp_max_it 7
 	@echo "Test 2D unstructured quad box, matrix-free removal in parallel (the twin of the line above)"
-	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_box_50_st2.json -matfree_removal -ksp_pc_side right -ksp_max_it 8
+	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_box_50_st2.json -matfree_removal -ksp_pc_side right -ksp_max_it 7
 	@echo "Test 2D unstructured quad box, reflective left + bottom faces in parallel"
 	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_box_50_reflect_lb.json -ksp_max_it 6
 ifeq ($(PETSC_HAVE_TRIANGLE),1)
@@ -809,31 +809,31 @@ endif
 # DG1 in parallel: the upwind block of a face across the partition reads the
 # overlap ghost's basis, which the backend builds on every cell of the local mesh
 	@echo "Test 2D unstructured quad box at DG1 in parallel"
-	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_box_50_st2_dg1.json -sub_1_pc_air_strong_threshold 0.25 -ksp_max_it 7
+	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_box_50_st2_dg1.json -ksp_max_it 7
 	@echo "Test 2D unstructured quad box at DG1, matrix-free removal in parallel"
-	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_box_50_st2_dg1.json -matfree_removal -ksp_pc_side right -sub_1_pc_air_strong_threshold 0.25 -ksp_max_it 10
+	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_box_50_st2_dg1.json -matfree_removal -ksp_pc_side right -ksp_max_it 8
 	@echo "Test 2D unstructured quad box at DG1, reflective left + bottom faces in parallel"
-	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_box_50_reflect_lb_dg1.json -sub_1_pc_air_strong_threshold 0.25 -ksp_max_it 6
+	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_box_50_reflect_lb_dg1.json -ksp_max_it 6
 ifeq ($(PETSC_HAVE_TRIANGLE),1)
 	@echo "Test 2D unstructured triangles at DG1 in parallel"
-	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_tri_30_st2_dg1.json -sub_1_pc_air_strong_threshold 0.25 -ksp_max_it 5
+	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_tri_30_st2_dg1.json -ksp_max_it 5
 endif
 	@echo "Test 3D unstructured hex box at DG1 in parallel"
-	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_cube_10_st2_dg1.json -sub_1_pc_air_strong_threshold 0.25 -ksp_max_it 7
+	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_cube_10_st2_dg1.json -ksp_max_it 7
 ifeq ($(PETSC_HAVE_TETMESHER),1)
 	@echo "Test 3D unstructured tetrahedra at DG1 in parallel"
-	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_tet_6_st2_dg1.json -sub_1_pc_air_strong_threshold 0.25 -ksp_max_it 5
+	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_tet_6_st2_dg1.json -ksp_max_it 5
 endif
 	@echo "Test 2D unstructured Gmsh file at DG1 in parallel"
-	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_square_msh_dg1.json -sub_1_pc_air_strong_threshold 0.25 -ksp_max_it 5
+	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_square_msh_dg1.json -ksp_max_it 5
 	@echo "Test 2D unstructured quad box at DG1 against the infinite-medium solution in parallel"
-	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_box_30_inf_medium_dg1.json -check_inf_medium -ksp_rtol 1e-12 -sub_1_pc_air_strong_threshold 0.25 -ksp_max_it 13
+	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_box_30_inf_medium_dg1.json -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 12
 ifeq ($(PETSC_HAVE_TETMESHER),1)
 	@echo "Test 3D unstructured tetrahedra at DG1 against the infinite-medium solution in parallel"
-	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_tet_6_inf_medium_dg1.json -check_inf_medium -ksp_rtol 1e-12 -sub_1_pc_air_strong_threshold 0.25 -ksp_max_it 12
+	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_tet_6_inf_medium_dg1.json -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 12
 endif
 	@echo "Test 2D unstructured reference-shifted pmat at DG1, one hierarchy per group, in parallel"
-	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_decades4_dg1.json -matfree_removal -precon_ref_shift -precon_ref_k 4 -sub_1_pc_air_strong_threshold 0.25 -ksp_max_it 36
+	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_decades4_dg1.json -matfree_removal -precon_ref_shift -precon_ref_k 4 -ksp_max_it 36
 
 # ~~~~~~~~~~~
 # ~~~~~~~~~~~

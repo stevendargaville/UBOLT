@@ -494,7 +494,8 @@ them back onto the opt count, so these two are where CI would ask for +1:
 Ghost-flux replaced Dirichlet-cell as the default vacuum treatment; `"vacuum_treatment":
 "dirichlet_cell"` keeps the old path. `*_dirichlet_cell.json` twins of `slab_st2`,
 `box_50_st2`, `cube_10_st2` and `plex_box_50_st2` were added as recipes and reproduce the
-pre-switch counts exactly (6, 6, 5, 7; `box_50_st2_dirichlet_cell` also at np=2, 6, and
+pre-switch counts exactly (6, 6, 5, 7 - the plex one is 6 since element-block scaling
+became the plex default, see "Unstructured iteration counts"; `box_50_st2_dirichlet_cell` also at np=2, 6, and
 with `-precon_dsa`, 5), and the 1D baselines were re-captured — see "Single-group
 baselines". Every pin was re-set onto the local opt count at the same time. The recipes
 whose count moved (the max over groups for a multigroup recipe, as pinned; "and
@@ -834,6 +835,14 @@ rank 0 owns anything, or that either backend numbers its rows naturally.
    three times in the suite, on the debug arch too. The measure itself is O(h^2) even for
    the exact solution (average against centroid value), so this cannot see anything
    better than second order - it is there to catch a first-order DG1.
+10. **The element-block inverse** (`ElementBlockInverse`, what `-precon_block_scale`
+   scales PCAIR's pmat by), on every operator 7 (DG0, 1 x 1 blocks) and 8 (DG1,
+   (dim + 1)^2 blocks strided by n_angles, reflective couplings included) assemble: the
+   element blocks of `D^{-1} A` read back on the host against the identity; `D^{-1} A`
+   unchanged by a random left row scaling of A (a pointwise scaling is block-diagonal,
+   so it cancels - this also drives the `MAT_REUSE_MATRIX` path with changed values);
+   and `(D^{-1} A) x` against `apply(A x)`. Tolerance 1e-12, measured 1e-16 to 1e-15,
+   serial and -n 2.
 
 **Why the twin comparison is to rounding and not bitwise.** The two backends reach the
 same coefficient through different arithmetic — the FD stencil writes `|mu| / dx`, DG0
@@ -871,45 +880,60 @@ exactly**, as every pin now is; a moved count carries its Dirichlet-cell value i
 brackets. The structured twin is the same file without `"type": "unstructured"`, run
 with the same options.
 
+**Element-block scaling (2026-09-26).** Every plex row below now runs with PCAIR built on
+the element-block-scaled pmat (`-precon_block_scale`, the plex default at both orders;
+the structured twins keep it off). Re-measured on the opt arch and re-pinned on that
+count; a count that moved carries its unscaled value as "unscaled N". Measured first on
+the pre-reflective-face operators, where nothing got worse, and again after merging the
+reflective-face change (2026-09-26), where exactly one row went up by one:
+`plex_tri_30_inf_medium_ghost` serial, 11 unscaled to 12 (its count before that change).
+At DG0 the blocks are the diagonal, and since PCAIR's strength of connection is
+row-relative the hierarchy barely moves and no count moves by more than one; at DG1 it is what fixed the coarsening (see the DG1 table).
+
 | recipe | plex np=1 | plex np=2 | structured twin np=1 / np=2 | notes |
 |---|---|---|---|---|
 | `plex_box_50_st2` (50x50 quads, ratio 1) | 7 | 7 | `box_50_st2`: 7 / 7 (Dirichlet-cell 6 / 6) | the twins agree now; see "the twin difference" below |
-| `plex_box_50_st2`, `-precon_stream -ksp_pc_side right` | 7 (Dirichlet-cell 9) | 8 (Dirichlet-cell 9) | 7 / 7 (Dirichlet-cell 9 / 9) | Dirichlet-cell: hair-trigger, 10 on the 64-bit and OpenMP CI arches |
-| `plex_box_50_st2`, `-matfree_removal -ksp_pc_side right` | 7 (Dirichlet-cell 9) | 8 (Dirichlet-cell 9) | 7 / 7 (Dirichlet-cell 9 / 9) | same count as the line above |
+| `plex_box_50_st2`, `-precon_stream -ksp_pc_side right` | 7 (Dirichlet-cell 9) | 7 (unscaled 8; Dirichlet-cell 9) | 7 / 7 (Dirichlet-cell 9 / 9) | Dirichlet-cell: hair-trigger, 10 on the 64-bit and OpenMP CI arches |
+| `plex_box_50_st2`, `-matfree_removal -ksp_pc_side right` | 7 (Dirichlet-cell 9) | 7 (unscaled 8; Dirichlet-cell 9) | 7 / 7 (Dirichlet-cell 9 / 9) | same count as the line above |
 | `plex_box_50_reflect_lb` | 6 | 6 | `box_50_reflect_lb`: 6 / 6 | |
 | `plex_tri_30_st2` (1800 triangles, S4, ratio 0.5) | 5 | 5 | — | |
 | `plex_cube_10_st2` (1000 hexes, ratio 1) | 6 (Dirichlet-cell 5) | 6 (Dirichlet-cell 5) | `cube_10_st2`: 6 / 6 (Dirichlet-cell 5 / 5) | |
 | `plex_tet_6_st2` (1296 tets, ratio 0.5) | 5 | 5 | — | |
 | `plex_square_msh` (8 Gmsh triangles) | 4 (5 from the ghost-flux switch to the reflective-face change of 2026-09-26) | 4 | — | |
-| `plex_tri_30_inf_medium_ghost`, `-check_inf_medium -ksp_rtol 1e-12` (ghost-flux right + top, reflect left + bottom; re-measured 2026-09-26) | 11 | 12 | — | |
+| `plex_tri_30_inf_medium_ghost`, `-check_inf_medium -ksp_rtol 1e-12` (ghost-flux right + top, reflect left + bottom; re-measured 2026-09-26) | 12 (unscaled 11) | 12 | — | |
 | the same, `-matfree_removal` | 33 | — | — | |
 | `plex_tet_6_inf_medium_ghost`, `-check_inf_medium -ksp_rtol 1e-12` (ghost-flux right + back + top; measured 2026-09-25) | 11 | 11 | — | |
-| `plex_decades4`, `-matfree_removal -precon_ref_shift -precon_ref_k 4` | 4, 6, 15, 29 | 4, 6, 15, 29 | `box_decades4`: 4, 6, 15, 29 both | Dirichlet-cell 4, 6, 15, 30 on both sides |
+| `plex_decades4`, `-matfree_removal -precon_ref_shift -precon_ref_k 4` | 4, 6, 15, 28 (unscaled 29; 29 in the OpenMP CI image, pinned 29) | 4, 6, 15, 29 | `box_decades4`: 4, 6, 15, 29 both | Dirichlet-cell 4, 6, 15, 30 on both sides |
 | `plex_decades4`, `-matfree_removal -precon_ref_shift` (default k = 2) | 7, 8, 27, 51 | 7, 8, 27, 51 | `box_decades4`: 7, 8, 27, 51 both | Dirichlet-cell plex 7, 9, 24, 48 serial and 7, 8, 24, 48 otherwise |
 
-A multigroup row pins the max over its groups (29, 51), as everywhere else.
+A multigroup row pins the max over its groups (29 - the OpenMP CI image's, local opt
+is 28 - and 51), as everywhere else. The OpenMP image was swept on every plex recipe
+when that pin went red (2026-09-26): it was the only one above local opt. Not in the
+table: `plex_box_50_st2_dirichlet_cell` is 6 (unscaled 7, its structured twin 6).
 
 **DG1** (`*_dg1.json`: the DG0 file with `"order": 1` in `mesh`, and no
-`vacuum_treatment` - DG1 is ghost-flux only). Every DG1 line passes
-`-sub_1_pc_air_strong_threshold 0.25`: at PCAIR's default 0.5 the coarsening stalls on
-DG1 (AIR levels grow linearly with n; TODO.md), which made the 50x50 DG1 boxes the
-slowest lines in the suite and more than doubled the debug CI job. At 0.25 they are 3-6x
-cheaper and take 1-3 fewer iterations. Measured 2026-09-25 on the opt arch; the first CI
-run went red on two rows, so every DG1 line was then swept in the opt, 64-bit and
-OpenMP CI images (2026-09-26) and pinned on the max - the brackets are the CI-image
-counts where they differ from local opt. The DG0 column is the table above, for scale.
+`vacuum_treatment` - DG1 is ghost-flux only). Unscaled, PCAIR's coarsening stalls on
+DG1 at its default strong threshold 0.5 - the AIR levels grow linearly with n (28 / 58 /
+119 at n = 25 / 50 / 100 on the 50x50 box's physics) - which made the 50x50 DG1 boxes the
+slowest lines in the suite and more than doubled the debug CI job; every DG1 line used to
+pass `-sub_1_pc_air_strong_threshold 0.25` for that. With the element-block scaling (the
+plex default since 2026-09-26) PCAIR builds 14 / 18 / 21 levels at the DEFAULT threshold
+and the flag is gone. Measured on the opt arch and pinned on it; "0.25: N" is the count
+under the old stopgap, where it differs (the old pins were the max over the opt, 64-bit
+and OpenMP CI images, which put two rows one higher than local opt). The DG0 column is
+the table above, for scale.
 
 | recipe | DG1 np=1 | DG1 np=2 | DG0 np=1 |
 |---|---|---|---|
-| `plex_box_50_st2_dg1` (also `-ubolt_coo_two_call`, `-check_matfree`) | 7 (8 on 64-bit and OpenMP) | 7 | 7 |
-| the same, `-precon_stream -ksp_pc_side right` | 10 (9 in every CI image) | - | 7 |
-| the same, `-matfree_removal -ksp_pc_side right` | 10 (9 in every CI image) | 9 (10 in every CI image) | 7 |
+| `plex_box_50_st2_dg1` (also `-ubolt_coo_two_call`, `-check_matfree`) | 7 (0.25: 7, 8 on 64-bit and OpenMP) | 7 | 7 |
+| the same, `-precon_stream -ksp_pc_side right` | 9 (0.25: 10) | - | 7 |
+| the same, `-matfree_removal -ksp_pc_side right` | 9 (0.25: 10) | 8 (0.25: 9, 10 in every CI image) | 7 |
 | `plex_box_50_reflect_lb_dg1` | 6 | 6 | 6 |
 | `plex_tri_30_st2_dg1` | 5 | 5 | 5 |
 | `plex_cube_10_st2_dg1` | 7 | 7 | 6 |
 | `plex_tet_6_st2_dg1` | 5 | 5 | 5 |
 | `plex_square_msh_dg1` | 5 | 5 | 5 |
-| `plex_box_30_inf_medium_dg1`, `-check_inf_medium -ksp_rtol 1e-12` (quads, so it runs in CI) | 13 | 13 | - |
+| `plex_box_30_inf_medium_dg1`, `-check_inf_medium -ksp_rtol 1e-12` (quads, so it runs in CI) | 12 (0.25: 13) | 12 (0.25: 13) | - |
 | the same, `-matfree_removal` | 42 | - | - |
 | `plex_tri_30_inf_medium_dg1`, `-check_inf_medium -ksp_rtol 1e-12` | 13 | - | 12 |
 | `plex_tet_6_inf_medium_dg1`, `-check_inf_medium -ksp_rtol 1e-12` | 12 | 12 | 11 |
@@ -924,7 +948,10 @@ IS the structured one to ~1e-15 (verify_plexk, above), but its rows are in a dif
 order — plex point order under the simple partitioner, not DMDA order — and PCAIR is not
 permutation-invariant: its CF splitting and its approximate inverses depend on the order
 it walks the rows. So a twin can land an iteration away. Under ghost-flux the only twin
-rows that differ are the streaming-only pmat pair at np=2 (plex 8, structured 7); the
+rows that differed were the streaming-only pmat pair at np=2 (plex 8, structured 7 -
+now 7 and 7, with the plex under element-block scaling, which also puts the plex through
+a different preconditioner than its twin, so the twin counts are no longer a like-for-
+like comparison); the
 Dirichlet-cell measurements below had two others, both on the edge of rtol on BOTH sides
 (the rtol margins are Dirichlet-cell-era numbers and were not re-measured):
 - `plex_box_50_st2`: the structured solve clears rtol at iteration 6 with 1.4% to spare
