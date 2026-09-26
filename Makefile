@@ -10,7 +10,9 @@
 # Requires a built PFLARE - override with PFLARE_DIR=/path/to/PFLARE
 # ~~~~~~~~~~~~~~~~~
 
-# Check PETSc version is at least 3.25.0
+# Check PETSc version is at least 3.25.0. That is necessary, not sufficient:
+# verify_plexk uses the MatState struct form of MatGetState, on PETSc main
+# since 3 Sep 2026 but in no 3.25.x release, which no version check can see
 PETSC_VERSION_MIN := $(shell ${PETSC_DIR}/lib/petsc/bin/petscversion ge 3.25)
 ifeq ($(PETSC_VERSION_MIN),0)
 $(error PETSc version is too old. UBOLT requires at least version 3.25.0)

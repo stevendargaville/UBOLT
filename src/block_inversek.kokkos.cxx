@@ -1,5 +1,8 @@
 #include "ubolt/block_inverse.hpp"
 #include <petscmat_kokkos.hpp>
+// For PetscObjectStateIncrease only (see scale()); a src/ TU, so the private
+// header never reaches include/ubolt/
+#include <petsc/private/petscimpl.h>
 #include <type_traits>
 
 // The kernels below capture plain values and shallow view copies, never `this`
@@ -341,10 +344,12 @@ PetscErrorCode ElementBlockInverse::scale(Mat A, MatReuse reuse, Mat *scaled) co
 
    // The restores above mark the seq parts modified (and bump THEIR state),
    // but a PC built on an MPI matrix compares the wrapper's state, which
-   // nothing has touched. A final assembly is the public way to bump it: no
-   // values are stashed and the pattern is unchanged, so it rebuilds nothing
-   PetscCall(MatAssemblyBegin(*scaled, MAT_FINAL_ASSEMBLY));
-   PetscCall(MatAssemblyEnd(*scaled, MAT_FINAL_ASSEMBLY));
+   // nothing has touched - without this a reused hierarchy would silently go
+   // stale. Bumped directly (PETSc has no public call for it) rather than
+   // through a no-op final assembly, which would run the host-side row checks
+   // and lean on PETSc internals to rebuild nothing; the pattern is unchanged,
+   // so the nonzerostate stays put. verify_plexk pins both
+   PetscCall(PetscObjectStateIncrease((PetscObject)*scaled));
 
    PetscFunctionReturn(PETSC_SUCCESS);
 }
