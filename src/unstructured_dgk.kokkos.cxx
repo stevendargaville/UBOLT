@@ -739,12 +739,12 @@ PetscErrorCode UnstructuredDG::create_common(PhaseSpace &ps, PetscInt quad_dim, 
    // rhs, |Omega . nA_f| / V_c times the face's per-angle inflow for every
    // vacuum face it comes in through (windowed per face, summed over faces).
    // That is exactly the upwind face flux with the inflow as the ghost value
-   // outside, which is the natural DG0 vacuum condition. A row that comes in
-   // through any REFLECTIVE face stays the reflective row (reflect wins, as in
-   // the structured backends), mirrored over the reflective axes AND the axes
-   // of its axis-aligned incoming vacuum faces - the structured rule, so a box
-   // matches its FD twin; an incoming vacuum face that is not axis-aligned has
-   // no mirror, and the partner then comes in through it as a ghost row
+   // outside, which is the natural DG0 vacuum condition. A REFLECTIVE inflow
+   // face is a face flux the same way, its ghost value the mirrored angle in
+   // this same cell, so its slot points there - DG1's rule, face by face - and
+   // a row coming in through both kinds takes both, with no precedence rule
+   // (the old "reflect wins" corner never saw the vacuum inflow). Under
+   // ghost-flux there are no BC rows at all
    const PetscBool ghost = bcs.ghost_flux_vacuum();
    oor_.clear();
    ooc_.clear();
@@ -854,8 +854,8 @@ PetscErrorCode UnstructuredDG::create_common(PhaseSpace &ps, PetscInt quad_dim, 
             // Which boundary faces this direction comes IN through: the physics
             // decides whether the row is a boundary row at all (the sign of s),
             // the label only which family each face belongs to
-            PetscBool any_incoming = PETSC_FALSE, any_vacuum = PETSC_FALSE, any_reflect = PETSC_FALSE;
-            PetscInt win = -1, first_reflect = -1, reflect_axes = 0, vacuum_axes = 0;
+            PetscBool any_incoming = PETSC_FALSE, any_vacuum = PETSC_FALSE;
+            PetscInt win = -1, first_reflect = -1, reflect_axes = 0;
             for (PetscInt lf = 0; lf < n_faces; lf++) {
                const PetscInt kf = k0 + lf;
                if (face_neighbour_row_h_[kf] >= 0) continue;
@@ -866,13 +866,7 @@ PetscErrorCode UnstructuredDG::create_common(PhaseSpace &ps, PetscInt quad_dim, 
                   // The winning face: lowest dominant axis, then lowest point
                   if (win < 0 || face_axis[kf] < face_axis[win] || \
                       (face_axis[kf] == face_axis[win] && face_point[kf] < face_point[win])) win = kf;
-                  // Only an axis-aligned face has a mirror (the ghost-flux
-                  // reflect-wins rule mirrors over it)
-                  const PetscScalar *nA = &face_nA_h_[3 * kf];
-                  const PetscReal area = PetscSqrtReal(PetscRealPart(nA[0] * nA[0] + nA[1] * nA[1] + nA[2] * nA[2]));
-                  if (PetscAbsScalar(nA[face_axis[kf]]) >= (1.0 - 1e-10) * area) vacuum_axes |= (1 << face_axis[kf]);
                } else {
-                  any_reflect = PETSC_TRUE;
                   if (first_reflect < 0) first_reflect = lf;
                   reflect_axes |= (1 << face_axis[kf]);
                }
@@ -880,19 +874,26 @@ PetscErrorCode UnstructuredDG::create_common(PhaseSpace &ps, PetscInt quad_dim, 
 
             row_slot_offset[r] = (PetscInt)oor_.size();
 
-            if (!any_incoming || (ghost && !any_reflect)) {
+            if (!any_incoming || ghost) {
 
                // Interior row: the upwind neighbour across every inflow face. A
-               // ghost-flux row is the same row, its boundary inflow faces
-               // nulled by the neighbour test, their flux moved to the rhs
+               // ghost-flux row is the same row, its vacuum inflow faces
+               // nulled, their flux moved to the rhs, and its reflective inflow
+               // faces pointed at the mirrored angle in this cell (owned, so
+               // always rank-local)
                for (PetscInt lf = 0; lf < n_faces; lf++) {
                   const PetscInt kf = k0 + lf;
                   const PetscScalar s = FaceFlux(omega.data(), a, face_nA_h_.data(), kf);
-                  const PetscBool live = (PetscBool)(face_neighbour_row_h_[kf] >= 0 && PetscRealPart(s) < 0.0);
+                  const PetscBool inflow = (PetscBool)(PetscRealPart(s) < 0.0);
+                  const PetscBool interior = (PetscBool)(face_neighbour_row_h_[kf] >= 0);
+                  const PetscBool reflective = (PetscBool)(!interior && \
+                     bcs.type(face_label_h_[kf]) == BCType::REFLECT);
+                  const PetscBool live = (PetscBool)(inflow && (interior || reflective));
                   oor_.push_back(live ? row : -1);
-                  ooc_.push_back(live ? face_neighbour_row_h_[kf] + a : -1);
+                  ooc_.push_back(!live ? -1 : (interior ? face_neighbour_row_h_[kf] + a : \
+                     rstart + k * n_angles + reflect[face_axis[kf]][a]));
 
-                  if (face_neighbour_row_h_[kf] >= 0 || !(PetscRealPart(s) < 0.0)) continue;
+                  if (interior || reflective || !inflow) continue;
                   const BCFace bc = bcs.face(face_label_h_[kf]);
                   PetscReal t[2] = {0.0, 0.0};
                   PetscInt n_t = 0;
@@ -902,7 +903,7 @@ PetscErrorCode UnstructuredDG::create_common(PhaseSpace &ps, PetscInt quad_dim, 
                   if (InWindow(bc, t, n_t)) ghost_inflow[r] += -s / volume_h_[k] * ((PetscScalar)bc.inflow / sum_weights);
                }
 
-            } else if (any_vacuum && !ghost) {
+            } else if (any_vacuum) {
 
                // Dirichlet row: identity, and the rhs takes the winning face's
                // inflow if the face centroid is inside its window
@@ -921,14 +922,13 @@ PetscErrorCode UnstructuredDG::create_common(PhaseSpace &ps, PetscInt quad_dim, 
 
             } else {
 
-               // Reflective row: psi(a) - psi(partner) = 0 in the same cell, the
-               // partner mirrored in every axis the direction came in through
-               // (under ghost-flux, the axis-aligned vacuum ones too - see above)
+               // Reflective row (Dirichlet-cell only): psi(a) - psi(partner) = 0
+               // in the same cell, the partner mirrored in every axis the
+               // direction came in through
                is_bc_row[r] = 1;
                PetscInt partner = a;
-               const PetscInt mirror_axes = reflect_axes | (ghost ? vacuum_axes : 0);
                for (PetscInt d = 0; d < dim; d++) {
-                  if (mirror_axes & (1 << d)) partner = reflect[d][partner];
+                  if (reflect_axes & (1 << d)) partner = reflect[d][partner];
                }
 
                // The partner is outgoing through every face this direction came
@@ -937,8 +937,7 @@ PetscErrorCode UnstructuredDG::create_common(PhaseSpace &ps, PetscInt quad_dim, 
                // meets a slanted or curved vacuum boundary, the usual
                // symmetry-reduced geometry - makes it a Dirichlet row, and
                // psi(a) = psi(partner) = the inflow is a perfectly good pair of
-               // equations (under ghost-flux it is an ordinary ghost row, better
-               // still). Coming in through another REFLECTIVE face is not: the
+               // equations. Coming in through another REFLECTIVE face is not: the
                // two rows would each define the other (a single-cell-wide
                // direction between two reflective faces), and there is no
                // sensible matrix for that

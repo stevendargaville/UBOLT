@@ -445,10 +445,11 @@ see "Switching the default" at the end of this section for what that moved.
   stencil row, so its rhs is the streamed source plus `|cosine| / h` times `psi` at the
   GHOST node one cell further upwind, per outside axis. That cell against the Dirichlet
   row's boundary node is exactly the O(h) the two treatments differ by.
-- **Reference matrix** (check 2, ghost mode). A ghost row is the interior row with the
-  outside-pointing upwind entries dropped. The mixed configs pin the ghost-mode corner
-  rule, which is the opposite of the default: reflect wins a corner or edge where a
-  direction enters through both a vacuum and a reflective face.
+- **Reference matrix** (check 2, ghost mode). A ghost row is the interior row with each
+  outside-pointing upwind entry dropped (vacuum face) or moved onto the mirrored angle
+  in the same cell (reflective face). The mixed configs pin the ghost-mode corner rule:
+  there is none - a direction entering through both a vacuum and a reflective face
+  takes each face's own ghost value (see "Ghost-flux reflective faces" below).
 - **Constant inflow** (check 3, both modes). Inflow `psi_in` on every face and a source
   `sigma_t psi_in` make `psi = psi_in` exact, and the rhs is built by `UboltFillInflow` +
   `UboltFillSource` exactly as `transportk` builds it. That pins the per-face
@@ -458,10 +459,14 @@ see "Switching the default" at the end of this section for what that moved.
 - **Opposite-ordinate identity** (check 4, ghost mode only, parallel too).
   `||A^T - P A P||_F / ||A||_F` on streaming + removal with heterogeneous sigma_t, where P
   swaps `(cell, Omega)` with `(cell, -Omega)` (found by the driver's own cosine search).
-  It must be below 1e-14 and is 0.0. This is why the mode exists: it lets one hierarchy
-  built on half the ordinates precondition the other half through its transpose. Under
-  the default it fails on the boundary rows (residue ~0.1 relative in 2D), so it is not
-  run there.
+  It must be below 1e-14 and is 0.0, on all-vacuum, mixed and all-reflect boxes (the 3D
+  mixed config has the triple-reflect corner). There is no 1D verify driver; the 1D
+  identity was checked by hand on 2026-09-26 by dumping the assembled operator
+  (`transportk -ksp_view_pmat`) of a 6-cell S6 slab with the left face reflective and
+  the right vacuum, and with both reflective: 0.0 in both. This is
+  why the mode exists: it lets one hierarchy built on half the ordinates precondition
+  the other half through its transpose. Under Dirichlet-cell it fails on the boundary
+  rows (residue ~0.1 relative in 2D), so it is not run there.
 - **Solves** against the infinite-medium oracle. `*_inf_medium_ghost.json` replace some
   or all reflective faces with ghost-flux vacuum faces whose inflow IS the
   infinite-medium flux, so the constant stays exact. The 2D/3D files keep reflective
@@ -480,10 +485,10 @@ them back onto the opt count, so these two are where CI would ask for +1:
 |---|---|---|
 | 1D slab, both faces ghost vacuum | 8 | 8 |
 | 1D slab, both faces ghost vacuum, `-matfree_removal` | 17 (pinned 18, 64-bit CI) | — |
-| 2D 50x50, left+bottom reflect, right+top ghost vacuum | 12 | 11 (pinned 12, OpenMP CI) |
-| 2D same, `-matfree_removal` | 25 | — |
+| 2D 50x50, left+bottom reflect, right+top ghost vacuum | 11 (12 before 2026-09-26) | 11 (pinned 12, OpenMP CI) |
+| 2D same, `-matfree_removal` | 26 (25 before 2026-09-26) | — |
 | 3D 10^3, left+front+bottom reflect, others ghost vacuum | 11 | 11 |
-| 3D same, `-matfree_removal` | 21 | — |
+| 3D same, `-matfree_removal` | 21 (pinned 22, 64-bit CI since 2026-09-26) | — |
 
 ### Switching the default (2026-09-25)
 Ghost-flux replaced Dirichlet-cell as the default vacuum treatment; `"vacuum_treatment":
@@ -536,7 +541,8 @@ whose count moved (the max over groups for a multigroup recipe, as pinned; "and
 | plex `plex_decades4`, ref-shift default k, np=1 and 2 | 48 | 51 |
 
 Every other recipe measures its Dirichlet-cell count, including every all-reflective one
-(nothing to change there) and every `*_inf_medium_ghost` one (ghost-flux already).
+(nothing to change there) and every `*_inf_medium_ghost` one (ghost-flux already). The
+reflective ones then moved on 2026-09-26 - next subsection.
 
 - The ratio-1 st=2 workhorses take one more in 2D and 3D (`box_50_st2`, `box_80x40_st2`,
   `cube_10_st2` and their identity/two-call copies, `plex_cube_10_st2`); 1D `slab_st2`,
@@ -557,6 +563,58 @@ Every other recipe measures its Dirichlet-cell count, including every all-reflec
   now pinned.
 - DSA needed no change to its Marshak face for the switch: scaling that coefficient over
   0.25-1.0 moved no DSA count by more than 1.
+
+### Ghost-flux reflective faces (2026-09-26)
+The first ghost-flux cut left reflective faces as `psi(a) - psi(mirror a) = 0` rows and
+let them WIN a mixed corner, mirrored over every axis the direction came in through - so
+the corner cell never saw the vacuum face's inflow. Regenerating the Phase 6a report
+found it: an O(1) error at the two mixed corners of the quarter box (2.07 / 2.15 / 2.19
+at n = 25 / 50 / 100 on a flux of ~10) and L-infinity stuck at 3.14 for every n in the
+DG0 convergence study. Three fixes were compared in a Python model of the 2D FD operator
+(S2 and S4, n = 8 .. 128): (A) mirror a mixed-corner row over its reflective axes only,
+(B) give a mixed-corner row its transport equation with the reflective face coupled to
+the mirrored angle, (C) do that on EVERY reflective row. All three restore first-order
+L-infinity in the convergence study; only (C) makes the quarter box equal the full box's
+quadrant to rounding (A, B and Dirichlet-cell leave the O(h) boundary error 6a had
+already recorded for reflective rows) and only (C) keeps `A^T = P A P` on the reflective
+rows, because it leaves no BC rows at all. (C) is what landed, in every backend: a
+reflective inflow face's upwind slot points at the mirrored angle in the same cell and
+the streaming term fills it like any other upwind neighbour, exactly DG1's rule.
+`"dirichlet_cell"` is untouched, and no baseline has a reflective face.
+
+Checks: `verify_2dk`/`verify_3dk` check 2 builds the ghost-mode reflective rows this
+way, and check 4 now runs on the mixed and all-reflect configs (plus the 1D identity by
+hand, see check 4 above); `verify_plexk`
+check 7 adds the low faces reflective to the `(VA)^T = P(VA)P` and constant-inflow checks
+on triangles, tets and the irregular file, its slanted mesh has no BC rows under ghost
+mode, and the single-cell-wide reflect box that Dirichlet-cell rejects must be accepted
+under ghost-flux. The plex boxes still match their FD twins to rounding.
+
+Every recipe with a reflective face was re-measured with its pin lifted, on this change
+and on main, both on the local opt arch; these moved, and are pinned exactly (the two
+recipes still carrying a CI +1 over the local count - `box_50_inf_medium_ghost` at np=2,
+11 pinned 12, and `box_50_inf_medium -matfree_removal`, 24 pinned 25 - did not move and
+keep their pins):
+
+| recipe | before | after |
+|---|---|---|
+| 1D `slab_inf_medium`, `-precon_dsa`, np=1 | 10 | 9 |
+| 2D `box_50_inf_medium_ghost`, np=1 | 12 | 11 |
+| 2D `box_50_inf_medium_ghost`, `-matfree_removal`, np=1 | 25 | 26 |
+| 2D `box_50_inf_medium`, `-precon_dsa`, np=1 and 2 | 10 | 9 |
+| 3D `cube_10_inf_medium`, `-precon_dsa`, np=1 and 2 | 9 | 8 |
+| 3D `cube_diffusive_yreflect`, `-precon_dsa`, np=1 | 12 | 9 |
+| plex `plex_square_msh`, np=1 | 5 | 4 |
+| plex `plex_tri_30_inf_medium_ghost`, np=1 | 12 | 11 |
+
+Every other reflective recipe (the `*_reflect_lb` boxes, the 3D three-face corner, the
+S8 box, the multigroup reflective slab, the other infinite-medium runs) kept its count,
+and the DG1 recipes are untouched by construction. `-check_inf_medium` passes on every
+infinite-medium recipe. CI then went red on the 64-bit image only, and a lifted-pin
+sweep of every reflective recipe in that image found exactly one deviation:
+`cube_10_inf_medium_ghost -matfree_removal` takes 22 there against 21 locally (unchanged
+by this change locally), so it is pinned 22. Every other reflective recipe the image runs
+fits its pin (the generated simplex boxes do not run in CI); the OpenMP image passed.
 
 ## Painted regions (MaterialSpec)
 A problem file's `regions.paint` list paints shapes — boxes in 2D, intervals in 1D —
@@ -732,24 +790,24 @@ rank 0 owns anything, or that either backend numbers its rows naturally.
 7. **Ghost-flux vacuum treatment.** Every FD twin case of 1 and 2 bar the "Cell Sets" one
    again under `"ghost_flux"`, the same (a)-(f): the rhs comparison now carries the ghost
    inflow (the windowed 2D case has both corner faces feeding the origin cell, each on
-   its own window), and the mixed configs pin the reflect-wins corners and the mirror over
-   the axis-aligned vacuum face. Then, with no twin: (a) on streaming + removal with
+   its own window), and the mixed configs pin the reflective faces' mirror couplings and
+   the corners where they meet a vacuum face's inflow. Then, with no twin: (a) on streaming + removal with
    sigma_t varying cell to cell, `||(VA)^T - P(VA)P||_F / ||VA||_F <= 1e-13` (measured
    ~1e-16), P the opposite-ordinate swap found by the driver's own cosine search and V
    the cell volumes per row. This is the property a half-quadrature preconditioner
    applied transposed rests on. It is not bitwise: the diagonal's outflow sum equals the
    opposite direction's inflow sum only because the cell's `nA_f` close, which is to
    rounding. It runs on 6^2 triangles S2, on 3^3 tets S4, and on
-   `tests/meshes/square_irregular_tri.msh` S6. That file is a 4x4 triangulation with the
+   `tests/meshes/square_irregular_tri.msh` S6, each all-vacuum and again with the low
+   face of every axis reflective (6^2 triangles at S4 there). That file is a 4x4 triangulation with the
    interior nodes perturbed, so the areas vary by +-17%. There the UNWEIGHTED
    `||A^T - PAP|| / ||A||` is required to be above 1e-3 (it is ~0.07), because the
    generated simplex boxes have equal volumes and would not tell the two identities
    apart. (b) inflow `psi_in` on every face and source `sigma_t psi_in` against
    `psi = psi_in` through `UboltFillInflow` + `UboltFillSource`, residual below
    `1e-12 ||b||` (measured ~1e-15), which pins the `|Omega . nA_f| / V_c` weights on
-   faces of every orientation. (c) `meshes/tri_slanted.msh` in ghost mode: no
-   Dirichlet rows left, reflective rows still present, the solve converged and in
-   bounds.
+   faces of every orientation, both runs. (c) `meshes/tri_slanted.msh` in ghost mode:
+   no BC rows at all, the solve converged and in bounds.
 8. **DG1** (order 1), which has no FD twin, on 5x6 quads S4, `square_irregular_tri.msh`
    S6, 4^3 hexes S2 and — where PETSc can mesh them — 5x6 triangles S4 and 4^3 tets S4,
    each with the faces around one corner reflective (left + bottom; + front in 3D) and
@@ -822,8 +880,8 @@ with the same options.
 | `plex_tri_30_st2` (1800 triangles, S4, ratio 0.5) | 5 | 5 | — | |
 | `plex_cube_10_st2` (1000 hexes, ratio 1) | 6 (Dirichlet-cell 5) | 6 (Dirichlet-cell 5) | `cube_10_st2`: 6 / 6 (Dirichlet-cell 5 / 5) | |
 | `plex_tet_6_st2` (1296 tets, ratio 0.5) | 5 | 5 | — | |
-| `plex_square_msh` (8 Gmsh triangles) | 5 (Dirichlet-cell 4) | 4 | — | |
-| `plex_tri_30_inf_medium_ghost`, `-check_inf_medium -ksp_rtol 1e-12` (ghost-flux right + top, reflect left + bottom; measured 2026-09-25) | 12 | 12 | — | |
+| `plex_square_msh` (8 Gmsh triangles) | 4 (5 from the ghost-flux switch to the reflective-face change of 2026-09-26) | 4 | — | |
+| `plex_tri_30_inf_medium_ghost`, `-check_inf_medium -ksp_rtol 1e-12` (ghost-flux right + top, reflect left + bottom; re-measured 2026-09-26) | 11 | 12 | — | |
 | the same, `-matfree_removal` | 33 | — | — | |
 | `plex_tet_6_inf_medium_ghost`, `-check_inf_medium -ksp_rtol 1e-12` (ghost-flux right + back + top; measured 2026-09-25) | 11 | 11 | — | |
 | `plex_decades4`, `-matfree_removal -precon_ref_shift -precon_ref_k 4` | 4, 6, 15, 29 | 4, 6, 15, 29 | `box_decades4`: 4, 6, 15, 29 both | Dirichlet-cell 4, 6, 15, 30 on both sides |
@@ -1008,18 +1066,18 @@ rows) were measured by hand.
 |---|---|---|
 | 1D diffusive slab, no DSA (the reference) | 23 (Dirichlet-cell 20) | 23 (Dirichlet-cell 20) |
 | 1D diffusive slab, `-precon_dsa` | 11 | 11 (Dirichlet-cell 10) |
-| 1D all-reflect infinite medium, `-precon_dsa` (rtol 1e-12) | 10 | 10 |
+| 1D all-reflect infinite medium, `-precon_dsa` (rtol 1e-12) | 9 | 10 |
 | 1D slab st=2, `-precon_dsa` | 5 | 5 |
 | 2D diffusive box, no DSA (the reference) | 29 | 29 |
 | 2D diffusive box, `-precon_dsa` | 11 | 11 |
 | 2D diffusive box, `-precon_dsa -pc_composite_type additive` | 14 (Dirichlet-cell 23) | 14 (Dirichlet-cell 23) |
 | 2D diffusive box, `-precon_dsa -dsa_ksp_type cg -dsa_ksp_max_it 5` | 11 | 11 |
-| 2D all-reflect infinite medium, `-precon_dsa` (rtol 1e-12) | 10 | 10 |
+| 2D all-reflect infinite medium, `-precon_dsa` (rtol 1e-12) | 9 | 9 |
 | 2D box st=2, `-precon_dsa` | 5 | 5 |
 | 3D diffusive cube, no DSA (the reference) | 18 (Dirichlet-cell 21) | 18 (Dirichlet-cell 21) |
 | 3D diffusive cube, `-precon_dsa` | 8 (Dirichlet-cell 10) | 8 (Dirichlet-cell 10) |
-| 3D diffusive cube, Y faces reflective, anisotropic box, `-precon_dsa` | 12 (Dirichlet-cell 10) | 12 (Dirichlet-cell 11) |
-| 3D all-reflect infinite medium, `-precon_dsa` (rtol 1e-12) | 9 | 9 |
+| 3D diffusive cube, Y faces reflective, anisotropic box, `-precon_dsa` | 9 (Dirichlet-cell 10) | 12 before 2026-09-26, not re-measured (Dirichlet-cell 11) |
+| 3D all-reflect infinite medium, `-precon_dsa` (rtol 1e-12) | 8 | 8 |
 | 3D cube st=2, `-precon_dsa` | 4 | 4 |
 
 Read each dimension's first two rows together: that pair IS the test, and
@@ -1050,8 +1108,9 @@ anisotropic, 20x10x5 over 2 x 1 x 0.5 with the Y faces reflective, because a
 cubic box hides the swap behind its symmetry: measured by swapping the two
 axes in `DSAPrecon::create` by hand, it cost 10 -> 13 iterations there under
 Dirichlet-cell (and 12 -> 15 on the Z-reflective mirror of the same file), so the
-pin at 11 then failed on it. The file takes 12 under ghost-flux and is pinned at 12;
-the swap has not been re-measured there, so whether it still fails the pin is open.
+pin at 11 then failed on it. The file took 12 under the first ghost-flux cut and takes
+9 since its reflective faces became face couplings (2026-09-26), pinned at 9; the swap
+has not been re-measured there, so whether it still fails the pin is open.
 
 The two 2D generality rows pin the CLI rather than a regime. The shell is added
 to the composite BEFORE `KSPSetFromOptions`, so the paper's additive

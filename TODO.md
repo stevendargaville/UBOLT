@@ -4,16 +4,19 @@ Full plan and architecture rationale: see the approved plan (design discussion J
 Each phase is a reviewable unit with its own verification. Do not start a phase before the
 previous one's verification has passed and been reviewed.
 
-## Current state (updated 2026-09-25)
-Last landed: **linear DG (DG1) on the plex backend** (the item under the ghost-flux
-postscript: `UnstructuredDG` at `order` 1, rows `(cell, basis, angle)`, second order on
-every cell shape), on top of Phase 6a (DG0 on DMPlex, PR #2) and the ghost-flux vacuum
-treatment as the default (PR #4). Next up: DSA on the plex backend (the biggest gap both
-orders share), then 6b CG-SUPG (Phase 6); the half-quadrature transposed PC stays
-blocked on PFLARE's PCAIR `PCApplyTranspose`. The DG1 pins await a CI-image sweep. Two
-findings from regenerating the Phase 6a report sit under the ghost-flux postscript: DG1
-needs element-block-inverse scaling (or a lower strong threshold) for PCAIR to coarsen,
-and DG0's ghost-flux reflect-wins rule leaves an O(1) error at reflect/vacuum corners.
+## Current state (updated 2026-09-26)
+Last landed: **ghost-flux reflective faces** (the DG0 mixed-corner fix under the
+ghost-flux postscript: under `"ghost_flux"` a reflective face is a face coupling to the
+mirrored angle in the same cell, in every backend, so there are no BC rows and a
+reflect/vacuum corner takes both faces' ghost values), on top of linear DG (DG1) on the
+plex backend (PR #7), Phase 6a (DG0 on DMPlex, PR #2) and the ghost-flux vacuum treatment
+as the default (PR #4). Next up: DSA on the plex backend (the biggest gap both orders
+share), then 6b CG-SUPG (Phase 6); the half-quadrature transposed PC stays blocked on
+PFLARE's PCAIR `PCApplyTranspose`. The reflective-face re-pins were swept in the 64-bit
+CI image (one +1, `cube_10_inf_medium_ghost -matfree_removal` pinned 22).
+One finding from regenerating the Phase 6a report stays open under the ghost-flux
+postscript: DG1 needs element-block-inverse scaling (or a lower strong threshold) for
+PCAIR to coarsen.
 
 ## Phase 0 — Scaffolding + baseline capture (no behavior change)
 - [x] Directory tree, top Makefile (library skeleton), tests/Makefile (PFLARE-style recipes)
@@ -401,6 +404,10 @@ and DG0's ghost-flux reflect-wins rule leaves an O(1) error at reflect/vacuum co
     as the Dirichlet-cell vacuum row, and the same ghost-flux treatment would remove
     both. Not a Phase 6a defect; recorded because "reflect = symmetry to solver
     tolerance" is the natural test to reach for and it is not true of this convention.
+    REMOVED (26 Sep 2026) under ghost-flux, whose reflective faces are now face couplings
+    to the mirrored angle: the quarter box equals the full box's quadrant to rounding
+    (Python model of the FD operator, S2 and S4; see the ghost-flux postscript). Only
+    `"dirichlet_cell"` still has it.
   - Found by the debug sweep and fixed (23 Sep 2026): the first cut rejected a reflective
     axis plane wherever it met a slanted vacuum face (the partner row is Dirichlet there,
     which is fine; only a REFLECTIVE partner is the unsupported single-cell-wide case),
@@ -427,7 +434,9 @@ and DG0's ghost-flux reflect-wins rule leaves an O(1) error at reflect/vacuum co
       ghost-flux commit): a direction coming in only through vacuum faces keeps its
       physical row, the rhs takes `|Omega . nA_f| / V_c` times each incoming vacuum
       face's inflow; reflect wins mixed corners, mirrored over the reflective axes and
-      any axis-aligned incoming vacuum face (so the box still matches its twin). The
+      any axis-aligned incoming vacuum face (so the box still matches its twin) -
+      replaced 26 Sep 2026 by reflective faces as face couplings, see the DG0
+      mixed-corner item under the ghost-flux postscript. The
       transpose groundwork: with V the cell volumes, `(V A)^T = P (V A) P` to rounding
       on any mesh (checked on triangles, tets and a perturbed-node mesh where the
       unweighted identity is off by 7%), so a half-quadrature PC built on `+Omega` serves
@@ -975,7 +984,9 @@ iteration at ~50% setup/memory. The transposed applies, the probe driver and the
 experiments stay on the campaign branch until PFLARE's PCAIR `PCApplyTranspose` merges.
 - [x] Opt-in `"vacuum_treatment": "ghost_flux"`: `BCSpec::VacuumTreatment`,
       `BoundaryInfo::ghost_inflow_d`, per-axis GHOST rows in the three structured
-      backends, reflect wins mixed corners, DSA refuses it. Default byte-identical.
+      backends, reflect wins mixed corners (replaced 26 Sep 2026 by reflective faces as
+      face couplings - see the DG0 mixed-corner item below), DSA refuses it. Default
+      byte-identical.
 - [x] Verified: `verify_2dk`/`verify_3dk` run closed form + reference matrix in both
       treatments, the library-built rhs against a constant solution, and `A^T = P A P`
       (0.0 relative, heterogeneous sigma_t, parallel too) under ghost-flux;
@@ -1038,7 +1049,8 @@ experiments stay on the campaign branch until PFLARE's PCAIR `PCApplyTranspose` 
       0.25` restores slow growth (25 / 30 / 35 levels, 13 / 14 / 14 iterations); the
       Phase 6 report's DG1 runs and every pinned DG1 recipe use it (at the default the
       DG1 recipes more than doubled the debug CI job). Levels and iterations only - the machine was shared, timings are noise.
-- [ ] DG0 ghost-flux mixed corners (found regenerating the Phase 6a report, 25 Sep 2026):
+- [x] DG0 ghost-flux mixed corners (found regenerating the Phase 6a report, 25 Sep 2026;
+      FIXED 26 Sep 2026, see the end of this item):
       where a reflective face meets a vacuum face, the ghost-flux "reflect wins" rule
       mirrors a direction coming in through both over both axes, so the corner cell never
       sees the vacuum face's inflow. On the quarter box (reflect left + bottom) against
@@ -1054,10 +1066,31 @@ experiments stay on the campaign branch until PFLARE's PCAIR `PCApplyTranspose` 
       and the L2 order falls from 1.00 to 0.91, on FD, quads and triangles alike.
       Under Dirichlet-cell the corner took the vacuum inflow (vacuum wins) and the error
       was O(h) everywhere. DG1 has no such rule (per-face couplings) and its quarter box
-      equals the full box to solver tolerance. Candidate fix for DG0: mirror only over the
-      reflective axes and add the incoming vacuum faces' inflow to the rhs - check the FD
-      twin identity and the 1D baselines before changing it.
+      equals the full box to solver tolerance.
+      FIX (26 Sep 2026): three candidates compared in a Python model of the 2D FD
+      operator (S2/S4, n = 8..128, pure-absorber convergence study + quarter box against
+      the full box + `A^T = P A P`): (A) mirror a mixed-corner row over its reflective
+      axes only, (B) give a mixed-corner row its transport equation with the reflective
+      face coupled to the mirrored angle, (C) do that on EVERY reflective row - DG1's
+      rule. All three restore first-order L-infinity (0.97 at n = 128, was stuck at
+      O(1)); only (C) makes the quarter box equal the full box to rounding (1e-14; A, B
+      and Dirichlet-cell keep the O(h) reflective-row error of the 6a note) and keeps
+      `A^T = P A P` on reflective rows. (C) landed in all four backends (1D, 2D, 3D FD
+      and plex DG0), under ghost-flux only: a reflective inflow slot points at the
+      mirrored angle in the same cell and the streaming term fills it; no BC rows are
+      left, and the single-cell-wide reflect case (rejected under Dirichlet-cell) is
+      simply accepted. Dirichlet-cell and every baseline are untouched (no baseline has
+      a reflective face). Verified: `verify_2dk`/`verify_3dk` reference matrices,
+      `A^T = P A P` exact on the mixed (and 2D all-reflect) configs, `verify_plexk`
+      `(VA)^T = P(VA)P` with reflective low faces on triangles/tets/the irregular file,
+      FD twins still to rounding. Ten pins moved against main, nine down (DSA
+      infinite-medium runs by 1, `cube_diffusive_yreflect -precon_dsa` 12 -> 9,
+      `plex_square_msh` 5 -> 4) and one up (`box_50_inf_medium_ghost -matfree_removal`
+      25 -> 26); table in docs/dev/testing.md, "Ghost-flux reflective faces".
 - [ ] The half-quadrature preconditioner and an `-adjoint` path — blocked on PFLARE's
-      PCAIR `PCApplyTranspose`; see the campaign branch. On the DG backend (either
+      PCAIR `PCApplyTranspose`; see the campaign branch. Since 26 Sep 2026 the identity
+      it rests on, `A^T = P A P` on streaming + removal under ghost-flux, holds for ANY
+      mix of vacuum and reflective faces in every backend (checked in verify_2dk/3dk/
+      plexk, and by hand in 1D) - reflective problems no longer need special handling. On the DG backend (either
       order) the transposed half needs the cell-volume similarity (`unstructured_dg.hpp`):
       `y = V^{-1} M^{-T} (V x)`, which reduces to the plain transpose on a uniform mesh.
