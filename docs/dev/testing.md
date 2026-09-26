@@ -488,7 +488,7 @@ them back onto the opt count, so these two are where CI would ask for +1:
 | 2D 50x50, left+bottom reflect, right+top ghost vacuum | 11 (12 before 2026-09-26) | 11 (pinned 12, OpenMP CI) |
 | 2D same, `-matfree_removal` | 26 (25 before 2026-09-26) | — |
 | 3D 10^3, left+front+bottom reflect, others ghost vacuum | 11 | 11 |
-| 3D same, `-matfree_removal` | 21 | — |
+| 3D same, `-matfree_removal` | 21 (pinned 22, 64-bit CI since 2026-09-26) | — |
 
 ### Switching the default (2026-09-25)
 Ghost-flux replaced Dirichlet-cell as the default vacuum treatment; `"vacuum_treatment":
@@ -610,7 +610,11 @@ keep their pins):
 Every other reflective recipe (the `*_reflect_lb` boxes, the 3D three-face corner, the
 S8 box, the multigroup reflective slab, the other infinite-medium runs) kept its count,
 and the DG1 recipes are untouched by construction. `-check_inf_medium` passes on every
-infinite-medium recipe. The CI arches have not been swept for these.
+infinite-medium recipe. CI then went red on the 64-bit image only, and a lifted-pin
+sweep of every reflective recipe in that image found exactly one deviation:
+`cube_10_inf_medium_ghost -matfree_removal` takes 22 there against 21 locally (unchanged
+by this change locally), so it is pinned 22. Every other reflective recipe the image runs
+fits its pin (the generated simplex boxes do not run in CI); the OpenMP image passed.
 
 ## Painted regions (MaterialSpec)
 A problem file's `regions.paint` list paints shapes — boxes in 2D, intervals in 1D —

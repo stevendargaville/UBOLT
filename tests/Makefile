@@ -447,7 +447,7 @@ run_tests_short_serial:
 	@echo "Test 3D cube, ghost-flux vacuum + reflective faces against the infinite-medium solution"
 	./transportk -problem problems/cube_10_inf_medium_ghost.json -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 11
 	@echo "Test 3D cube, ghost-flux vacuum + reflective faces, matrix-free removal against the infinite-medium solution"
-	./transportk -problem problems/cube_10_inf_medium_ghost.json -matfree_removal -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 21
+	./transportk -problem problems/cube_10_inf_medium_ghost.json -matfree_removal -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 22
 #
 # DSA in 3D. cube_diffusive.json is the third twin of slab_diffusive.json -
 # the same ten mean free paths per cell at a scattering ratio of 0.99 - so it

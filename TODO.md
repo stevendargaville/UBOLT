@@ -12,7 +12,8 @@ reflect/vacuum corner takes both faces' ghost values), on top of linear DG (DG1)
 plex backend (PR #7), Phase 6a (DG0 on DMPlex, PR #2) and the ghost-flux vacuum treatment
 as the default (PR #4). Next up: DSA on the plex backend (the biggest gap both orders
 share), then 6b CG-SUPG (Phase 6); the half-quadrature transposed PC stays blocked on
-PFLARE's PCAIR `PCApplyTranspose`. The reflective-face re-pins await a CI-image sweep.
+PFLARE's PCAIR `PCApplyTranspose`. The reflective-face re-pins were swept in the 64-bit
+CI image (one +1, `cube_10_inf_medium_ghost -matfree_removal` pinned 22).
 One finding from regenerating the Phase 6a report stays open under the ghost-flux
 postscript: DG1 needs element-block-inverse scaling (or a lower strong threshold) for
 PCAIR to coarsen.
