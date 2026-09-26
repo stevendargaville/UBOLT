@@ -1055,6 +1055,40 @@ experiments stay on the campaign branch until PFLARE's PCAIR `PCApplyTranspose` 
       Verified (`verify_plexk` 10): identity blocks in `D^{-1} A`, invariance under a left
       row scaling, and `apply()` against the scaled matrix, to ~1e-15 on every DG0 and
       DG1 operator the ghost-flux and DG1 checks build, serial and -n 2/4
+- [ ] DG1: a block-Jacobi removal stage (follow-up to the element-block scaling, 26 Sep
+      2026). Composite index 0 still inverts the operator's POINT diagonal. At DG0 that is
+      the element block, so the two stages agree; at DG1 it drops the in-cell
+      off-diagonals (the volume term -(Omega . grad phi_i) and the outflow face terms),
+      which are as large as the diagonal, so index 0 hands PCAIR a crude first iterate.
+      The fix is index 0 applying D_op^{-1} through `ElementBlockInverse`. Not a one-liner:
+      under `-matfree_removal` the removal diagonal is COMPOSED from the terms'
+      `add_diagonal` (the assembled matrix is streaming only), so blocks need either a
+      per-term `add_block` or "blocks off the assembled matrix + sigma_t on the block
+      diagonal" (removal is diagonal, so that is exact) - either way on a path
+      `-check_matfree` pins bitwise. It also moves the default-mode counts again, since
+      index 0 sets the residual PCAIR sees, so it is its own measurement. Deferred
+      because the data did not ask for it (DG1 13 iterations flat, 0-1 more than DG0);
+      where to look: strong removal, where index 0 does most of the work, and the
+      thick-diffusion (crooked pipe) runs.
+- [ ] `ElementBlockInverse::scale` bumps the scaled MPI matrix's state with a
+      `MAT_FINAL_ASSEMBLY` - make that deliberate, or replace it, and TEST it. A PC
+      rebuilds only if pmat's state changed since its last setup. Writing through
+      `MatSeqAIJRestoreKokkosViewWrite` bumps the seq PARTS of an MPIAIJ matrix but not
+      the wrapper PCAIR compares, so without the bump a parallel default-mode multigroup
+      run would silently reuse group 0's hierarchy for every group (still correct -
+      the KSP converges on the true operator - just more iterations: exactly the
+      failure nothing would flag). `PetscObjectStateIncrease` is the direct fix, but
+      it is a macro in `petsc/private/petscimpl.h` and UBOLT includes no private PETSc
+      headers (PFLARE does). The assembly is the public stand-in: collective (fine,
+      setup is), nothing stashed so no messages, and the pattern's nonzerostate is
+      unchanged so the Kokkos side rebuilds nothing - but it still runs the seq
+      assembly checks over the row structure on the host, and "rebuilds nothing"
+      rests on PETSc internals rather than a documented guarantee. To do: pin it in
+      `verify_plexk` check 10 (the scaled matrix's `MatGetState` must change across a
+      `MAT_REUSE_MATRIX` scale, at -n 2); then decide whether to take the private
+      header instead, as PFLARE does, and drop the assembly. Covered today only
+      indirectly: the parallel recipes (multigroup `plex_decades4` at -n 2) pass their
+      pins, and check 10 verifies the reused matrix's VALUES, not that a PC sees them.
 - [ ] DG0 ghost-flux mixed corners (found regenerating the Phase 6a report, 25 Sep 2026):
       where a reflective face meets a vacuum face, the ghost-flux "reflect wins" rule
       mirrors a direction coming in through both over both axes, so the corner cell never
