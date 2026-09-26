@@ -107,6 +107,7 @@ OBJS := $(SRCDIR)/sn_quadraturek.o \
 		  $(SRCDIR)/termsk.o \
 		  $(SRCDIR)/multigroupk.o \
 		  $(SRCDIR)/transport_operatork.o \
+		  $(SRCDIR)/block_inversek.o \
 		  $(SRCDIR)/transport_solverk.o \
 		  $(SRCDIR)/dsak.o \
 		  $(SRCDIR)/ref_shiftk.o \

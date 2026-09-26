@@ -11,7 +11,9 @@
 // is streaming only), -precon_ref_shift + -precon_ref_k (put a representative
 // removal back onto that streaming pmat, in k reference-shifted copies),
 // -precon_dsa (add the DSA diffusion correction to the composite - its inner
-// solve takes the -dsa_ prefix), -diag_scale, and the verification ones,
+// solve takes the -dsa_ prefix), -precon_block_scale (build PCAIR on the
+// element-block-scaled pmat - the default on the DG backend, both orders, and
+// off on the structured ones), -diag_scale, and the verification ones,
 // -check_inf_medium, -check_matfree and the -flux_vtk output override
 //
 // Group Gauss-Seidel with downscatter only: groups are ordered high energy to
@@ -262,6 +264,13 @@ int main(int argc, char **args) {
    PetscCheck(!(diag_scale && matfree_removal), PETSC_COMM_WORLD, PETSC_ERR_ARG_INCOMP, \
       "-diag_scale scales the assembled operator, which under -matfree_removal carries " \
       "streaming only - the matrix-free removal and scatter would stay unscaled");
+   // Do we build the streaming stage's PCAIR on the element-block-scaled pmat,
+   // D^{-1} pmat - see TransportSolver::create. The default depends on the
+   // backend, so it is resolved once the problem file has been read: ON for
+   // the DG backend (both orders - at DG0 it is the diagonal), OFF for the
+   // structured ones, whose baselines predate it. Either way the flag wins
+   PetscBool precon_block_scale = PETSC_FALSE, have_block_scale = PETSC_FALSE;
+   PetscCall(PetscOptionsGetBool(NULL, NULL, "-precon_block_scale", &precon_block_scale, &have_block_scale));
    // Check the solution against the infinite-medium constant (below)
    PetscBool check_inf_medium = PETSC_FALSE;
    PetscCall(PetscOptionsGetBool(NULL, NULL, "-check_inf_medium", &check_inf_medium, NULL));
@@ -292,6 +301,7 @@ int main(int argc, char **args) {
       PetscCall(spec.create(PETSC_COMM_WORLD, problem_path));
       const PetscInt n_groups = spec.n_groups;
       const std::string flux_vtk = have_flux_cli ? std::string(flux_vtk_cli) : spec.flux_vtk;
+      if (!have_block_scale) precon_block_scale = spec.mesh_unstructured ? PETSC_TRUE : PETSC_FALSE;
 
       // The infinite-medium check needs nothing for the streaming term to do
       // and nowhere to leak: one uniform material, absorption in every group
@@ -608,7 +618,8 @@ int main(int argc, char **args) {
          if (!solver_created[bin]) {
             Mat pmat = precon_ref_shift ? ref_shift.pmat(bin) : \
                (streaming_mat ? streaming_mat : op.assembled_mat());
-            PetscCall(solver.create(PETSC_COMM_WORLD, op, pmat, precon_dsa ? &dsa : nullptr));
+            PetscCall(solver.create(PETSC_COMM_WORLD, op, pmat, precon_dsa ? &dsa : nullptr, \
+               precon_block_scale));
             solver_created[bin] = PETSC_TRUE;
          }
          // sigma_t changed under the removal preconditioner

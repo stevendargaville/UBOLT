@@ -34,8 +34,23 @@ public:
    // nullptr (the default) is exactly the preconditioner UBOLT had before DSA
    // existed. Whoever passes one also drives it - DSAPrecon::set_group() is a
    // per-group call the solver has no context to make, see refresh() below
+   //
+   // block_scale wraps the streaming stage (index 1) in the element-block
+   // inverse: PCAIR is built on D^{-1} pmat and applied to D^{-1} x, D the
+   // n_basis x n_basis (cell, angle) blocks of pmat (see ElementBlockInverse).
+   // It is a left scaling of what the multigrid sees and nothing else - the
+   // operator, the rhs, the residuals the KSP monitors and the other composite
+   // stages are all unchanged - so it is purely a preconditioner choice. What
+   // it buys: at DG1 the cell-local block has off-diagonals as large as the
+   // diagonal (the volume term), which PCAIR's strength of connection reads
+   // as strong couplings, and its coarsening stalls; once the blocks are the
+   // identity, the only couplings left are the upwind ones, as at DG0. At
+   // n_basis 1 D is pmat's diagonal, which makes PCAIR's view of pmat
+   // independent of any per-row scaling - a DG0 row's 1 / V_c included - and
+   // is the same code, so both DG orders take it. The inner PC keeps the
+   // sub_1_ prefix
    PetscErrorCode create(MPI_Comm comm, const TransportOperator &op, Mat pmat, \
-      DSAPrecon *dsa = nullptr);
+      DSAPrecon *dsa = nullptr, PetscBool block_scale = PETSC_FALSE);
    PetscErrorCode destroy();
 
    // Re-take whatever the preconditioner cached off the operator's diagonal.

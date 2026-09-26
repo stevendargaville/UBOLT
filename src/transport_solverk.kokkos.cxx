@@ -1,4 +1,5 @@
 #include "ubolt/transport_solver.hpp"
+#include "ubolt/block_inverse.hpp"
 #include "pflare.h"
 
 // Define context for the removal pcshell
@@ -96,10 +97,91 @@ static PetscErrorCode DSAPCApply(PC pc, Vec x, Vec y)
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
+// The element-block-scaled streaming stage: y = AIR(D^{-1} pmat)^{-1} D^{-1} x,
+// D the element blocks of pmat. The inner PC is built on the SCALED pmat,
+// which is what the multigrid sees; the composite around this shell still
+// forms its residuals with the unscaled one, so only this stage knows the
+// scaling exists. new/delete rather than PetscNew: the context holds device
+// views, which need their constructors and destructors run
+struct BlockScaledPCCtx {
+   ElementBlockInverse blocks;
+   PC inner = NULL;
+   Mat scaled = NULL;
+   Vec work = NULL;
+};
+
+static PetscErrorCode BlockScaledPCDestroy(PC pc)
+{
+   BlockScaledPCCtx *ctx = nullptr;
+
+   PetscFunctionBeginUser;
+
+   PetscCall(PCShellGetContext(pc, &ctx));
+   PetscCall(PCDestroy(&ctx->inner));
+   PetscCall(MatDestroy(&ctx->scaled));
+   PetscCall(VecDestroy(&ctx->work));
+   delete ctx;
+
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+// Runs whenever pmat's state has changed since the last setup - every group
+// refill in the default mode, once for the whole sweep when pmat is
+// streaming-only. The inner PC then sees its own pmat's state change and
+// rebuilds (or reuses, under its own options) exactly as it would unscaled
+static PetscErrorCode BlockScaledPCSetUp(PC pc)
+{
+   BlockScaledPCCtx *ctx = nullptr;
+   Mat pmat = NULL;
+
+   PetscFunctionBeginUser;
+
+   PetscCall(PCShellGetContext(pc, &ctx));
+   PetscCall(PCGetOperators(pc, NULL, &pmat));
+   PetscCall(ctx->blocks.setup(pmat));
+   PetscCall(ctx->blocks.scale(pmat, ctx->scaled ? MAT_REUSE_MATRIX : MAT_INITIAL_MATRIX, &ctx->scaled));
+   PetscCall(PCSetOperators(ctx->inner, ctx->scaled, ctx->scaled));
+   if (!ctx->work) PetscCall(MatCreateVecs(pmat, &ctx->work, NULL));
+
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+static PetscErrorCode BlockScaledPCApply(PC pc, Vec x, Vec y)
+{
+   BlockScaledPCCtx *ctx = nullptr;
+
+   PetscFunctionBeginUser;
+
+   PetscCall(PCShellGetContext(pc, &ctx));
+   PetscCall(ctx->blocks.apply(x, ctx->work));
+   PetscCall(PCApply(ctx->inner, ctx->work, y));
+
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+static PetscErrorCode BlockScaledPCView(PC pc, PetscViewer viewer)
+{
+   BlockScaledPCCtx *ctx = nullptr;
+
+   PetscFunctionBeginUser;
+
+   PetscCall(PCShellGetContext(pc, &ctx));
+   PetscCall(PetscViewerASCIIPrintf(viewer, "left-scaled by the inverse element blocks (%" PetscInt_FMT \
+      " x %" PetscInt_FMT "), then:\n", ctx->blocks.block_size(), ctx->blocks.block_size()));
+   PetscCall(PetscViewerASCIIPushTab(viewer));
+   PetscCall(PCView(ctx->inner, viewer));
+   PetscCall(PetscViewerASCIIPopTab(viewer));
+
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
 PetscErrorCode TransportSolver::create(MPI_Comm comm, const TransportOperator &op, Mat pmat, \
-   DSAPrecon *dsa)
+   DSAPrecon *dsa, PetscBool block_scale)
 {
    PC pc, pc_removal;
+   PC block_inner = NULL;
    removal_pc_ctx *shell = nullptr;
 
    PetscFunctionBeginUser;
@@ -133,7 +215,34 @@ PetscErrorCode TransportSolver::create(MPI_Comm comm, const TransportOperator &o
    // Preconditioner for streaming term
    // ~~~~~~~~~~~~~
    // AIR preconditioner for the streaming operator - this operates on pmat
-   PetscCall(PCCompositeAddPCType(pc, PCAIR));
+   //
+   // Or, under block_scale, on D^{-1} pmat applied to D^{-1} x, through a
+   // shell. The inner PC takes the prefix the composite gave index 1, so every
+   // -sub_1_pc_air_* option (and -sub_1_pc_type) means what it did before;
+   // the shell itself moves out of the way to sub_1_block_
+   if (!block_scale) PetscCall(PCCompositeAddPCType(pc, PCAIR));
+   else {
+      PC pc_stream;
+      const char *prefix = nullptr;
+      BlockScaledPCCtx *ctx = new BlockScaledPCCtx;
+
+      PetscCall(ctx->blocks.create(op.phase_space()));
+      PetscCall(PCCompositeAddPCType(pc, PCSHELL));
+      PetscCall(PCCompositeGetPC(pc, 1, &pc_stream));
+      PetscCall(PCCreate(comm, &ctx->inner));
+      PetscCall(PCSetType(ctx->inner, PCAIR));
+      PetscCall(PCGetOptionsPrefix(pc_stream, &prefix));
+      PetscCall(PCSetOptionsPrefix(ctx->inner, prefix));
+      PetscCall(PCAppendOptionsPrefix(pc_stream, "block_"));
+      block_inner = ctx->inner;
+
+      PetscCall(PCShellSetContext(pc_stream, ctx));
+      PetscCall(PCShellSetSetUp(pc_stream, BlockScaledPCSetUp));
+      PetscCall(PCShellSetApply(pc_stream, BlockScaledPCApply));
+      PetscCall(PCShellSetView(pc_stream, BlockScaledPCView));
+      PetscCall(PCShellSetDestroy(pc_stream, BlockScaledPCDestroy));
+      PetscCall(PCShellSetName(pc_stream, "BlockScaledStreamingPCShell"));
+   }
 
    // ~~~~~~~~~~~~~
    // Preconditioner for the scattering term - optional
@@ -170,6 +279,8 @@ PetscErrorCode TransportSolver::create(MPI_Comm comm, const TransportOperator &o
 
    // Last, so the command line still wins - including -pc_composite_type
    PetscCall(KSPSetFromOptions(ksp_));
+   // The composite does not know the block-scaled stage's inner PC exists
+   if (block_inner) PetscCall(PCSetFromOptions(block_inner));
 
    PetscFunctionReturn(PETSC_SUCCESS);
 }

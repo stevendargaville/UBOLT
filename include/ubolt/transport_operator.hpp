@@ -54,6 +54,7 @@ public:
    Mat assembled_mat() const { return assembled_; }
 
    const std::vector<const OperatorTerm *> &matrix_free_terms() const { return matrix_free_; }
+   const PhaseSpace &phase_space() const { return ps_; }
 
 private:
    PetscErrorCode assemble_into(Mat mat, PetscInt n_terms, const OperatorTerm *const terms[]) const;

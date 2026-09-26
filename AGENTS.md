@@ -13,7 +13,7 @@ Codebase map
   `tests/transportk.kokkos.cxx`: THE solve driver, any dimension and group count — all
   physics comes from `-problem <file.json>` (schema: `docs/problem_files.md`), the CLI
   keeps only PETSc options and the strategy/verification knobs (`-precon_stream`,
-  `-matfree_removal`, `-precon_ref_shift`, `-precon_dsa`, `-diag_scale`,
+  `-matfree_removal`, `-precon_ref_shift`, `-precon_dsa`, `-precon_block_scale`, `-diag_scale`,
   `-check_inf_medium`, `-check_matfree`, `-flux_vtk` override). It is also where the group
   Gauss-Seidel sweep lives, until a second sweep strategy justifies promoting it into
   the library. It replaced the per-problem drivers (`slab_1dk`, `slab_1d_mgk`,
@@ -127,6 +127,15 @@ Codebase map
   preconditions rather than contributes, and it is caller-owned with a per-group
   `set_group()` the driver makes because the solver has no group context. Geometry, so
   per-dimension `create` overloads like the streaming term),
+  `ElementBlockInverse` (the inverse of each (cell, angle) n_basis x n_basis element
+  block of a MATAIJKOKKOS matrix, read straight off its device CSR — strided by
+  n_angles under layout A, so not PETSc's contiguous-block inverse — plus `D^{-1} x` and
+  `D^{-1} A` on the SAME pattern, all on the device; at n_basis 1 it is the diagonal).
+  `TransportSolver::create(..., block_scale)` uses it to wrap composite index 1 in a
+  shell: PCAIR built on `D^{-1} pmat`, applied to `D^{-1} r` — a preconditioner-only
+  change (operator, rhs, residual norms untouched), the inner PC keeping the `sub_1_`
+  prefix. `-precon_block_scale`, default ON for the DG backend (both orders), OFF on the
+  structured ones; it is what lets PCAIR coarsen DG1 at its default strong threshold,
   `RefShiftPmats` (the OTHER optional pmat strategy, behind `-precon_ref_shift` and only
   under `-matfree_removal`: k copies of the streaming matrix each carrying a
   REPRESENTATIVE removal `alpha_k * D_ref`, plus the group-to-bin map. It owns those

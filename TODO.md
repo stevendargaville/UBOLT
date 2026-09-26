@@ -4,16 +4,18 @@ Full plan and architecture rationale: see the approved plan (design discussion J
 Each phase is a reviewable unit with its own verification. Do not start a phase before the
 previous one's verification has passed and been reviewed.
 
-## Current state (updated 2026-09-25)
-Last landed: **linear DG (DG1) on the plex backend** (the item under the ghost-flux
-postscript: `UnstructuredDG` at `order` 1, rows `(cell, basis, angle)`, second order on
-every cell shape), on top of Phase 6a (DG0 on DMPlex, PR #2) and the ghost-flux vacuum
+## Current state (updated 2026-09-26)
+Last landed: **element-block-inverse scaling of PCAIR's pmat** (`ElementBlockInverse`,
+`-precon_block_scale`, default on the DG backend at both orders), which lets PCAIR
+coarsen DG1 at its default strong threshold; before it, **linear DG (DG1) on the plex
+backend** (the item under the ghost-flux postscript: `UnstructuredDG` at `order` 1, rows
+`(cell, basis, angle)`, second order on every cell shape), on top of Phase 6a (DG0 on DMPlex, PR #2) and the ghost-flux vacuum
 treatment as the default (PR #4). Next up: DSA on the plex backend (the biggest gap both
 orders share), then 6b CG-SUPG (Phase 6); the half-quadrature transposed PC stays
-blocked on PFLARE's PCAIR `PCApplyTranspose`. The DG1 pins await a CI-image sweep. Two
-findings from regenerating the Phase 6a report sit under the ghost-flux postscript: DG1
-needs element-block-inverse scaling (or a lower strong threshold) for PCAIR to coarsen,
-and DG0's ghost-flux reflect-wins rule leaves an O(1) error at reflect/vacuum corners.
+blocked on PFLARE's PCAIR `PCApplyTranspose`. The block-scaled plex pins are local-opt
+counts; CI flags any arch that needs +1. Open finding from regenerating the Phase 6a
+report, under the ghost-flux postscript: DG0's ghost-flux reflect-wins rule leaves an
+O(1) error at reflect/vacuum corners.
 
 ## Phase 0 — Scaffolding + baseline capture (no behavior change)
 - [x] Directory tree, top Makefile (library skeleton), tests/Makefile (PFLARE-style recipes)
@@ -1025,19 +1027,34 @@ experiments stay on the campaign branch until PFLARE's PCAIR `PCApplyTranspose` 
       against the exact SN solution DG0 is first order on. Pinned: every plex recipe's
       DG1 twin, serial and np 2 (docs/dev/testing.md, "Unstructured iteration counts" —
       DG1 costs 0 to 3 iterations more than DG0 at the default rtol).
-- [ ] DG1 + PCAIR: scale the streaming operator by the inverse of each element's block
-      before PCAIR (DEFERRED, the user's call, 25 Sep 2026 - for linear DG advection that
-      block-inverse scaling has typically been needed for scalability, and the same is
-      expected here). The block is the n_basis x n_basis (cell, angle) coupling - under
-      layout A its rows are STRIDED by n_angles, so this is a block map of our own, not
-      PETSc's contiguous-block MatInvertBlockDiagonal. The symptom it should cure, measured
-      on DG1 quads (plex_box_50_st2_dg1 physics, S2, rtol 1e-10): at PCAIR's default
-      strong threshold 0.5 the coarsening stalls - 28 / 58 / 119 AIR levels at n = 25 / 50
-      / 100 (14 / 16 / 17 iterations), so setup grows like N^1.5 - where DG0 on the same
-      meshes takes 12 / 14 / 19 levels (12 iterations). `-sub_1_pc_air_strong_threshold
-      0.25` restores slow growth (25 / 30 / 35 levels, 13 / 14 / 14 iterations); the
-      Phase 6 report's DG1 runs and every pinned DG1 recipe use it (at the default the
-      DG1 recipes more than doubled the debug CI job). Levels and iterations only - the machine was shared, timings are noise.
+- [x] DG1 + PCAIR: element-block-inverse scaling (Sep 2026). `ElementBlockInverse` reads
+      the n_basis x n_basis (cell, angle) blocks straight off pmat's device CSR (layout A
+      strides them by n_angles, so PETSc's contiguous-block MatInvertBlockDiagonal does
+      not fit), inverts them per thread (Gauss-Jordan, partial pivoting, n_basis <= 4)
+      and forms `D^{-1} pmat` on pmat's OWN pattern - every row of a block carries the
+      same columns, checked on the device every call. `TransportSolver` wraps composite
+      index 1 in a shell: PCAIR on `D^{-1} pmat`, applied to `D^{-1} r`. A
+      preconditioner-only change - the operator, rhs, the residuals the KSP monitors
+      and the other stages are untouched - and read off whatever pmat the solver has
+      (assembled, streaming-only, reference-shifted, -diag_scale'd). DECISIONS: (i) the
+      operator keeps its per-unit-volume rows. The suggestion was that the scaling could
+      replace DG0's 1 / V_c; for what PCAIR sees it does (any per-row, or per-block,
+      scaling cancels in D^{-1} A, so both orders now hand PCAIR a matrix with identity
+      blocks and no volume factor), but taking 1 / V_c out of the OPERATOR would put V_c
+      into removal, scatter and the source (the identity mass matrix is what keeps them
+      per node) for nothing; (ii) it applies at both DG orders by default
+      (`-precon_block_scale`, off on the structured backends, whose baselines predate
+      it), so DG0 and DG1 go through the same stage - at DG0 it is the diagonal; (iii)
+      the removal Jacobi stage (index 0) stays point-diagonal. Measured on the TODO's
+      DG1 quads (plex_box_50_st2_dg1 physics, S2, rtol 1e-10) at PCAIR's DEFAULT strong
+      threshold: 14 / 18 / 21 AIR levels at n = 25 / 50 / 100 and 13 / 13 / 13
+      iterations, against 28 / 58 / 119 and 14 / 16 / 17 unscaled, and 25 / 30 / 35 and
+      13 / 14 / 14 under the old 0.25 stopgap, which every DG1 recipe dropped. DG0 on the
+      same meshes: 12 / 15 / 18 levels, 12 / 11 / 12 iterations (12 / 14 / 19 and 12
+      unscaled - row-relative strength of connection does not see a diagonal scaling).
+      Verified (`verify_plexk` 10): identity blocks in `D^{-1} A`, invariance under a left
+      row scaling, and `apply()` against the scaled matrix, to ~1e-15 on every DG0 and
+      DG1 operator the ghost-flux and DG1 checks build, serial and -n 2/4
 - [ ] DG0 ghost-flux mixed corners (found regenerating the Phase 6a report, 25 Sep 2026):
       where a reflective face meets a vacuum face, the ghost-flux "reflect wins" rule
       mirrors a direction coming in through both over both axes, so the corner cell never

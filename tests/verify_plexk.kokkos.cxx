@@ -49,6 +49,11 @@
 //  9. DG1 is second order: a pure absorber with left inflow and reflective
 //     top/bottom against its exact discrete-ordinates solution, at n = 4, 8,
 //     16, on quads (and triangles where available)
+// 10. The element-block inverse the solver scales PCAIR's pmat by
+//     (ElementBlockInverse), on every operator of 7 (DG0: 1 x 1 blocks) and 8
+//     (DG1: strided (dim + 1) x (dim + 1) blocks, reflective couplings
+//     included): identity blocks in D^{-1} A, invariance under a left row
+//     scaling, and apply() against the scaled matrix
 //  Plus two DG1 error paths in 5: Dirichlet-cell vacuum, and the DG0
 //  streaming term on a DG1 backend
 //
@@ -1281,6 +1286,95 @@ static PetscErrorCode CheckSlantedReflect(PetscBool ghost, PetscBool *ok)
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
+// ElementBlockInverse on an assembled operator A (a Kokkos matrix, left
+// untouched): D^{-1} K, K a copy of A, must have the IDENTITY on every element
+// block (read back on the host, through a plain AIJ copy), must be invariant
+// under a left row scaling of K (a pointwise row scaling is block-diagonal, so
+// it cancels in D^{-1} K - which also exercises the MAT_REUSE path on changed
+// values), and must agree with apply(): (D^{-1} K) x = D^{-1} (K x)
+static PetscErrorCode CheckBlockInverse(const char *where, const PhaseSpace &ps, Mat A, PetscBool *ok)
+{
+   ElementBlockInverse blocks;
+   Mat K = NULL, Khat = NULL, H0 = NULL, H = NULL;
+   Vec x = NULL, Kx = NULL, y_apply = NULL, y_scaled = NULL, row_scale = NULL;
+   PetscRandom rand = NULL;
+   PetscReal block_err = 0.0, invariance = 0.0, norm_h0 = 0.0, apply_diff = 0.0, norm_apply = 0.0;
+   const PetscReal tol = 1e-12;
+   const PetscInt nb = ps.n_basis, n_angles = ps.n_angles;
+
+   PetscFunctionBeginUser;
+
+   PetscCall(MatDuplicate(A, MAT_COPY_VALUES, &K));
+   PetscCall(blocks.create(ps));
+   PetscCall(blocks.setup(K));
+   PetscCall(blocks.scale(K, MAT_INITIAL_MATRIX, &Khat));
+   PetscCall(MatConvert(Khat, MATAIJ, MAT_INITIAL_MATRIX, &H0));
+
+   // Rows scaled by values in [1, 2), then set up and scaled again, reusing
+   PetscCall(PetscRandomCreate(PETSC_COMM_WORLD, &rand));
+   PetscCall(PetscRandomSetInterval(rand, 1.0, 2.0));
+   PetscCall(MatCreateVecs(K, &x, &row_scale));
+   PetscCall(VecSetRandom(row_scale, rand));
+   PetscCall(MatDiagonalScale(K, row_scale, NULL));
+   PetscCall(blocks.setup(K));
+   PetscCall(blocks.scale(K, MAT_REUSE_MATRIX, &Khat));
+   PetscCall(MatConvert(Khat, MATAIJ, MAT_INITIAL_MATRIX, &H));
+
+   PetscInt rstart, rend;
+   PetscCall(MatGetOwnershipRange(H, &rstart, &rend));
+   for (PetscInt b = 0; b < blocks.n_blocks(); b++) {
+      const PetscInt c = b / n_angles, a = b % n_angles;
+      for (PetscInt i = 0; i < nb; i++) {
+         for (PetscInt j = 0; j < nb; j++) {
+            const PetscInt row = rstart + (c * nb + i) * n_angles + a;
+            const PetscInt col = rstart + (c * nb + j) * n_angles + a;
+            PetscScalar v;
+            PetscCall(MatGetValues(H, 1, &row, 1, &col, &v));
+            block_err = PetscMax(block_err, PetscAbsScalar(v - (i == j ? 1.0 : 0.0)));
+         }
+      }
+   }
+   PetscCallMPI(MPIU_Allreduce(MPI_IN_PLACE, &block_err, 1, MPIU_REAL, MPIU_MAX, PETSC_COMM_WORLD));
+
+   PetscCall(MatNorm(H0, NORM_FROBENIUS, &norm_h0));
+   PetscCall(MatAXPY(H0, -1.0, H, SAME_NONZERO_PATTERN));
+   PetscCall(MatNorm(H0, NORM_FROBENIUS, &invariance));
+   invariance /= norm_h0;
+
+   PetscCall(VecSetRandom(x, rand));
+   PetscCall(MatCreateVecs(K, NULL, &Kx));
+   PetscCall(VecDuplicate(Kx, &y_apply));
+   PetscCall(VecDuplicate(Kx, &y_scaled));
+   PetscCall(MatMult(K, x, Kx));
+   PetscCall(blocks.apply(Kx, y_apply));
+   PetscCall(MatMult(Khat, x, y_scaled));
+   PetscCall(VecNorm(y_apply, NORM_INFINITY, &norm_apply));
+   PetscCall(VecAXPY(y_scaled, -1.0, y_apply));
+   PetscCall(VecNorm(y_scaled, NORM_INFINITY, &apply_diff));
+   apply_diff /= norm_apply;
+
+   const PetscBool pass = (PetscBool)(block_err <= tol && invariance <= tol && apply_diff <= tol);
+   if (!pass) *ok = PETSC_FALSE;
+   PetscCall(PetscPrintf(PETSC_COMM_WORLD, "  element-block inverse, %s (%" PetscInt_FMT " x %" PetscInt_FMT \
+      "): max |D^{-1}A block - I| %.3e, row-scaling invariance %.3e, |D^{-1}(Ax) - (D^{-1}A)x| %.3e (tol %.0e)%s\n", \
+      where, nb, nb, (double)block_err, (double)invariance, (double)apply_diff, (double)tol, pass ? "" : " FAILED"));
+
+   PetscCall(PetscRandomDestroy(&rand));
+   PetscCall(VecDestroy(&x));
+   PetscCall(VecDestroy(&Kx));
+   PetscCall(VecDestroy(&y_apply));
+   PetscCall(VecDestroy(&y_scaled));
+   PetscCall(VecDestroy(&row_scale));
+   PetscCall(MatDestroy(&K));
+   PetscCall(MatDestroy(&Khat));
+   PetscCall(MatDestroy(&H0));
+   PetscCall(MatDestroy(&H));
+
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
 // The third cosine of a 3D set; a 2D set has none (the caller only asks in 3D).
 // maybe_unused: without a tet mesher the only 3D caller is compiled out
 [[maybe_unused]] static const PetscScalar *quad_xi(const SNQuadrature2D &) { return nullptr; }
@@ -1377,6 +1471,7 @@ static PetscErrorCode CheckGhostSimplex(PetscInt dim, PetscInt n, const char *fi
       PetscCall(op.add_term(&streaming));
       PetscCall(op.add_term(&removal));
       PetscCall(op.assemble());
+      PetscCall(CheckBlockInverse(where, ps, op.assembled_mat(), ok));
 
       std::vector<PetscInt> opp(n_angles, -1);
       const PetscScalar *mu = quad.mu_host();
@@ -1564,6 +1659,7 @@ static PetscErrorCode CheckDG1(const char *where, const PlexMeshSpec &mesh, cons
       PetscCall(op.add_term(&streaming));
       PetscCall(op.add_term(&removal));
       PetscCall(op.assemble());
+      PetscCall(CheckBlockInverse(where, ps, op.assembled_mat(), ok));
 
       std::vector<PetscInt> opp(n_angles, -1);
       const PetscScalar *mu = quad.mu_host();

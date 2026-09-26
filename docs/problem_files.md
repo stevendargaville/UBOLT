@@ -13,7 +13,7 @@ angles, materials, painted regions, boundary conditions, output - so
 the same file solves identically under any solver configuration, and the
 solver is configured the way PETSc always is: `-ksp_*`, `-pc_*`,
 `-sub_1_pc_air_*` and friends on the command line, plus the driver's own
-strategy and verification knobs (`-precon_stream`, `-diag_scale`,
+strategy and verification knobs (`-precon_stream`, `-precon_block_scale`, `-diag_scale`,
 `-check_inf_medium`, and `-flux_vtk` as an output override). Nothing physical
 can be set from the command line, so a problem file names a reproducible
 problem, full stop.
@@ -183,7 +183,12 @@ group sweep, `-matfree_removal`, `-precon_stream`, `-precon_ref_shift`,
 `-diag_scale`, `-check_matfree`, `-check_inf_medium` - works unchanged. Only
 2D and 3D: a 1D unstructured mesh is an error (the structured slab IS the 1D
 backend). Not yet: `-precon_dsa` (the diffusion correction is a DMDA
-operator) errors on an unstructured mesh.
+operator) errors on an unstructured mesh. One solver default differs: the
+streaming stage's PCAIR is built on the element-block-scaled pmat
+(`-precon_block_scale`, ON by default here at both orders and off on the
+structured backends; `-precon_block_scale 0` turns it off). At DG0 that is a
+diagonal scaling and changes little; DG1 needs it for PCAIR to coarsen at its
+default strong threshold.
 
 The mesh comes one of two ways:
 - **A box built in code**: `n_cells` and `lengths` exactly as on a
