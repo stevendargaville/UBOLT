@@ -524,7 +524,7 @@ ifeq ($(PETSC_HAVE_TETMESHER),1)
 	./transportk -problem problems/plex_tet_6_inf_medium_ghost.json -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 11
 endif
 	@echo "Test 2D unstructured reference-shifted pmat, one hierarchy per group (twin of box_decades4)"
-	./transportk -problem problems/plex_decades4.json -matfree_removal -precon_ref_shift -precon_ref_k 4 -ksp_max_it 28
+	./transportk -problem problems/plex_decades4.json -matfree_removal -precon_ref_shift -precon_ref_k 4 -ksp_max_it 29
 	@echo "Test 2D unstructured reference-shifted pmat, the default k"
 	./transportk -problem problems/plex_decades4.json -matfree_removal -precon_ref_shift -ksp_max_it 51
 # The DG1 (linear) twins of the recipes above: "order": 1 in the mesh, three

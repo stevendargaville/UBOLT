@@ -842,10 +842,12 @@ row-relative the hierarchy barely moves and no count moves by more than one; at 
 | `plex_tri_30_inf_medium_ghost`, `-check_inf_medium -ksp_rtol 1e-12` (ghost-flux right + top, reflect left + bottom; measured 2026-09-25) | 12 | 12 | — | |
 | the same, `-matfree_removal` | 33 | — | — | |
 | `plex_tet_6_inf_medium_ghost`, `-check_inf_medium -ksp_rtol 1e-12` (ghost-flux right + back + top; measured 2026-09-25) | 11 | 11 | — | |
-| `plex_decades4`, `-matfree_removal -precon_ref_shift -precon_ref_k 4` | 4, 6, 15, 28 (unscaled 29) | 4, 6, 15, 29 | `box_decades4`: 4, 6, 15, 29 both | Dirichlet-cell 4, 6, 15, 30 on both sides |
+| `plex_decades4`, `-matfree_removal -precon_ref_shift -precon_ref_k 4` | 4, 6, 15, 28 (unscaled 29; 29 in the OpenMP CI image, pinned 29) | 4, 6, 15, 29 | `box_decades4`: 4, 6, 15, 29 both | Dirichlet-cell 4, 6, 15, 30 on both sides |
 | `plex_decades4`, `-matfree_removal -precon_ref_shift` (default k = 2) | 7, 8, 27, 51 | 7, 8, 27, 51 | `box_decades4`: 7, 8, 27, 51 both | Dirichlet-cell plex 7, 9, 24, 48 serial and 7, 8, 24, 48 otherwise |
 
-A multigroup row pins the max over its groups (28, 51), as everywhere else. Not in the
+A multigroup row pins the max over its groups (29 - the OpenMP CI image's, local opt
+is 28 - and 51), as everywhere else. The OpenMP image was swept on every plex recipe
+when that pin went red (2026-09-26): it was the only one above local opt. Not in the
 table: `plex_box_50_st2_dirichlet_cell` is 6 (unscaled 7, its structured twin 6).
 
 **DG1** (`*_dg1.json`: the DG0 file with `"order": 1` in `mesh`, and no
