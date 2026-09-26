@@ -7,7 +7,8 @@
 
 // KSP + the transport preconditioner: a multiplicative composite of a shell
 // preconditioner for the removal term (index 0), PCAIR for the streaming term
-// (index 1, so its options take the -sub_1_pc_air_ prefix) and, if the caller
+// (index 1, so its options take the -sub_1_pc_air_ prefix - under block_scale a
+// shell whose inner PCAIR keeps that prefix, see create) and, if the caller
 // hands one over, a shell for the DSA diffusion correction (index 2, whose own
 // inner solve takes the -dsa_ prefix - see DSAPrecon)
 //

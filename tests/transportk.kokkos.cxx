@@ -3,7 +3,7 @@
 // the command line - PETSc options (-ksp_*, -pc_*) plus the strategy and
 // verification knobs below. One driver for every dimension and any number of
 // groups: the file picks the backend (the structured DMDA ones by dimension,
-// or the unstructured DG0 one on a DMPlex), and a single-group file IS the
+// or the unstructured DG one, order 0 or 1, on a DMPlex), and a single-group file IS the
 // single-group problem, so there is no separate driver for it
 //
 // Strategy knobs: -precon_stream (precondition with a streaming-only pmat),

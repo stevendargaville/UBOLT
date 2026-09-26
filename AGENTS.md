@@ -35,7 +35,9 @@ Codebase map
   paths, and the `.vtu` writing each cell once; and at DG1 (no twin) no BC rows, the same
   `(VA)^T = P(VA)P` with the reflective couplings inside it, a constant through the
   library rhs, a LINEAR field through the streaming matrix giving exactly `Omega . b` in
-  interior cells, and second-order convergence against an exact SN solution. `tests/meshes/`: mesh files the problem
+  interior cells, and second-order convergence against an exact SN solution; at both
+  orders, the `ElementBlockInverse` of every operator those checks build (identity blocks
+  in `D^{-1} A`, invariance under a row scaling, `apply()` against the scaled matrix). `tests/meshes/`: mesh files the problem
   files name (a hand-written Gmsh 2.2 `.msh` today).
   `tests/verify_quadraturek.kokkos.cxx`: the quadrature sets themselves, against the
   moment conditions that define them — needed because they are generated, not tabulated.
