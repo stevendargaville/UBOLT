@@ -121,8 +121,12 @@ fill runs on device (MATAIJKOKKOS dispatches `MatSetValuesCOO` to the GPU):
   (`Omega . nA_f < 0`), so the sparsity is one neighbour per inflow face and
   `StreamingTermDG0` never branches on which neighbour is upwind — only on the sign of
   `s = Omega . nA_f`, outflow (s > 0) onto the diagonal, anything else onto the face's
-  slot (dropped if that slot was nulled). A reflective row repurposes the slot of its first
-  incoming reflective face in cone order, a Dirichlet row keeps only its diagonal.
+  slot (dropped if that slot was nulled). Under ghost-flux (the default) a reflective
+  inflow face's slot is live too, pointing at the mirrored angle in the same cell, and
+  the fill writes the same `s / V` into it - no BC rows at all, as at DG1 below (the
+  structured backends do the same with their per-axis slots). Under Dirichlet-cell a
+  reflective row repurposes the slot of its first incoming reflective face in cone order,
+  and a Dirichlet row keeps only its diagonal.
 - At DG1 (`UnstructuredDG` at order 1) every one of those entries widens to `n_basis`:
   a row of (cell c, basis i, angle a) carries `(n_faces(c) + 1) * n_basis` slots — the
   upwind cell's basis j = 0 .. n_basis - 1 per face in cone order, then this cell's own
@@ -163,7 +167,8 @@ fill runs on device (MATAIJKOKKOS dispatches `MatSetValuesCOO` to the GPU):
   on Dirichlet rows (`UboltFillInflow` — the winning face's angle-integrated inflow
   divided by `sum_weights`, zeroed outside its window, computed on the host at create
   time), zero on reflective ones (`UboltZeroReflectRows`). Under the default ghost-flux
-  treatment the vacuum inflow is not a BC row's value but a physical row's face flux:
+  treatment there are no BC rows - a reflective face is a slot pointing at the mirrored
+  angle in the same cell - and the vacuum inflow is not a BC row's value but a physical row's face flux:
   `UboltFillInflow` ADDS `BoundaryInfo::ghost_inflow_d` onto those rows, and
   `UboltFillSource` adds rather than assigns so the external source does not wipe it.
 - All the assembled terms add into ONE shared values array and go in with a single

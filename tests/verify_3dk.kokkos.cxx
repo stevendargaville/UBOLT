@@ -20,7 +20,8 @@
 //     against the constant solution psi = psi_in, which pins the ghost-flux
 //     inflow weights the matrix-only checks cannot see.
 //  4. The opposite-ordinate identity A^T = P A P on streaming + removal, exact
-//     on every row under the ghost-flux treatment only.
+//     on every row under the ghost-flux treatment only - reflective faces,
+//     mixed edges, the triple-reflect corner and all-reflect included.
 //
 // There is no hand-layout twin to compare against in 3D (a 3D DMDA's global
 // numbering is not the natural ordering), which is why these checks exist
@@ -49,9 +50,27 @@
 // Face-to-axis convention matches the backend's FACE_* comment: left/right are
 // the x faces, front/back the y faces, bottom/top the Z faces (not y as in 2D)
 //
-// GHOST is the ghost-flux counterpart of DIRICHLET: an inflow row that stays
-// an ordinary stencil row with its outside-pointing upwind entries dropped
+// GHOST is the ghost-flux counterpart of DIRICHLET and REFLECT: an inflow row
+// that stays an ordinary stencil row, each outside-pointing upwind entry
+// dropped (vacuum face) or moved onto the mirrored angle in the same cell
+// (reflective face)
 enum class RefKind { INTERIOR, DIRICHLET, REFLECT, GHOST };
+
+// The ordinate with the cosines flipped on the asked-for axes, by this file's
+// own search
+static PetscInt MirrorOrdinate(const SNQuadrature3D &quad, PetscInt a, bool flip_x, bool flip_y, bool flip_z)
+{
+   const PetscScalar *mu = quad.mu_host();
+   const PetscScalar *eta = quad.eta_host();
+   const PetscScalar *xi = quad.xi_host();
+   const PetscScalar mu_want = flip_x ? -mu[a] : mu[a];
+   const PetscScalar eta_want = flip_y ? -eta[a] : eta[a];
+   const PetscScalar xi_want = flip_z ? -xi[a] : xi[a];
+   for (PetscInt b = 0; b < quad.n_angles(); b++) {
+      if (mu[b] == mu_want && eta[b] == eta_want && xi[b] == xi_want) return b;
+   }
+   return -1;
+}
 
 static RefKind ClassifyNode(const SNQuadrature3D &quad, PetscInt a, PetscInt i, PetscInt j, \
    PetscInt k, PetscInt n_cells_x, PetscInt n_cells_y, PetscInt n_cells_z, \
@@ -72,25 +91,17 @@ static RefKind ClassifyNode(const SNQuadrature3D &quad, PetscInt a, PetscInt i, 
    // Dirichlet-cell: vacuum wins at mixed edges and corners; only a direction
    // whose every incoming face is reflective reflects, flipping the cosine on
    // each incoming axis - all three of them at a corner between three
-   // reflective faces. Ghost-flux is the other way round: a ghost row needs
-   // every incoming face vacuum, and reflect wins a mixed edge or corner,
-   // still flipping every incoming axis
+   // reflective faces. Ghost-flux has no precedence at all: every inflow row
+   // is a ghost row, each incoming face handled on its own (see the reference
+   // builder)
+   if (ghost) return RefKind::GHOST;
    const BCType x_bc = (mu[a] > 0.0) ? left : right;
    const BCType y_bc = (eta[a] > 0.0) ? front : back;
    const BCType z_bc = (xi[a] > 0.0) ? bottom : top;
-   if (ghost) {
-      if (!(in_x && x_bc == BCType::REFLECT) && !(in_y && y_bc == BCType::REFLECT) && \
-          !(in_z && z_bc == BCType::REFLECT)) return RefKind::GHOST;
-   }
-   else if ((in_x && x_bc == BCType::VACUUM) || (in_y && y_bc == BCType::VACUUM) || \
+   if ((in_x && x_bc == BCType::VACUUM) || (in_y && y_bc == BCType::VACUUM) || \
        (in_z && z_bc == BCType::VACUUM)) return RefKind::DIRICHLET;
 
-   const PetscScalar mu_want = in_x ? -mu[a] : mu[a];
-   const PetscScalar eta_want = in_y ? -eta[a] : eta[a];
-   const PetscScalar xi_want = in_z ? -xi[a] : xi[a];
-   for (PetscInt b = 0; b < quad.n_angles(); b++) {
-      if (mu[b] == mu_want && eta[b] == eta_want && xi[b] == xi_want) { *partner = b; break; }
-   }
+   *partner = MirrorOrdinate(quad, a, in_x, in_y, in_z);
    return RefKind::REFLECT;
 }
 
@@ -386,8 +397,11 @@ static PetscErrorCode CheckOperatorAgainstReference(PetscInt n_cells_x, PetscInt
                   } else {
 
                      // An interior row, or a ghost-flux row: the same full
-                     // diagonal either way, and only the upwind entries that
-                     // land inside the box
+                     // diagonal either way, and the upwind entries that land
+                     // inside the box. A ghost row's outside neighbour through
+                     // a reflective face is the mirrored angle in this cell
+                     // (through a vacuum face it is on the rhs)
+                     const PetscInt here = ((k * n_cells_y + j) * n_cells_x + i) * n_angles;
                      ref[row] += PetscAbsScalar(mu[a]) / dx + PetscAbsScalar(eta[a]) / dy + \
                         PetscAbsScalar(xi[a]) / dz + sigma_t;
                      if (mu[a] != 0.0) {
@@ -395,18 +409,24 @@ static PetscErrorCode CheckOperatorAgainstReference(PetscInt n_cells_x, PetscInt
                         if (upwind_i >= 0 && upwind_i < n_cells_x)
                            ref[((k * n_cells_y + j) * n_cells_x + upwind_i) * n_angles + a] += \
                               -PetscAbsScalar(mu[a]) / dx;
+                        else if (((mu[a] > 0.0) ? left : right) == BCType::REFLECT)
+                           ref[here + MirrorOrdinate(quad, a, true, false, false)] += -PetscAbsScalar(mu[a]) / dx;
                      }
                      if (eta[a] != 0.0) {
                         const PetscInt upwind_j = (eta[a] > 0.0) ? j - 1 : j + 1;
                         if (upwind_j >= 0 && upwind_j < n_cells_y)
                            ref[((k * n_cells_y + upwind_j) * n_cells_x + i) * n_angles + a] += \
                               -PetscAbsScalar(eta[a]) / dy;
+                        else if (((eta[a] > 0.0) ? front : back) == BCType::REFLECT)
+                           ref[here + MirrorOrdinate(quad, a, false, true, false)] += -PetscAbsScalar(eta[a]) / dy;
                      }
                      if (xi[a] != 0.0) {
                         const PetscInt upwind_k = (xi[a] > 0.0) ? k - 1 : k + 1;
                         if (upwind_k >= 0 && upwind_k < n_cells_z)
                            ref[((upwind_k * n_cells_y + j) * n_cells_x + i) * n_angles + a] += \
                               -PetscAbsScalar(xi[a]) / dz;
+                        else if (((xi[a] > 0.0) ? bottom : top) == BCType::REFLECT)
+                           ref[here + MirrorOrdinate(quad, a, false, false, true)] += -PetscAbsScalar(xi[a]) / dz;
                      }
 
                      // The scatter is on the lhs, so it comes off this angle
@@ -520,7 +540,9 @@ static PetscErrorCode CheckConstantInflow(PetscInt n_cells_x, PetscInt n_cells_y
 // Check 4: A^T = P A P under the ghost-flux treatment - verify_2dk's
 // CheckOppositeTranspose one axis wider
 static PetscErrorCode CheckOppositeTranspose(PetscInt n_cells_x, PetscInt n_cells_y, PetscInt n_cells_z, \
-   PetscInt sn_order, PetscReal length_x, PetscReal length_y, PetscReal length_z, PetscBool *ok)
+   PetscInt sn_order, PetscReal length_x, PetscReal length_y, PetscReal length_z, \
+   BCType left, BCType right, BCType front, BCType back, BCType bottom, BCType top, \
+   const char *bc_desc, PetscBool *ok)
 {
    PhaseSpace ps;
    SNQuadrature3D quad;
@@ -535,11 +557,20 @@ static PetscErrorCode CheckOppositeTranspose(PetscInt n_cells_x, PetscInt n_cell
 
    PetscFunctionBeginUser;
 
+   BCSpec bcs;
+   bcs.set(StructuredFD3D::FACE_LEFT, left);
+   bcs.set(StructuredFD3D::FACE_RIGHT, right);
+   bcs.set(StructuredFD3D::FACE_FRONT, front);
+   bcs.set(StructuredFD3D::FACE_BACK, back);
+   bcs.set(StructuredFD3D::FACE_BOTTOM, bottom);
+   bcs.set(StructuredFD3D::FACE_TOP, top);
+   bcs.set_vacuum_treatment(VacuumTreatment::GHOST_FLUX);
+
    PetscCall(quad.create(sn_order));
    const PetscInt n_angles = quad.n_angles();
    PetscCall(ps.create(PETSC_COMM_WORLD, n_cells_x * n_cells_y * n_cells_z, n_angles));
    PetscCall(disc.create(PETSC_COMM_WORLD, ps, n_cells_x, n_cells_y, n_cells_z, \
-      length_x, length_y, length_z, quad, AllVacuum(PETSC_TRUE)));
+      length_x, length_y, length_z, quad, bcs));
 
    PetscScalarKokkosView sigma_t_d("sigma_t_d", ps.local_cells);
    {
@@ -584,8 +615,8 @@ static PetscErrorCode CheckOppositeTranspose(PetscInt n_cells_x, PetscInt n_cell
    if (!(rel <= tol)) *ok = PETSC_FALSE;
    PetscCall(PetscPrintf(PETSC_COMM_WORLD, \
       "  A^T = P A P on %" PetscInt_FMT " x %" PetscInt_FMT " x %" PetscInt_FMT " x %" PetscInt_FMT \
-      " angles, ghost-flux, heterogeneous sigma_t: ||A^T - PAP|| / ||A|| %.3e (tol %.0e)\n", \
-      n_cells_x, n_cells_y, n_cells_z, n_angles, (double)rel, (double)tol));
+      " angles, %s bcs, ghost-flux, heterogeneous sigma_t: ||A^T - PAP|| / ||A|| %.3e (tol %.0e)\n", \
+      n_cells_x, n_cells_y, n_cells_z, n_angles, bc_desc, (double)rel, (double)tol));
 
    PetscCall(MatDestroy(&A));
    PetscCall(MatDestroy(&At));
@@ -627,8 +658,16 @@ int main(int argc, char **args) {
       PetscCall(CheckStreamingClosedForm(8, 6, 4, 4, 1.0, 2.0, 3.0, ghost, &ok));
       PetscCall(CheckConstantInflow(8, 6, 4, 4, 1.0, 2.0, 3.0, ghost, &ok));
    }
-   PetscCall(CheckOppositeTranspose(8, 6, 4, 2, 1.0, 2.0, 3.0, &ok));
-   PetscCall(CheckOppositeTranspose(8, 6, 4, 6, 1.0, 2.0, 3.0, &ok));
+   {
+      // Reflective faces too - the mixed config's triple-reflect corner and
+      // mixed edges included - since a reflective coupling is a face flux
+      const BCType V = BCType::VACUUM, R = BCType::REFLECT;
+      PetscCall(CheckOppositeTranspose(8, 6, 4, 2, 1.0, 2.0, 3.0, V, V, V, V, V, V, "vacuum", &ok));
+      PetscCall(CheckOppositeTranspose(8, 6, 4, 6, 1.0, 2.0, 3.0, V, V, V, V, V, V, "vacuum", &ok));
+      PetscCall(CheckOppositeTranspose(8, 6, 4, 2, 1.0, 2.0, 3.0, R, V, R, V, R, V, "mixed", &ok));
+      PetscCall(CheckOppositeTranspose(8, 6, 4, 6, 1.0, 2.0, 3.0, R, V, R, V, R, V, "mixed", &ok));
+      PetscCall(CheckOppositeTranspose(8, 6, 4, 6, 1.0, 2.0, 3.0, R, R, R, R, R, R, "reflect", &ok));
+   }
 
    if (!skip_reference) {
       const BCType V = BCType::VACUUM, R = BCType::REFLECT;
@@ -636,7 +675,8 @@ int main(int argc, char **args) {
       // left + front + bottom: one corner where three reflective faces meet
       // (the triple flip), three edges of double flips, and mixed edges and
       // corners against the other three faces - vacuum wins them under
-      // Dirichlet-cell, reflect under ghost-flux - all in the checked matrix
+      // Dirichlet-cell, each face its own ghost value under ghost-flux - all
+      // in the checked matrix
       for (PetscInt t = 0; t < 2; t++) {
          const PetscBool ghost = (PetscBool)(t == 1);
          PetscCall(CheckOperatorAgainstReference(4, 3, 2, 2, 1.0, 2.0, 3.0, 1.5, 0.7, \

@@ -79,13 +79,16 @@ struct PETSC_VISIBILITY_PUBLIC PlexMeshSpec {
 // nulled) and
 // BoundaryInfo::ghost_inflow_d carries sum_f |Omega . nA_f| / V_c times each
 // incoming vacuum face's per-angle inflow, windowed per face by its centroid.
-// A row that comes in through any reflective face stays reflective (reflect
-// wins), mirrored over the reflective axes and the axes of its axis-aligned
-// incoming vacuum faces - the structured backends' rule, so a box still
-// matches its FD twin
+// A reflective inflow face is a face flux too: its slot points at the mirrored
+// angle (over that face's own axis) in the same cell and the streaming term
+// writes the face coefficient into it - DG1's rule, and the structured
+// backends', so a box still matches its FD twin. A row coming in through both
+// kinds takes both, so there are no BC rows at all under ghost-flux, and the
+// single-cell-wide case Dirichlet-cell rejects is well defined
 //
-// The opposite-ordinate symmetry under GHOST_FLUX (what a half-quadrature
-// preconditioner applied transposed on the other half rests on): with P
+// The opposite-ordinate symmetry under GHOST_FLUX, reflective couplings
+// included (what a half-quadrature preconditioner applied transposed on the
+// other half rests on): with P
 // swapping (cell, Omega) and (cell, -Omega) and V the cell volumes expanded to
 // rows, the VOLUME-WEIGHTED operator S = V A satisfies S^T = P S P - exactly
 // off the diagonal, to rounding on it (a cell's outward nA_f sum to zero only

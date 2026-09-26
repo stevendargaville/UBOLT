@@ -100,9 +100,12 @@ static PetscErrorCode CheckDALayout(DM da, const PhaseSpace &ps, const PetscInt 
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-// GHOST is the VacuumTreatment::GHOST_FLUX counterpart of DIRICHLET: the same
-// rows, but kept as ordinary unknowns with the outside-pointing upwind slots
-// nulled and the inflow moved to the rhs
+// GHOST is the VacuumTreatment::GHOST_FLUX counterpart of DIRICHLET and
+// REFLECT: the same rows, but kept as ordinary unknowns. Each outside-pointing
+// upwind slot takes the ghost value its face supplies - nulled with the inflow
+// moved to the rhs on a vacuum face, pointed at the mirrored angle in the same
+// cell on a reflective one - face by face, so a mixed corner needs no
+// precedence rule
 enum class RowKind { INTERIOR, DIRICHLET, REFLECT, GHOST };
 
 // The upwind neighbour is behind the direction on each axis: to the left/below
@@ -131,11 +134,16 @@ struct Upwind {
 // At a corner incoming through TWO vacuum faces the winning face - the one
 // whose inflow and window the rhs takes - is the x face, the first vacuum
 // incoming face in the axis order this function already checks
+//
+// Under ghost-flux every row incoming through any face is GHOST, and per
+// outside axis ghost_face says which vacuum face supplies the inflow or
+// ghost_mirror which angle a reflective face mirrors it to (-1 otherwise)
 static RowKind ClassifyRow(PetscInt i, PetscInt j, PetscInt a, \
    const PetscScalar *mu, const PetscScalar *eta, PetscInt n_cells_x, PetscInt n_cells_y, \
    BCType left, BCType right, BCType bottom, BCType top, \
    const PetscInt *reflect_mu, const PetscInt *reflect_eta, Upwind *upwind, PetscInt *partner, \
-   PetscInt *dirichlet_face, PetscBool ghost = PETSC_FALSE, PetscInt *ghost_face = nullptr)
+   PetscInt *dirichlet_face, PetscBool ghost = PETSC_FALSE, PetscInt *ghost_face = nullptr, \
+   PetscInt *ghost_mirror = nullptr)
 {
    upwind->upwind_i = (mu[a] > 0) ? i - 1 : ((mu[a] < 0) ? i + 1 : i);
    upwind->upwind_j = (eta[a] > 0) ? j - 1 : ((eta[a] < 0) ? j + 1 : j);
@@ -149,44 +157,39 @@ static RowKind ClassifyRow(PetscInt i, PetscInt j, PetscInt a, \
    *partner = -1;
    *dirichlet_face = -1;
    if (ghost_face) { ghost_face[0] = -1; ghost_face[1] = -1; }
+   if (ghost_mirror) { ghost_mirror[0] = -1; ghost_mirror[1] = -1; }
    if (!x_outside && !y_outside) return RowKind::INTERIOR;
 
    // Which face the direction comes in through on each outside axis
    const BCType x_bc = (mu[a] > 0) ? left : right;
    const BCType y_bc = (eta[a] > 0) ? bottom : top;
 
-   // Under the ghost-flux treatment the precedence at a MIXED corner is the
-   // opposite of the default's "vacuum wins": a row becomes a ghost-flux row
-   // only when EVERY face it comes in through is vacuum, and otherwise stays
-   // the reflective row below, mirrored over every outside axis exactly as an
-   // all-reflective corner is. Reflective faces are deliberately untouched by
-   // this mode, and a row that reflects on one axis cannot also carry a flux
-   // on the other without a second boundary family in the same equation
+   // Under the ghost-flux treatment each incoming face supplies its own ghost
+   // value - the inflow on a vacuum face, the mirrored angle in this cell on a
+   // reflective one - so a mixed corner takes both: the old "reflect wins"
+   // precedence mirrored such a row over the vacuum axis too, and the corner
+   // cell never saw that face's inflow, an O(1) error that did not shrink
+   // with h
    if (ghost) {
-      const PetscBool x_reflect = (PetscBool)(x_outside && x_bc == BCType::REFLECT);
-      const PetscBool y_reflect = (PetscBool)(y_outside && y_bc == BCType::REFLECT);
-      if (!x_reflect && !y_reflect) {
-         if (ghost_face) {
-            if (x_outside) ghost_face[0] = (mu[a] > 0) ? StructuredFD2D::FACE_LEFT : \
-               StructuredFD2D::FACE_RIGHT;
-            if (y_outside) ghost_face[1] = (eta[a] > 0) ? StructuredFD2D::FACE_BOTTOM : \
-               StructuredFD2D::FACE_TOP;
-         }
-         return RowKind::GHOST;
+      if (x_outside) {
+         if (x_bc == BCType::REFLECT) { if (ghost_mirror) ghost_mirror[0] = reflect_mu[a]; }
+         else if (ghost_face) ghost_face[0] = (mu[a] > 0) ? StructuredFD2D::FACE_LEFT : \
+            StructuredFD2D::FACE_RIGHT;
       }
+      if (y_outside) {
+         if (y_bc == BCType::REFLECT) { if (ghost_mirror) ghost_mirror[1] = reflect_eta[a]; }
+         else if (ghost_face) ghost_face[1] = (eta[a] > 0) ? StructuredFD2D::FACE_BOTTOM : \
+            StructuredFD2D::FACE_TOP;
+      }
+      return RowKind::GHOST;
    }
-   // Reaching here in ghost mode means at least one incoming face is
-   // reflective, so the row falls through to the reflective treatment below;
-   // the default mode's "vacuum wins" checks are skipped entirely
-   if (!ghost) {
-      if (x_outside && x_bc == BCType::VACUUM) {
-         *dirichlet_face = (mu[a] > 0) ? StructuredFD2D::FACE_LEFT : StructuredFD2D::FACE_RIGHT;
-         return RowKind::DIRICHLET;
-      }
-      if (y_outside && y_bc == BCType::VACUUM) {
-         *dirichlet_face = (eta[a] > 0) ? StructuredFD2D::FACE_BOTTOM : StructuredFD2D::FACE_TOP;
-         return RowKind::DIRICHLET;
-      }
+   if (x_outside && x_bc == BCType::VACUUM) {
+      *dirichlet_face = (mu[a] > 0) ? StructuredFD2D::FACE_LEFT : StructuredFD2D::FACE_RIGHT;
+      return RowKind::DIRICHLET;
+   }
+   if (y_outside && y_bc == BCType::VACUUM) {
+      *dirichlet_face = (eta[a] > 0) ? StructuredFD2D::FACE_BOTTOM : StructuredFD2D::FACE_TOP;
+      return RowKind::DIRICHLET;
    }
 
    PetscInt ap = a;
@@ -332,12 +335,13 @@ PetscErrorCode StructuredFD2D::create(MPI_Comm comm, PhaseSpace &ps, PetscInt n_
             // reflection condition psi(a) - psi(partner) = 0 on a reflective
             // one. Corner nodes classify through either axis
             Upwind upwind;
-            PetscInt partner = -1, dirichlet_face = -1, ghost_face[2] = {-1, -1};
+            PetscInt partner = -1, dirichlet_face = -1, ghost_face[2] = {-1, -1}, ghost_mirror[2] = {-1, -1};
             const RowKind kind = ClassifyRow(i, j, a, mu, eta, n_cells_x, n_cells_y, \
                left, right, bottom, top, reflect_mu, reflect_eta, &upwind, &partner, \
-               &dirichlet_face, ghost, ghost_face);
+               &dirichlet_face, ghost, ghost_face, ghost_mirror);
             // A GHOST row is an ordinary unknown - it carries no boundary
-            // condition in the matrix, only a nulled slot per outside axis
+            // condition in the matrix, only a nulled or mirrored slot per
+            // outside axis
             if (kind != RowKind::INTERIOR && kind != RowKind::GHOST) is_bc_row[r] = 1;
 
             if (kind == RowKind::GHOST)
@@ -401,25 +405,29 @@ PetscErrorCode StructuredFD2D::create(MPI_Comm comm, PhaseSpace &ps, PetscInt n_
             else
             {
                // A Dirichlet row keeps only its diagonal. A GHOST row keeps
-               // every slot whose upwind neighbour is inside the domain and
-               // nulls the ones that point out of it - which is exactly the
-               // slot whose coefficient moved to the rhs above
+               // every slot whose upwind neighbour is inside the domain; one
+               // that points out through a vacuum face is nulled - exactly
+               // the slot whose coefficient moved to the rhs above - and one
+               // that points out through a reflective face is repointed at
+               // the mirrored angle in this cell (owned, so rank-local)
                const PetscBool x_out = (PetscBool)(upwind.has_x && \
                   (upwind.upwind_i < 0 || upwind.upwind_i >= n_cells_x));
                const PetscBool y_out = (PetscBool)(upwind.has_y && \
                   (upwind.upwind_j < 0 || upwind.upwind_j >= n_cells_y));
                const PetscBool null_x = (PetscBool)(kind == RowKind::DIRICHLET || !upwind.has_x || \
-                  (kind == RowKind::GHOST && x_out));
+                  (kind == RowKind::GHOST && x_out && ghost_mirror[0] < 0));
                const PetscBool null_y = (PetscBool)(kind == RowKind::DIRICHLET || !upwind.has_y || \
-                  (kind == RowKind::GHOST && y_out));
+                  (kind == RowKind::GHOST && y_out && ghost_mirror[1] < 0));
 
                oor_[3 * r]     = null_x ? -1 : row;
-               ooc_[3 * r]     = null_x ? -1 : \
-                  GlobalDof(ltog, upwind.upwind_i, j, a, gxs, gys, gxm, n_angles);
+               ooc_[3 * r]     = null_x ? -1 : (x_out ? \
+                  GlobalDof(ltog, i, j, ghost_mirror[0], gxs, gys, gxm, n_angles) : \
+                  GlobalDof(ltog, upwind.upwind_i, j, a, gxs, gys, gxm, n_angles));
 
                oor_[3 * r + 1] = null_y ? -1 : row;
-               ooc_[3 * r + 1] = null_y ? -1 : \
-                  GlobalDof(ltog, i, upwind.upwind_j, a, gxs, gys, gxm, n_angles);
+               ooc_[3 * r + 1] = null_y ? -1 : (y_out ? \
+                  GlobalDof(ltog, i, j, ghost_mirror[1], gxs, gys, gxm, n_angles) : \
+                  GlobalDof(ltog, i, upwind.upwind_j, a, gxs, gys, gxm, n_angles));
             }
 
             oor_[3 * r + 2] = row;

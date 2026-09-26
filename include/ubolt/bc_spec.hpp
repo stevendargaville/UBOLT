@@ -32,9 +32,24 @@ enum class BCType { VACUUM, REFLECT };
 // |Omega_a| / h_a * psi_in moved to the rhs. That is the usual upwind flux with
 // a ghost cell holding psi_in, and what a DG face flux does anyway
 //
-// Why it is the default: with no identity rows left, A_{-d} is the exact
+// A REFLECTIVE face is treated the same way under GHOST_FLUX: the ghost cell
+// behind it holds the mirrored direction's flux in the same boundary cell, so
+// the outside-pointing entry couples to that mirrored angle instead of being
+// dropped, and there are NO boundary rows at all (the reflective row
+// psi(a) - psi(mirror a) = 0 belongs to DIRICHLET_CELL only)
+//
+// Why it is the default: with no boundary rows left, A_{-d} is the exact
 // transpose of A_d on EVERY row rather than only the interior ones, because a
-// row's stencil no longer depends on which direction it is for. See the
+// row's stencil no longer depends on which direction it is for. With P
+// swapping (cell, Omega) and (cell, -Omega): A^T = P A P for ANY combination
+// of vacuum and reflective faces - inflow values and windows only touch the
+// rhs - on the assembled streaming + removal operator (the block PCAIR
+// inverts; sigma_t may vary cell to cell), in every structured backend. On the
+// unstructured DG backend it is the volume-weighted (V A)^T = P (V A) P (see
+// unstructured_dg.hpp), which is the plain identity on equal volumes. It does
+// NOT hold under DIRICHLET_CELL, and it is not a property of the matrix-free
+// isotropic scatter, which commutes with P but is not symmetric once the
+// quadrature weights differ (level-symmetric beyond S4). See the
 // transposed-solve study for what that buys
 //
 // DIRICHLET_CELL (opt-in, and everything UBOLT did before Sep 2026): the

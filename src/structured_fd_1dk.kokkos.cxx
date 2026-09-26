@@ -166,8 +166,10 @@ PetscErrorCode StructuredFD1D::create(MPI_Comm comm, PhaseSpace &ps, PetscReal l
    // Under the ghost-flux treatment a vacuum inflow row is NOT a boundary row:
    // it keeps the full stencil, its upwind slot is nulled because the
    // neighbour is outside (exactly what the loop below already writes), and
-   // |mu|/dx times the face's inflow moves to the rhs. Reflective faces are
-   // untouched - see the header
+   // |mu|/dx times the face's inflow moves to the rhs. A reflective inflow
+   // row is not a boundary row either: its upwind slot points at the mirrored
+   // angle in the same cell, the ghost value a reflective face supplies - see
+   // the header
    const PetscBool ghost = bcs.ghost_flux_vacuum();
 
    const BCFace left_face = bcs.face(FACE_LEFT);
@@ -191,6 +193,16 @@ PetscErrorCode StructuredFD1D::create(MPI_Comm comm, PhaseSpace &ps, PetscReal l
                oor_[a * 2] = -1;
                ooc_[a * 2] = -1;
                ghost_inflow[a] = PetscAbsScalar(mu[a]) / dx_ * left_value;
+               continue;
+            }
+            if (ghost)
+            {
+               // A reflective face under ghost-flux is a face flux too: the
+               // upwind value outside is the mirrored angle's in this same
+               // cell, so the upwind slot points there and the streaming term
+               // writes -|mu|/dx into it like any other upwind neighbour
+               oor_[a * 2] = a + global_row_start;
+               ooc_[a * 2] = reflect_mu[a] + global_row_start;
                continue;
             }
             is_bc_row[a] = 1;
@@ -227,6 +239,12 @@ PetscErrorCode StructuredFD1D::create(MPI_Comm comm, PhaseSpace &ps, PetscReal l
                oor_[r * 2] = -1;
                ooc_[r * 2] = -1;
                ghost_inflow[r] = PetscAbsScalar(mu[a]) / dx_ * right_value;
+               continue;
+            }
+            if (ghost)
+            {
+               oor_[r * 2] = r + global_row_start;
+               ooc_[r * 2] = (local_cells - 1) * n_angles + reflect_mu[a] + global_row_start;
                continue;
             }
             is_bc_row[r] = 1;

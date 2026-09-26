@@ -24,7 +24,8 @@ Codebase map
   discretisation checks — a pure-streaming closed form and the shell operator against a
   reference matrix (the 3D mixed config puts three reflective faces around one corner),
   each under both vacuum treatments, plus the library-built boundary rhs against a
-  constant solution and, under ghost-flux, the opposite-ordinate identity `A^T = P A P`.
+  constant solution and, under ghost-flux, the opposite-ordinate identity `A^T = P A P`
+  (vacuum, mixed and all-reflect faces — it holds for any BC mix).
   `tests/verify_plexk.kokkos.cxx`: the unstructured backend's check, serial and -n 2/4 —
   the plex quad/hex box against its `StructuredFD2D`/`3D` twin to ROUNDING (matrix, BC
   rows, rhs, scatter, a solve; rows matched by centroid, each side's row from its OWN
@@ -66,10 +67,18 @@ Codebase map
   (`BoundaryInfo::ghost_inflow_d`, added by `UboltFillInflow`; `UboltFillSource` ADDS
   for that reason); or `DIRICHLET_CELL`, opt-in via the problem file's
   `vacuum_treatment` (and the default before Sep 2026): an inflow boundary cell is an
-  identity row carrying the inflow. Ghost-flux is what makes the streaming/removal block
-  for `-Omega_d` exactly the transpose of the block for `Omega_d` on every row (the
-  groundwork for transposed half-quadrature preconditioning); under it reflect wins over
-  vacuum at a corner, under Dirichlet-cell vacuum wins, and `DSAPrecon` takes either.
+  identity row carrying the inflow. Under ghost-flux a REFLECTIVE face is a face flux
+  too — the outside-pointing slot points at the mirrored angle in the same cell — so
+  there are NO BC rows, and a mixed reflect/vacuum corner takes each face's own ghost
+  value (the first ghost-flux cut let reflect win there and the corner lost the vacuum
+  inflow, an O(1) error; fixed Sep 2026); under Dirichlet-cell the reflective row is
+  `psi(a) - psi(mirror) = 0` and vacuum wins a corner. Ghost-flux is what makes the
+  streaming/removal block for `-Omega_d` exactly the transpose of the block for
+  `Omega_d` on every row, for ANY mix of vacuum and reflective faces (the groundwork
+  for transposed half-quadrature preconditioning; on the plex it is the
+  volume-weighted `(VA)^T = P(VA)P`; not under Dirichlet-cell; streaming + removal
+  only — the isotropic scatter is not symmetric once the weights differ; scope in
+  `bc_spec.hpp`), and `DSAPrecon` takes either.
   Keyed the way DMPlex "Face Sets" ids are — the structured
   backends' `FACE_*` constants match PETSc's box-mesh convention, and a problem file's
   `boundary_conditions` names faces onto them); `MaterialSpec` (BCSpec's sibling
