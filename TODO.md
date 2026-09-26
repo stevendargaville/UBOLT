@@ -5,7 +5,9 @@ Each phase is a reviewable unit with its own verification. Do not start a phase 
 previous one's verification has passed and been reviewed.
 
 ## Current state (updated 2026-09-26)
-Last landed: **the block-Jacobi removal stage** (composite index 0 inverts the
+Last landed: **`ElementBlockInverse::scale` bumps its state directly** (the MPI wrapper's,
+through `PetscObjectStateIncrease`, pinned in `verify_plexk` via `MatGetState` - which
+needs PETSc main from 3 Sep 2026); before it, **the block-Jacobi removal stage** (composite index 0 inverts the
 operator's element blocks through `ElementBlockInverse`, bitwise the old point Jacobi at
 n_basis 1, block Jacobi at DG1); before it, **element-block-inverse scaling of PCAIR's
 pmat** (`ElementBlockInverse`, `-precon_block_scale`, default on the DG backend at both

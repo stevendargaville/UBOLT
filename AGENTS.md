@@ -38,7 +38,8 @@ Codebase map
   library rhs, a LINEAR field through the streaming matrix giving exactly `Omega . b` in
   interior cells, and second-order convergence against an exact SN solution; at both
   orders, the `ElementBlockInverse` of every operator those checks build (identity blocks
-  in `D^{-1} A`, invariance under a row scaling, `apply()` against the scaled matrix). `tests/meshes/`: mesh files the problem
+  in `D^{-1} A`, invariance under a row scaling, `apply()` against the scaled matrix, and a
+  reuse `scale()` bumping the matrix state a PC compares, which fails only at -n 2+). `tests/meshes/`: mesh files the problem
   files name (a hand-written Gmsh 2.2 `.msh` today).
   `tests/verify_quadraturek.kokkos.cxx`: the quadrature sets themselves, against the
   moment conditions that define them — needed because they are generated, not tabulated.
@@ -216,7 +217,8 @@ Read only when the task needs it
 
 Build
 1. In top repo directory: `make -j3 build_tests` (PETSc >= 3.25 configured with Kokkos
-   required). This builds `lib/libubolt.{so,a}` first; `make` on its own builds just the library.
+   required; in practice PETSc main from 3 Sep 2026 on, for `MatGetState`'s `MatState` form in
+   `verify_plexk` - no 3.25.x release has it, and the CI base image tracks main). This builds `lib/libubolt.{so,a}` first; `make` on its own builds just the library.
 2. Rule: fix all compile warnings (CI will build with `-Werror`).
    CI (`.github/workflows/ci_build.yml`) builds `dockerfiles/Dockerfile_kokkos` on the
    prebuilt `stevendargaville/petsc_kokkos` image (opt/debug/64-bit/OMP arches): it
