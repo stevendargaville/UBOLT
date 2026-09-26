@@ -24,8 +24,8 @@ Both findings from regenerating the Phase 6a report are now fixed; the element-b
 scaling left two follow-ups under the ghost-flux postscript: the block-Jacobi removal
 stage is done (index 0 inverts the operator's element blocks through the same
 `ElementBlockInverse`, bitwise the old point Jacobi at n_basis 1; kept on DG after
-measuring that dropping it costs 1-2 iterations), testing the scaled matrix's state bump
-is still open.
+measuring that dropping it costs 1-2 iterations), and the scaled matrix's state bump is
+now direct and tested (see that item).
 
 ## Phase 0 — Scaffolding + baseline capture (no behavior change)
 - [x] Directory tree, top Makefile (library skeleton), tests/Makefile (PFLARE-style recipes)
@@ -1105,25 +1105,21 @@ experiments stay on the campaign branch until PFLARE's PCAIR `PCApplyTranspose` 
       better where it moves at all - crooked pipe 371 -> 363, box_layers 34 -> 33,
       cube_diffusive 33 -> 32, tau 1 absorber 3 -> 2; one +1 under plain -matfree_removal
       (tau 1, c 0.5, quads: 169 -> 170). No recipe pin moved
-- [ ] `ElementBlockInverse::scale` bumps the scaled MPI matrix's state with a
-      `MAT_FINAL_ASSEMBLY` - make that deliberate, or replace it, and TEST it. A PC
-      rebuilds only if pmat's state changed since its last setup. Writing through
-      `MatSeqAIJRestoreKokkosViewWrite` bumps the seq PARTS of an MPIAIJ matrix but not
-      the wrapper PCAIR compares, so without the bump a parallel default-mode multigroup
-      run would silently reuse group 0's hierarchy for every group (still correct -
-      the KSP converges on the true operator - just more iterations: exactly the
-      failure nothing would flag). `PetscObjectStateIncrease` is the direct fix, but
-      it is a macro in `petsc/private/petscimpl.h` and UBOLT includes no private PETSc
-      headers (PFLARE does). The assembly is the public stand-in: collective (fine,
-      setup is), nothing stashed so no messages, and the pattern's nonzerostate is
-      unchanged so the Kokkos side rebuilds nothing - but it still runs the seq
-      assembly checks over the row structure on the host, and "rebuilds nothing"
-      rests on PETSc internals rather than a documented guarantee. To do: pin it in
-      `verify_plexk` check 10 (the scaled matrix's `MatGetState` must change across a
-      `MAT_REUSE_MATRIX` scale, at -n 2); then decide whether to take the private
-      header instead, as PFLARE does, and drop the assembly. Covered today only
-      indirectly: the parallel recipes (multigroup `plex_decades4` at -n 2) pass their
-      pins, and check 10 verifies the reused matrix's VALUES, not that a PC sees them.
+- [x] `ElementBlockInverse::scale` bumps the scaled MPI matrix's state (DONE 26 Sep
+      2026). A PC rebuilds only if pmat's state changed since its last setup, and
+      writing through `MatSeqAIJRestoreKokkosViewWrite` bumps the seq PARTS of an
+      MPIAIJ matrix but not the wrapper PCAIR compares - so without a bump a parallel
+      default-mode multigroup run silently reuses group 0's hierarchy for every group
+      (still correct, just more iterations: exactly the failure nothing would flag).
+      It was a no-op `MAT_FINAL_ASSEMBLY` (host-side row checks, and "rebuilds nothing"
+      resting on PETSc internals); it is now `PetscObjectStateIncrease` straight off
+      `petsc/private/petscimpl.h`, as PFLARE does - included only in the src TU, never
+      from `include/ubolt/`. Pinned in `verify_plexk`'s element-block check: a
+      `MAT_REUSE_MATRIX` scale must change `MatGetState`'s state and leave its
+      nonzerostate alone. That is the `MatState` struct form (PETSc main, Sep 2026 -
+      3.25 releases return a bare `PetscObjectState`), so it needs a PETSc newer than
+      that. Verified the check bites (debug arch): with the bump removed it passes
+      serially and fails every case at -n 2.
 - [x] DG0 ghost-flux mixed corners (found regenerating the Phase 6a report, 25 Sep 2026;
       FIXED 26 Sep 2026, see the end of this item):
       where a reflective face meets a vacuum face, the ghost-flux "reflect wins" rule
