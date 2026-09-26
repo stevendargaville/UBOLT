@@ -50,7 +50,7 @@ public:
    // add it into d. TransportOperator::diagonal() composes the whole diagonal
    // that way, for when a term carrying one is applied matrix-free and is
    // therefore missing from the assembled matrix - MatGetDiagonal would then
-   // hand the Jacobi stage of the preconditioner a silently incomplete diagonal
+   // hand the removal stage of the preconditioner a silently incomplete diagonal
    //
    // "The diagonal" is the ASSEMBLED operator's: streaming plus removal.
    // ScatteringTerm deliberately does not override this. It has never been in

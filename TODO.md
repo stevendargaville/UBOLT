@@ -5,9 +5,11 @@ Each phase is a reviewable unit with its own verification. Do not start a phase 
 previous one's verification has passed and been reviewed.
 
 ## Current state (updated 2026-09-26)
-Last landed: **element-block-inverse scaling of PCAIR's pmat** (`ElementBlockInverse`,
-`-precon_block_scale`, default on the DG backend at both orders), which lets PCAIR
-coarsen DG1 at its default strong threshold; before it, **ghost-flux reflective faces**
+Last landed: **the block-Jacobi removal stage** (composite index 0 inverts the
+operator's element blocks through `ElementBlockInverse`, bitwise the old point Jacobi at
+n_basis 1, block Jacobi at DG1); before it, **element-block-inverse scaling of PCAIR's
+pmat** (`ElementBlockInverse`, `-precon_block_scale`, default on the DG backend at both
+orders, PR #9), which lets PCAIR coarsen DG1 at its default strong threshold; before that, **ghost-flux reflective faces**
 (the DG0 mixed-corner fix under the ghost-flux postscript: under `"ghost_flux"` a
 reflective face is a face coupling to the mirrored angle in the same cell, in every
 backend, so there are no BC rows and a reflect/vacuum corner takes both faces' ghost
@@ -19,8 +21,11 @@ reflective-face re-pins were swept in the 64-bit CI image (one +1,
 `cube_10_inf_medium_ghost -matfree_removal` pinned 22); the block-scaled plex pins are
 re-measured on top of it (see docs/dev/testing.md, "Unstructured iteration counts").
 Both findings from regenerating the Phase 6a report are now fixed; the element-block
-scaling left two follow-ups under the ghost-flux postscript (a block-Jacobi removal
-stage at DG1, and testing the scaled matrix's state bump).
+scaling left two follow-ups under the ghost-flux postscript: the block-Jacobi removal
+stage is done (index 0 inverts the operator's element blocks through the same
+`ElementBlockInverse`, bitwise the old point Jacobi at n_basis 1; kept on DG after
+measuring that dropping it costs 1-2 iterations), testing the scaled matrix's state bump
+is still open.
 
 ## Phase 0 — Scaffolding + baseline capture (no behavior change)
 - [x] Directory tree, top Makefile (library skeleton), tests/Makefile (PFLARE-style recipes)
@@ -1058,7 +1063,8 @@ experiments stay on the campaign branch until PFLARE's PCAIR `PCApplyTranspose` 
       per node) for nothing; (ii) it applies at both DG orders by default
       (`-precon_block_scale`, off on the structured backends, whose baselines predate
       it), so DG0 and DG1 go through the same stage - at DG0 it is the diagonal; (iii)
-      the removal Jacobi stage (index 0) stays point-diagonal. Measured on the TODO's
+      the removal Jacobi stage (index 0) stays point-diagonal - since replaced by the
+      element blocks too, see the next item. Measured on the TODO's
       DG1 quads (plex_box_50_st2_dg1 physics, S2, rtol 1e-10) at PCAIR's DEFAULT strong
       threshold: 14 / 18 / 21 AIR levels at n = 25 / 50 / 100 and 13 / 13 / 13
       iterations, against 28 / 58 / 119 and 14 / 16 / 17 unscaled, and 25 / 30 / 35 and
@@ -1068,21 +1074,37 @@ experiments stay on the campaign branch until PFLARE's PCAIR `PCApplyTranspose` 
       Verified (`verify_plexk` 10): identity blocks in `D^{-1} A`, invariance under a left
       row scaling, and `apply()` against the scaled matrix, to ~1e-15 on every DG0 and
       DG1 operator the ghost-flux and DG1 checks build, serial and -n 2/4
-- [ ] DG1: a block-Jacobi removal stage (follow-up to the element-block scaling, 26 Sep
-      2026). Composite index 0 still inverts the operator's POINT diagonal. At DG0 that is
-      the element block, so the two stages agree; at DG1 it drops the in-cell
-      off-diagonals (the volume term -(Omega . grad phi_i) and the outflow face terms),
-      which are as large as the diagonal, so index 0 hands PCAIR a crude first iterate.
-      The fix is index 0 applying D_op^{-1} through `ElementBlockInverse`. Not a one-liner:
-      under `-matfree_removal` the removal diagonal is COMPOSED from the terms'
-      `add_diagonal` (the assembled matrix is streaming only), so blocks need either a
-      per-term `add_block` or "blocks off the assembled matrix + sigma_t on the block
-      diagonal" (removal is diagonal, so that is exact) - either way on a path
-      `-check_matfree` pins bitwise. It also moves the default-mode counts again, since
-      index 0 sets the residual PCAIR sees, so it is its own measurement. Deferred
-      because the data did not ask for it (DG1 13 iterations flat, 0-1 more than DG0);
-      where to look: strong removal, where index 0 does most of the work, and the
-      thick-diffusion (crooked pipe) runs.
+- [x] DG1: a block-Jacobi removal stage (follow-up to the element-block scaling, done
+      26 Sep 2026). Composite index 0 used to invert the operator's POINT diagonal, which
+      at DG1 drops the in-cell off-diagonals (the volume term -(Omega . grad phi_i) and
+      the outflow face terms, as large as the diagonal). It now applies D_op^{-1} through
+      the same `ElementBlockInverse` the block-scaled streaming stage uses, read off the
+      OPERATOR (never pmat), so there is one local-inverse code path for both stages and
+      every backend: at n_basis 1 a block is the diagonal entry and the stage is the old
+      point Jacobi to the bit (FD and DG0 residual histories identical on all 247
+      structured and plex DG0 recipe lines, serial and np 2, -diag_scale, -matfree_removal
+      and DSA included). Under `-matfree_removal` the blocks are the assembled
+      (streaming-only) matrix's with the operator's COMPOSED diagonal in place of their
+      own - `ElementBlockInverse::setup(A, diag)` - which is exact because the removal is
+      diagonal (identity mass matrix); `verify_plexk` 10 pins those blocks against the
+      assembled operator's, BITWISE, on every DG0 and DG1 operator it builds.
+      DECISION: keep the stage. The suggestion was that DG does not need it at all once
+      PCAIR is block-scaled - in the default mode pmat IS the operator, so both stages
+      invert the same D. Measured (opt arch, point / block / none, every plex recipe at
+      np 1 and 2 plus 68 generated plex problems: a thickness sweep tau = sigma_t dx =
+      0.1..100 at c = 0 / 0.5 / 0.9 on quads and triangles, the crooked pipe, box_diffusive,
+      lattice, layers, random8, cube_diffusive and decades4, each in the default mode and
+      under -matfree_removal -precon_ref_shift, plain -matfree_removal where tau <= 1):
+      dropping the stage is never better than block by more than one iteration (crooked
+      pipe DG1 362 against 363) and is worse by 1-2 in the removal-dominated and diffusive
+      runs - a pure absorber at tau 10-100 takes 1 iteration with the stage and 2 without,
+      box_diffusive on triangles DG1 40 -> 42, cube_diffusive 18 -> 19 (DG0) and 32 -> 34
+      (DG1), the last decades4 group 29 -> 30 / 36 -> 37 under ref-shift. The stage costs
+      one block apply per PC application against a full AIR V-cycle, so it stays. The
+      block stage against the old point one at DG1: never worse in the default mode,
+      better where it moves at all - crooked pipe 371 -> 363, box_layers 34 -> 33,
+      cube_diffusive 33 -> 32, tau 1 absorber 3 -> 2; one +1 under plain -matfree_removal
+      (tau 1, c 0.5, quads: 169 -> 170). No recipe pin moved
 - [ ] `ElementBlockInverse::scale` bumps the scaled MPI matrix's state with a
       `MAT_FINAL_ASSEMBLY` - make that deliberate, or replace it, and TEST it. A PC
       rebuilds only if pmat's state changed since its last setup. Writing through

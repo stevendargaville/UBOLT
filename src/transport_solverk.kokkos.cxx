@@ -2,59 +2,75 @@
 #include "ubolt/block_inverse.hpp"
 #include "pflare.h"
 
-// Define context for the removal pcshell
-typedef struct {
-   Vec inverse_sigma_t_vec;
-} removal_pc_ctx;
+// The removal stage: y = D_op^{-1} x, D_op the element blocks of the
+// OPERATOR (not of pmat - whatever pmat the streaming stage was handed, this
+// stage inverts the true local operator). At n_basis 1 - the structured
+// backends and DG0 - a block is the diagonal entry, and this is the point
+// Jacobi stage it always was, to the bit; at DG1 it is the n_basis x n_basis
+// upwind cell-local block, the same thing the block-scaled streaming stage
+// inverts, which the point diagonal was a crude stand-in for. new/delete
+// rather than PetscNew: the blocks hold device views, which need their
+// constructors and destructors run
+struct RemovalPCCtx {
+   ElementBlockInverse blocks;
+   // The composed diagonal, when the assembled matrix is missing part of it
+   Vec diag = NULL;
+};
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 static PetscErrorCode RemovalPCDestroy(PC pc)
 {
-   removal_pc_ctx *shell = nullptr;
+   RemovalPCCtx *shell = nullptr;
 
    PetscFunctionBeginUser;
 
    PetscCall(PCShellGetContext(pc, &shell));
-   PetscCall(VecDestroy(&shell->inverse_sigma_t_vec));
-   PetscCall(PetscFree(shell));
+   PetscCall(VecDestroy(&shell->diag));
+   delete shell;
 
    PetscFunctionReturn(PETSC_SUCCESS);
 }
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-// The Jacobi stage's inverse diagonal
+// The removal stage's blocks
 //
-// Read off the assembled matrix, which is where it has always come from -
-// unless a term carrying a diagonal is being applied matrix-free, in which case
-// the assembled matrix no longer holds the whole diagonal and MatGetDiagonal
-// would silently precondition with whatever part of it happens to be assembled
-// (streaming alone, under -matfree_removal). Then the operator composes it from
-// the terms instead: the same number, bitwise - transportk's -check_matfree
-// pins exactly that - written another way
-static PetscErrorCode RemovalPCFillContext(removal_pc_ctx *shell, const TransportOperator *op)
+// Read off the assembled matrix, which is where the diagonal has always come
+// from - unless a term carrying a diagonal is being applied matrix-free, in
+// which case the assembled matrix no longer holds the whole diagonal and
+// reading it alone would silently precondition with whatever part of it
+// happens to be assembled (streaming alone, under -matfree_removal). Then the
+// operator composes the diagonal from the terms instead - the same number,
+// bitwise, transportk's -check_matfree pins exactly that - and it replaces
+// the blocks' diagonal. The off-diagonals are right either way: the only
+// diagonal-carrying term that goes matrix-free is the removal, which has none
+// (the DG mass matrix is the identity), so the assembled ones are all there
+// are - verify_plexk check 10 pins those blocks against the assembled
+// operator's, bitwise
+static PetscErrorCode RemovalPCFillContext(RemovalPCCtx *shell, const TransportOperator *op)
 {
    PetscFunctionBeginUser;
 
-   if (op->diagonal_is_composed()) PetscCall(op->diagonal(shell->inverse_sigma_t_vec));
-   else PetscCall(MatGetDiagonal(op->assembled_mat(), shell->inverse_sigma_t_vec));
-   PetscCall(VecReciprocal(shell->inverse_sigma_t_vec));
+   if (op->diagonal_is_composed()) {
+      PetscCall(op->diagonal(shell->diag));
+      PetscCall(shell->blocks.setup(op->assembled_mat(), shell->diag));
+   }
+   else PetscCall(shell->blocks.setup(op->assembled_mat()));
 
    PetscFunctionReturn(PETSC_SUCCESS);
 }
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-static PetscErrorCode RemovalPCCreateContext(removal_pc_ctx **shell, const TransportOperator *op)
+static PetscErrorCode RemovalPCCreateContext(RemovalPCCtx **shell, const TransportOperator *op)
 {
-   removal_pc_ctx *newctx;
+   RemovalPCCtx *newctx = new RemovalPCCtx;
 
    PetscFunctionBeginUser;
 
-   PetscCall(PetscNew(&newctx));
-   // Create vector for removal preconditioning
-   PetscCall(MatCreateVecs(op->assembled_mat(), &newctx->inverse_sigma_t_vec, NULL));
+   PetscCall(newctx->blocks.create(op->phase_space()));
+   PetscCall(MatCreateVecs(op->assembled_mat(), &newctx->diag, NULL));
    PetscCall(RemovalPCFillContext(newctx, op));
 
    *shell = newctx;
@@ -67,12 +83,12 @@ static PetscErrorCode RemovalPCCreateContext(removal_pc_ctx **shell, const Trans
 // Apply the preconditioner for the removal term
 static PetscErrorCode RemovalPCApply(PC pc, Vec x, Vec y)
 {
-   removal_pc_ctx *shell = nullptr;
+   RemovalPCCtx *shell = nullptr;
 
    PetscFunctionBeginUser;
 
    PetscCall(PCShellGetContext(pc, &shell));
-   PetscCall(VecPointwiseMult(y, x, shell->inverse_sigma_t_vec));
+   PetscCall(shell->blocks.apply(x, y));
 
    PetscFunctionReturn(PETSC_SUCCESS);
 }
@@ -182,7 +198,7 @@ PetscErrorCode TransportSolver::create(MPI_Comm comm, const TransportOperator &o
 {
    PC pc, pc_removal;
    PC block_inner = NULL;
-   removal_pc_ctx *shell = nullptr;
+   RemovalPCCtx *shell = nullptr;
 
    PetscFunctionBeginUser;
 
@@ -202,7 +218,7 @@ PetscErrorCode TransportSolver::create(MPI_Comm comm, const TransportOperator &o
    PetscCall(PCCompositeAddPCType(pc, PCSHELL));
    PetscCall(PCCompositeGetPC(pc, 0, &pc_removal));
 
-   // The removal preconditioner always works off the operator's own diagonal,
+   // The removal preconditioner always works off the operator's own blocks,
    // whatever pmat the streaming preconditioner was handed
    PetscCall(RemovalPCCreateContext(&shell, op_));
 
@@ -287,12 +303,12 @@ PetscErrorCode TransportSolver::create(MPI_Comm comm, const TransportOperator &o
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-// Re-read (or re-compose) the removal PC's inverse diagonal after the group's
+// Re-read (or re-compose) the removal PC's inverse blocks after the group's
 // xsections have changed under it
 PetscErrorCode TransportSolver::refresh()
 {
    PC pc, pc_removal;
-   removal_pc_ctx *shell = nullptr;
+   RemovalPCCtx *shell = nullptr;
 
    PetscFunctionBeginUser;
 

@@ -19,6 +19,10 @@
 // read here straight out of the matrix's CSR rather than through PETSc's
 // variable-block interface
 //
+// The solver uses it twice: the removal stage (composite index 0) IS D_op^{-1},
+// the operator's blocks, on every backend - point Jacobi at n_basis 1 - and the
+// block-scaled streaming stage builds PCAIR on D^{-1} pmat
+//
 // Why the matrix and not the terms: the matrix the blocks come from is
 // whatever pmat the solver was handed - the assembled operator, a
 // streaming-only copy, a reference-shifted one, or one -diag_scale has already
@@ -40,7 +44,14 @@ public:
    // a MATAIJKOKKOS matrix (seq or MPI) over the phase space's rows, square,
    // with the phase space's parallel layout. A missing block entry reads as
    // zero; a singular block is an error
-   PetscErrorCode setup(Mat A);
+   //
+   // diag, if given, replaces the blocks' diagonal entries (a Vec over A's
+   // rows): the blocks are A's off-diagonals around diag. That is how the
+   // removal stage gets the operator's blocks when a diagonal-carrying term
+   // is applied matrix-free, so A is missing it - the removal is diagonal, so
+   // the assembled off-diagonals are the whole story and the composed
+   // diagonal supplies the rest
+   PetscErrorCode setup(Mat A, Vec diag = NULL);
 
    // y = D^{-1} x over the local rows. x and y may not alias
    PetscErrorCode apply(Vec x, Vec y) const;

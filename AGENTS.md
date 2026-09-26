@@ -146,7 +146,12 @@ Codebase map
   shell: PCAIR built on `D^{-1} pmat`, applied to `D^{-1} r` — a preconditioner-only
   change (operator, rhs, residual norms untouched), the inner PC keeping the `sub_1_`
   prefix. `-precon_block_scale`, default ON for the DG backend (both orders), OFF on the
-  structured ones; it is what lets PCAIR coarsen DG1 at its default strong threshold,
+  structured ones; it is what lets PCAIR coarsen DG1 at its default strong threshold.
+  Composite index 0, the removal stage, is the same class on EVERY backend, read off the
+  operator rather than pmat: the point Jacobi it always was at n_basis 1 (to the bit),
+  block-Jacobi at DG1; under `-matfree_removal` `setup(A, diag)` takes the composed
+  diagonal in place of the streaming-only matrix's (exact: removal has no off-diagonals),
+  and it is kept on DG though it scales the same blocks (dropping it measured 1-2 worse),
   `RefShiftPmats` (the OTHER optional pmat strategy, behind `-precon_ref_shift` and only
   under `-matfree_removal`: k copies of the streaming matrix each carrying a
   REPRESENTATIVE removal `alpha_k * D_ref`, plus the group-to-bin map. It owns those

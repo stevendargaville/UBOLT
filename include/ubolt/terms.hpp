@@ -214,7 +214,7 @@ public:
    PetscErrorCode apply_add(Vec x, Vec y) const override;
 
    // Always: whichever half of the term is live, the removal is on the
-   // operator's diagonal and the Jacobi stage of the preconditioner wants it
+   // operator's diagonal and the removal stage of the preconditioner wants it
    PetscBool has_diagonal() const override { return PETSC_TRUE; }
    PetscErrorCode add_diagonal(Vec d) const override;
 
