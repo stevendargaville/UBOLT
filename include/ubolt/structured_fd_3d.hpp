@@ -41,11 +41,12 @@ struct PETSC_VISIBILITY_PUBLIC MaterialBox3D {
 // vacuum wins, and the inflow value and window such a row takes are the first
 // vacuum incoming face's in axis order x, y, z
 //
-// Those Dirichlet rows are VacuumTreatment::DIRICHLET_CELL, now opt-in. Under
-// the default GHOST_FLUX a row incoming only through vacuum faces keeps its
-// physical stencil with the outside-pointing slots nulled, the inflow of every
-// incoming vacuum face summed into BoundaryInfo::ghost_inflow_d, and REFLECT
-// wins wherever a reflective face meets a vacuum one (see the 2D backend)
+// Those BC rows are VacuumTreatment::DIRICHLET_CELL, now opt-in. Under the
+// default GHOST_FLUX there are no BC rows at all: every inflow row keeps its
+// physical stencil and each outside-pointing slot takes its own face's ghost
+// value - nulled with the inflow summed into BoundaryInfo::ghost_inflow_d on a
+// vacuum face, pointed at the mirrored angle in the same cell on a reflective
+// one - so a mixed edge or corner takes both (see the 2D backend)
 class PETSC_VISIBILITY_PUBLIC StructuredFD3D : public Discretisation {
 public:
    // The boundary label ids this backend hands to the BCSpec - the ids

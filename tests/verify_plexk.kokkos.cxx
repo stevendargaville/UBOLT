@@ -25,7 +25,8 @@
 //     box's, every cell's outward normals close, the cell count is the box's,
 //     and (on the simplex checks' meshes) each "Face Sets" id sits on the box
 //     face the structured FACE_* constants give it
-//  5. Error paths: a reflection partner that is itself a BC row, materials
+//  5. Error paths: a reflection partner that is itself a BC row (under
+//     Dirichlet-cell - ghost-flux must accept the same box), materials
 //     for "Cell Sets" on a mesh without the label, a .vts name on the plex, a
 //     2D quadrature on a 3D mesh
 //  6. The .vtu writer writes each cell exactly once in parallel (the overlap
@@ -37,8 +38,9 @@
 //     heterogeneous sigma_t - the property a half-quadrature preconditioner
 //     applied transposed on the other half rests on - and (b) inflow psi_in
 //     on every face with a source sigma_t psi_in, whose exact discrete
-//     solution is psi = psi_in, through the library-built rhs. Plus the
-//     slanted-face mesh of 5 in ghost mode: no Dirichlet rows left
+//     solution is psi = psi_in, through the library-built rhs; both again
+//     with the low faces reflective, the mirror couplings inside. Plus the
+//     slanted-face mesh of 5 in ghost mode: no BC rows left
 //  8. DG1, which has no FD twin, on quads, hexes, the irregular triangle file
 //     and (where PETSc can mesh them) triangles and tets, each with two or
 //     three reflective faces meeting at a corner and the rest driven vacuum:
@@ -1009,9 +1011,13 @@ static PetscErrorCode CheckErrorPaths(PetscBool *ok)
    // The rejections below print nothing and come back as error codes
    PetscCall(PetscPushErrorHandler(PetscReturnErrorHandler, NULL));
 
-   // Reflective on BOTH x faces of a single-cell-wide box: every reflection
-   // partner comes in through the opposite face, so it is a BC row itself
-   {
+   // Reflective on BOTH x faces of a single-cell-wide box, under
+   // Dirichlet-cell: every reflection partner comes in through the opposite
+   // face, so it is a BC row itself. Ghost-flux must ACCEPT the same box:
+   // there a reflective face is a face coupling to the mirrored angle's
+   // (ordinary) row, so no row defines another
+   for (PetscInt t = 0; t < 2; t++) {
+      const PetscBool ghost = (PetscBool)(t == 1);
       SNQuadrature2D quad;
       PhaseSpace ps;
       UnstructuredDG disc;
@@ -1024,12 +1030,16 @@ static PetscErrorCode CheckErrorPaths(PetscBool *ok)
       mesh.lengths[1] = 4.0;
       bcs.set(StructuredFD2D::FACE_LEFT, BCType::REFLECT);
       bcs.set(StructuredFD2D::FACE_RIGHT, BCType::REFLECT);
+      bcs.set_vacuum_treatment(ghost ? VacuumTreatment::GHOST_FLUX : VacuumTreatment::DIRICHLET_CELL);
 
-      n_cases++;
+      if (!ghost) n_cases++;
       if (quad.create(2) || disc.create_mesh(PETSC_COMM_WORLD, mesh) || \
           ps.create(PETSC_COMM_WORLD, disc.n_global_cells(), quad.n_angles())) {
          *ok = PETSC_FALSE;
-      } else if (disc.create(ps, quad, bcs)) n_rejected++;
+      } else if (disc.create(ps, quad, bcs)) {
+         if (ghost) *ok = PETSC_FALSE;
+         else n_rejected++;
+      }
       if (disc.destroy()) *ok = PETSC_FALSE;
    }
 
@@ -1259,11 +1269,11 @@ static PetscErrorCode CheckSlantedReflect(PetscBool ghost, PetscBool *ok)
    const PetscBool in_bounds = (PetscBool)(psi_min >= -1e-12 && psi_max <= bound * (1.0 + 1e-12));
    // The right-angle corner cell has the reflective bottom AND the driven
    // left face, the two hypotenuse cells the reflective bottom or the vacuum
-   // hypotenuse: reflective rows and Dirichlet rows must both exist
-   // Under ghost-flux there are no Dirichlet rows left: the hypotenuse is
-   // not axis-aligned, so a reflective row coming in through it too is not
-   // mirrored over it, and its partner comes in through it as a ghost row
-   const PetscBool rows_ok = ghost ? (PetscBool)(n_reflect > 0 && n_dirichlet == 0) : \
+   // hypotenuse: reflective rows and Dirichlet rows must both exist.
+   // Under ghost-flux there are no BC rows at all: the reflective bottom is a
+   // face coupling to the mirrored angle and the hypotenuse a face flux, and
+   // a row coming in through both takes both
+   const PetscBool rows_ok = ghost ? (PetscBool)(n_reflect == 0 && n_dirichlet == 0) : \
                                      (PetscBool)(n_reflect > 0 && n_dirichlet > 0);
    if (!converged || !in_bounds || !rows_ok) *ok = PETSC_FALSE;
    PetscCall(PetscPrintf(PETSC_COMM_WORLD, "  reflective plane meeting a slanted vacuum face (meshes/tri_slanted.msh, S4, " \
@@ -1296,7 +1306,10 @@ static BCSpec GhostFlux(BCSpec bcs)
 // Check 7 (a) + (b): the ghost-flux treatment on a simplex mesh, which has no
 // FD twin - a generated box (Face Sets 1 .. 2 * dim), or with file a mesh file
 // whose boundary faces carry Face Sets 10 .. 13. All faces vacuum and driven
-// by the same inflow
+// by the same inflow - or with mixed, the low face of every axis reflective
+// instead, so the reflective couplings and the corners where they meet the
+// driven vacuum faces are inside both checks (a mirrored constant is the same
+// constant, so (b) still holds)
 //  (a) S = V A on streaming + removal, sigma_t varying cell to cell, against
 //      P S P, P swapping (cell, Omega) and (cell, -Omega) - the opposite
 //      ordinate found by this file's own cosine search. Off the diagonal the
@@ -1314,7 +1327,8 @@ static BCSpec GhostFlux(BCSpec bcs)
 //      a constant through a closed cell is zero, so this pins the ghost rows'
 //      |Omega . nA_f| / V_c inflow weights on faces of every orientation
 template <class Quad>
-static PetscErrorCode CheckGhostSimplex(PetscInt dim, PetscInt n, const char *file, PetscInt sn_order, PetscBool *ok)
+static PetscErrorCode CheckGhostSimplex(PetscInt dim, PetscInt n, const char *file, PetscInt sn_order, PetscBool *ok, \
+   PetscBool mixed = PETSC_FALSE)
 {
    Quad quad;
    PhaseSpace ps;
@@ -1333,6 +1347,7 @@ static PetscErrorCode CheckGhostSimplex(PetscInt dim, PetscInt n, const char *fi
    const PetscReal inflow = 2.5, sigma_t = 1.3;
    const char *shape = (dim == 2) ? "triangles" : "tets";
    char where[128];
+   char label[160];
 
    PetscFunctionBeginUser;
 
@@ -1357,7 +1372,15 @@ static PetscErrorCode CheckGhostSimplex(PetscInt dim, PetscInt n, const char *fi
       PetscCall(PetscSNPrintf(where, sizeof(where), "%" PetscInt_FMT "D %s %" PetscInt_FMT "^%" PetscInt_FMT, \
          dim, shape, n, dim));
    }
+   if (mixed) {
+      // bottom + left on the file; the box's low faces are 1 + 4 in 2D and
+      // z-min 1, y-min 3, x-min 6 in 3D (the FACE_* constants)
+      const std::vector<PetscInt> low = file ? std::vector<PetscInt>{10, 13} : \
+         (dim == 2 ? std::vector<PetscInt>{1, 4} : std::vector<PetscInt>{1, 3, 6});
+      for (const PetscInt f : low) bcs.set(f, BCType::REFLECT);
+   }
    bcs.set_vacuum_treatment(VacuumTreatment::GHOST_FLUX);
+   PetscCall(PetscSNPrintf(label, sizeof(label), "%s%s", where, mixed ? ", low faces reflective" : ""));
 
    PetscCall(quad.create(sn_order));
    const PetscInt n_angles = quad.n_angles();
@@ -1424,7 +1447,7 @@ static PetscErrorCode CheckGhostSimplex(PetscInt dim, PetscInt n, const char *fi
       const PetscBool pass = (PetscBool)(rel_s <= sym_tol && (!file || rel_a > 1e-3));
       if (!pass) *ok = PETSC_FALSE;
       PetscCall(PetscPrintf(PETSC_COMM_WORLD, "  ghost-flux, %s, S%" PetscInt_FMT ", heterogeneous sigma_t: " \
-         "||(VA)^T - P(VA)P|| / ||VA|| %.3e (tol %.0e); unweighted ||A^T - PAP|| / ||A|| %.3e (%s)%s\n", where, \
+         "||(VA)^T - P(VA)P|| / ||VA|| %.3e (tol %.0e); unweighted ||A^T - PAP|| / ||A|| %.3e (%s)%s\n", label, \
          sn_order, (double)rel_s, (double)sym_tol, (double)rel_a, file ? "unequal volumes: must be > 1e-3" : \
          "equal volumes: not checked", pass ? "" : " FAILED"));
 
@@ -1462,7 +1485,7 @@ static PetscErrorCode CheckGhostSimplex(PetscInt dim, PetscInt n, const char *fi
       const PetscBool pass = (PetscBool)(resid <= resid_tol * scale);
       if (!pass) *ok = PETSC_FALSE;
       PetscCall(PetscPrintf(PETSC_COMM_WORLD, "  ghost-flux, %s, S%" PetscInt_FMT ", inflow on every face against " \
-         "psi = psi_in: residual %.3e (tol %.0e x ||b|| %.3e)%s\n", where, sn_order, (double)resid, \
+         "psi = psi_in: residual %.3e (tol %.0e x ||b|| %.3e)%s\n", label, sn_order, (double)resid, \
          (double)resid_tol, (double)scale, pass ? "" : " FAILED"));
 
       PetscCall(op_b.destroy());
@@ -1931,7 +1954,8 @@ int main(int argc, char **args) {
 
       // 7. The same cases under ghost-flux: the rhs comparison now carries
       // the ghost inflow (both corner faces feed the origin cell, each
-      // windowed on its own), and the mixed configs the reflect-wins corners
+      // windowed on its own), and the mixed configs the corners where a
+      // reflective face's mirror coupling and a vacuum face's inflow meet
       PetscCall(CheckTwin2D(4, 3, 2, GhostFlux(vacuum), no_boxes, PETSC_FALSE, "vacuum, ghost-flux", &ok));
       PetscCall(CheckTwin2D(4, 3, 4, GhostFlux(vacuum), no_boxes, PETSC_FALSE, "vacuum, ghost-flux", &ok));
       PetscCall(CheckTwin2D(5, 4, 2, GhostFlux(reflect_lb), no_boxes, PETSC_FALSE, "reflect left + bottom, ghost-flux", \
@@ -1981,6 +2005,7 @@ int main(int argc, char **args) {
 #if defined(PETSC_HAVE_TRIANGLE)
    PetscCall(CheckSimplex<SNQuadrature2D>(2, 6, 4, 4, vtu, &ok));
    PetscCall(CheckGhostSimplex<SNQuadrature2D>(2, 6, NULL, 2, &ok));
+   PetscCall(CheckGhostSimplex<SNQuadrature2D>(2, 6, NULL, 4, &ok, PETSC_TRUE));
 #else
    PetscCall(PetscPrintf(PETSC_COMM_WORLD, "  2D triangle boxes skipped: PETSc was configured without a 2D " \
       "mesher (--download-triangle)\n"));
@@ -1998,9 +2023,11 @@ int main(int argc, char **args) {
    }
 #endif
    PetscCall(CheckGhostSimplex<SNQuadrature2D>(2, 0, "meshes/square_irregular_tri.msh", 6, &ok));
+   PetscCall(CheckGhostSimplex<SNQuadrature2D>(2, 0, "meshes/square_irregular_tri.msh", 6, &ok, PETSC_TRUE));
 #if defined(PETSC_HAVE_CTETGEN) || defined(PETSC_HAVE_TETGEN)
    PetscCall(CheckSimplex<SNQuadrature3D>(3, 3, 2, 2, NULL, &ok));
    PetscCall(CheckGhostSimplex<SNQuadrature3D>(3, 3, NULL, 4, &ok));
+   PetscCall(CheckGhostSimplex<SNQuadrature3D>(3, 3, NULL, 4, &ok, PETSC_TRUE));
 #else
    PetscCall(PetscPrintf(PETSC_COMM_WORLD, "  3D tets skipped: PETSc was configured without a tet mesher " \
       "(--download-ctetgen)\n"));

@@ -62,28 +62,46 @@ rhs. That is the usual upwind flux with a ghost cell holding the prescribed
 inflow, and what a DG face flux does. A corner cell fed through two vacuum
 faces gets a contribution from each.
 
+A reflective face is treated the same way under `"ghost_flux"`: the ghost cell
+behind it holds the MIRRORED direction's flux in the same boundary cell, so the
+row keeps its full stencil and the outside-pointing entry couples to that
+mirrored angle. Each incoming face supplies its own ghost value, so a cell at a
+mixed corner or edge - a direction entering through a vacuum AND a reflective
+face - gets the vacuum face's inflow and the reflective face's mirror both, and
+there is no precedence rule. A reflective box is then the exact image of the
+full box it is a symmetric part of: the quarter box with reflective low faces
+reproduces the full box's quadrant to rounding.
+
 `"dirichlet_cell"` (opt-in, and the default until Sep 2026): for a direction
 that enters through the face, the boundary cell's row is REPLACED by the
 identity and the rhs there carries the incoming flux. The cell is not an
 unknown for that direction, so the boundary effectively sits at the boundary
 cell's centre. Per-face inflows and tangential windows work exactly as they do
 under ghost-flux, but a corner cell fed through two vacuum faces takes only
-the first vacuum face in axis order x, y, z.
+the first vacuum face in axis order x, y, z. A reflective face's row is
+replaced too, by `psi(a) - psi(mirror a) = 0` in the boundary cell, and where
+a direction enters through a vacuum and a reflective face the vacuum face wins.
 
 The two differ at the boundary cell by O(h) and converge to the same solution
-under mesh refinement. `"ghost_flux"` leaves no identity rows in the operator,
+under mesh refinement. `"ghost_flux"` leaves no boundary rows in the operator,
 which is what makes the upwind operator for `-Omega` the exact transpose of the
-one for `+Omega` on every row rather than only the interior ones. A problem
+one for `+Omega` on every row rather than only the interior ones - for ANY mix
+of vacuum and reflective faces, since the inflow values and windows only touch
+the rhs. That holds for the streaming + removal operator (the part a
+preconditioner inverts), with `Sigma_t` varying freely; on an unstructured mesh
+it is the cell-volume-weighted version (below). `"dirichlet_cell"` breaks it on
+every boundary row. A problem
 file written before the switch that wants its old numbers back adds
 `"vacuum_treatment": "dirichlet_cell"`.
 
 Restrictions:
 
-- Reflective faces are untouched: a reflective row is still
-  `psi(a) - psi(mirror a) = 0`. Where a direction enters through BOTH a vacuum
-  and a reflective face - a mixed corner or edge - the REFLECTIVE treatment
-  wins under `"ghost_flux"` and the row is mirrored over every axis it enters
-  through, the opposite precedence to `"dirichlet_cell"`'s "vacuum wins".
+- The key switches reflective faces too (above). Until Sep 2026 ghost-flux
+  kept the reflective row `psi(a) - psi(mirror a) = 0` and let it win a mixed
+  corner, mirrored over every axis the direction entered through - so the
+  corner cell never saw the vacuum face's inflow, an O(1) error that did not
+  shrink with h. A problem with no reflective face is unaffected by that
+  change.
 - The DSA correction (`-precon_dsa`) works under either: its Marshak face sits
   on the domain boundary, which is where ghost-flux puts the transport
   boundary too.
@@ -233,19 +251,20 @@ Per face, what the rows do is the structured rule transplanted:
   backend classifies it. Boxes of either cell shape have only axis-aligned
   boundary faces; a file mesh can reflect on the straight axis-aligned parts
   of its boundary, INCLUDING where such a plane meets a slanted or curved
-  vacuum boundary (the symmetry-reduced quarter geometry): the reflection
-  partner of a direction there may itself be a Dirichlet row, which is fine.
-  What is rejected is a partner that is itself reflective - a single-cell-wide
-  direction between two reflective faces.
+  vacuum boundary (the symmetry-reduced quarter geometry). Under
+  `"dirichlet_cell"` the reflection partner of a direction there may itself be
+  a Dirichlet row, which is fine; what is rejected is a partner that is itself
+  reflective - a single-cell-wide direction between two reflective faces.
+  Under ghost-flux a reflective face is a face coupling, so neither case needs
+  a rule.
 - **`"vacuum_treatment": "ghost_flux"`** (the default) is the natural DG0 vacuum condition:
   a direction coming in only through vacuum faces keeps its physical row and
   the face flux `|Omega . nA_f| / V_c` times the inflow goes on the rhs, for
-  every incoming vacuum face (slanted ones included). Reflect wins where a
-  direction also comes in through a reflective face; the row is then mirrored
-  over the reflective axes and any AXIS-ALIGNED incoming vacuum face (the
-  structured rule, so a box still matches its structured twin), while a slanted
-  incoming vacuum face is not mirrored over and the partner comes in through it
-  as an ordinary ghost-flux row. The upwind operator for `-Omega` is then the
+  every incoming vacuum face (slanted ones included). A reflective face is a
+  face flux too, its slot coupled to the mirrored angle in the same cell (the
+  DG1 rule, and the structured one, so a box still matches its structured
+  twin), and a direction coming in through both kinds takes both. There are no
+  BC rows. The upwind operator for `-Omega` is then the
   transpose of the one for `+Omega` after weighting the rows by cell volume
   (see `unstructured_dg.hpp`) - exactly the transpose only where the cells
   have equal volumes.
