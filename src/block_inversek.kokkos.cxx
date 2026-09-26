@@ -74,10 +74,12 @@ static PetscErrorCode SplitLocal(Mat A, Mat *Ad, Mat *Ao)
 // with partial pivoting. The owned block's columns are local indices over the
 // same layout as the rows, so a column is block (c, a)'s basis j exactly when
 // col = (c * nb + j) * n_angles + a. Anything else in the row is a coupling to
-// another block and is not read here. Returns the number of singular blocks
+// another block and is not read here. With has_diag, the block's diagonal is
+// taken from diag_d instead of the matrix (see setup). Returns the number of
+// singular blocks
 static PetscInt InvertBlocksKernel(PetscScalarKokkosView inv_d, PetscIntConstKokkosViewUnmanaged ad_i, \
-   PetscIntConstKokkosViewUnmanaged ad_j, PetscScalarMatConstKokkosView ad_a, PetscInt n_angles, \
-   PetscInt nb, PetscInt n_blocks)
+   PetscIntConstKokkosViewUnmanaged ad_j, PetscScalarMatConstKokkosView ad_a, PetscScalarConstKokkosView diag_d, \
+   PetscBool has_diag, PetscInt n_angles, PetscInt nb, PetscInt n_blocks)
 {
    PetscInt n_singular = 0;
 
@@ -100,6 +102,7 @@ static PetscInt InvertBlocksKernel(PetscScalarKokkosView inv_d, PetscIntConstKok
                if (col % n_angles != a || col / (nb * n_angles) != c) continue;
                m[i][(col / n_angles) % nb] = ad_a(p);
             }
+            if (has_diag) m[i][i] = diag_d(r);
          }
 
          PetscBool ok = PETSC_TRUE;
@@ -240,11 +243,12 @@ PetscErrorCode ElementBlockInverse::create(const PhaseSpace &ps)
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-PetscErrorCode ElementBlockInverse::setup(Mat A)
+PetscErrorCode ElementBlockInverse::setup(Mat A, Vec diag)
 {
    Mat Ad = NULL, Ao = NULL;
    DeviceCSR csr;
    PetscScalarMatConstKokkosView ad_a;
+   PetscScalarConstKokkosView diag_d;
 
    PetscFunctionBeginUser;
 
@@ -253,9 +257,16 @@ PetscErrorCode ElementBlockInverse::setup(Mat A)
    PetscCheck(csr.n_rows == n_blocks_ * nb_, PETSC_COMM_SELF, PETSC_ERR_ARG_SIZ, "the matrix has %" \
       PetscInt_FMT " local rows, the phase space %" PetscInt_FMT, csr.n_rows, n_blocks_ * nb_);
 
+   if (diag) {
+      PetscCall(VecGetKokkosView(diag, &diag_d));
+      PetscCheck((PetscInt)diag_d.extent(0) == csr.n_rows, PETSC_COMM_SELF, PETSC_ERR_ARG_SIZ, "the diagonal " \
+         "has %" PetscInt_FMT " local rows, the matrix %" PetscInt_FMT, (PetscInt)diag_d.extent(0), csr.n_rows);
+   }
    PetscCall(MatSeqAIJGetKokkosView(Ad, &ad_a));
-   const PetscInt n_singular = InvertBlocksKernel(inv_d_, csr.i, csr.j, ad_a, n_angles_, nb_, n_blocks_);
+   const PetscInt n_singular = InvertBlocksKernel(inv_d_, csr.i, csr.j, ad_a, diag_d, diag ? PETSC_TRUE : \
+      PETSC_FALSE, n_angles_, nb_, n_blocks_);
    PetscCall(MatSeqAIJRestoreKokkosView(Ad, &ad_a));
+   if (diag) PetscCall(VecRestoreKokkosView(diag, &diag_d));
    PetscCheck(n_singular == 0, PETSC_COMM_SELF, PETSC_ERR_MAT_LU_ZRPVT, "%" PetscInt_FMT " of %" \
       PetscInt_FMT " element blocks are singular", n_singular, n_blocks_);
 

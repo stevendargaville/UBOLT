@@ -55,7 +55,9 @@
 //     (ElementBlockInverse), on every operator of 7 (DG0: 1 x 1 blocks) and 8
 //     (DG1: strided (dim + 1) x (dim + 1) blocks, reflective couplings
 //     included): identity blocks in D^{-1} A, invariance under a left row
-//     scaling, and apply() against the scaled matrix
+//     scaling, and apply() against the scaled matrix; and the blocks the
+//     removal stage takes under -matfree_removal (streaming-only matrix +
+//     the composed diagonal) against the assembled operator's, bitwise
 //  Plus two DG1 error paths in 5: Dirichlet-cell vacuum, and the DG0
 //  streaming term on a DG1 backend
 //
@@ -1385,6 +1387,78 @@ static PetscErrorCode CheckBlockInverse(const char *where, const PhaseSpace &ps,
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
+// The removal stage's blocks under -matfree_removal: the assembled matrix is
+// then streaming only, and ElementBlockInverse::setup takes the diagonal the
+// operator composes from its terms in place of the matrix's own. Removal is
+// diagonal (the DG mass matrix is the identity), so those blocks must be the
+// blocks of the assembled streaming + removal operator EXACTLY - the composed
+// diagonal is bitwise the assembled one (transportk's -check_matfree), and
+// the off-diagonals are the same streaming numbers
+static PetscErrorCode CheckComposedBlocks(const char *where, const PhaseSpace &ps, const Discretisation &disc, \
+   const OperatorTerm &streaming, PetscScalarKokkosView sigma_t_d, PetscBool *ok)
+{
+   RemovalTerm removal_asm, removal_mf;
+   TransportOperator op_asm, op_mf;
+   ElementBlockInverse blocks_asm, blocks_mf;
+   Vec diag = NULL;
+   PetscReal diff = 0.0, norm = 0.0;
+
+   PetscFunctionBeginUser;
+
+   PetscCall(removal_asm.create(ps, disc, sigma_t_d));
+   PetscCall(op_asm.create(PETSC_COMM_WORLD, ps, disc));
+   PetscCall(op_asm.add_term(&streaming));
+   PetscCall(op_asm.add_term(&removal_asm));
+   PetscCall(op_asm.assemble());
+
+   PetscCall(removal_mf.create(ps, disc, sigma_t_d));
+   removal_mf.set_matrix_free(PETSC_TRUE);
+   PetscCall(op_mf.create(PETSC_COMM_WORLD, ps, disc));
+   PetscCall(op_mf.add_term(&streaming));
+   PetscCall(op_mf.add_term(&removal_mf));
+   PetscCall(op_mf.assemble());
+   PetscCheck(op_mf.diagonal_is_composed(), PETSC_COMM_WORLD, PETSC_ERR_PLIB, "the matrix-free removal should " \
+      "make the diagonal composed");
+
+   PetscCall(MatCreateVecs(op_mf.assembled_mat(), &diag, NULL));
+   PetscCall(op_mf.diagonal(diag));
+   PetscCall(blocks_asm.create(ps));
+   PetscCall(blocks_mf.create(ps));
+   PetscCall(blocks_asm.setup(op_asm.assembled_mat()));
+   PetscCall(blocks_mf.setup(op_mf.assembled_mat(), diag));
+
+   auto inv_asm = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), blocks_asm.inverse_d());
+   auto inv_mf = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), blocks_mf.inverse_d());
+   for (size_t k = 0; k < inv_asm.extent(0); k++) {
+      diff = PetscMax(diff, PetscAbsScalar(inv_asm(k) - inv_mf(k)));
+      norm = PetscMax(norm, PetscAbsScalar(inv_asm(k)));
+   }
+   PetscCallMPI(MPIU_Allreduce(MPI_IN_PLACE, &diff, 1, MPIU_REAL, MPIU_MAX, PETSC_COMM_WORLD));
+   PetscCallMPI(MPIU_Allreduce(MPI_IN_PLACE, &norm, 1, MPIU_REAL, MPIU_MAX, PETSC_COMM_WORLD));
+
+   // Bitwise, and the streaming-only blocks must genuinely differ from them
+   // (otherwise the check could not see the diagonal being dropped)
+   PetscReal diff_bare = 0.0;
+   PetscCall(blocks_mf.setup(op_mf.assembled_mat()));
+   auto inv_bare = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), blocks_mf.inverse_d());
+   for (size_t k = 0; k < inv_asm.extent(0); k++) diff_bare = PetscMax(diff_bare, PetscAbsScalar(inv_asm(k) - inv_bare(k)));
+   PetscCallMPI(MPIU_Allreduce(MPI_IN_PLACE, &diff_bare, 1, MPIU_REAL, MPIU_MAX, PETSC_COMM_WORLD));
+
+   const PetscBool pass = (PetscBool)(diff == 0.0 && diff_bare > 1e-3 * norm);
+   if (!pass) *ok = PETSC_FALSE;
+   PetscCall(PetscPrintf(PETSC_COMM_WORLD, "  element-block inverse, %s, matrix-free removal: composed-diagonal blocks " \
+      "against the assembled ones %.3e (must be 0), streaming-only blocks differ by %.3e%s\n", where, (double)diff, \
+      (double)diff_bare, pass ? "" : " FAILED"));
+
+   PetscCall(VecDestroy(&diag));
+   PetscCall(op_asm.destroy());
+   PetscCall(op_mf.destroy());
+
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
 // The third cosine of a 3D set; a 2D set has none (the caller only asks in 3D).
 // maybe_unused: without a tet mesher the only 3D caller is compiled out
 [[maybe_unused]] static const PetscScalar *quad_xi(const SNQuadrature2D &) { return nullptr; }
@@ -1495,6 +1569,7 @@ static PetscErrorCode CheckGhostSimplex(PetscInt dim, PetscInt n, const char *fi
       PetscCall(op.add_term(&removal));
       PetscCall(op.assemble());
       PetscCall(CheckBlockInverse(where, ps, op.assembled_mat(), ok));
+      PetscCall(CheckComposedBlocks(where, ps, disc, streaming, sigma_t_d, ok));
 
       std::vector<PetscInt> opp(n_angles, -1);
       const PetscScalar *mu = quad.mu_host();
@@ -1683,6 +1758,7 @@ static PetscErrorCode CheckDG1(const char *where, const PlexMeshSpec &mesh, cons
       PetscCall(op.add_term(&removal));
       PetscCall(op.assemble());
       PetscCall(CheckBlockInverse(where, ps, op.assembled_mat(), ok));
+      PetscCall(CheckComposedBlocks(where, ps, disc, streaming, sigma_t_d, ok));
 
       std::vector<PetscInt> opp(n_angles, -1);
       const PetscScalar *mu = quad.mu_host();

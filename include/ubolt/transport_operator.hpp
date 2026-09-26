@@ -44,7 +44,7 @@ public:
    // Is that composition the ONLY way to get the diagonal right - i.e. is some
    // term carrying a diagonal being applied matrix-free, so the assembled
    // matrix is missing it? Then MatGetDiagonal is silently incomplete and the
-   // Jacobi stage of the preconditioner has to compose instead (see
+   // removal stage of the preconditioner has to compose instead (see
    // TransportSolver). FALSE for the assembled default, where MatGetDiagonal is
    // both correct and what every existing baseline was captured with
    PetscBool diagonal_is_composed() const;

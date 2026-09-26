@@ -599,8 +599,8 @@ int main(int argc, char **args) {
 
          // Diagonally scale this group's assembled operator and rhs - AFTER
          // the rhs is complete, and BEFORE the solver sees the matrix, so the
-         // removal shell caches the scaled diagonal (create and refresh both
-         // read it off the assembled matrix)
+         // removal shell caches the scaled blocks (create and refresh both
+         // read them off the assembled matrix)
          if (diag_scale) {
             PetscCall(MatGetDiagonal(op.assembled_mat(), diag_vec));
             PetscCall(VecReciprocal(diag_vec));

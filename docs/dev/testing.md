@@ -842,7 +842,12 @@ rank 0 owns anything, or that either backend numbers its rows naturally.
    unchanged by a random left row scaling of A (a pointwise scaling is block-diagonal,
    so it cancels - this also drives the `MAT_REUSE_MATRIX` path with changed values);
    and `(D^{-1} A) x` against `apply(A x)`. Tolerance 1e-12, measured 1e-16 to 1e-15,
-   serial and -n 2.
+   serial and -n 2. And the blocks the removal stage (composite index 0, the same class
+   on the operator) takes under `-matfree_removal` - the streaming-only matrix with the
+   operator's composed diagonal in place of its own - against the assembled streaming +
+   removal operator's: EXACTLY equal (0, not a tolerance: the composed diagonal is
+   bitwise the assembled one and the off-diagonals are the same numbers), and genuinely
+   different from the bare streaming-only blocks, so a dropped diagonal would show.
 
 **Why the twin comparison is to rounding and not bitwise.** The two backends reach the
 same coefficient through different arithmetic — the FD stencil writes `|mu| / dx`, DG0
@@ -889,6 +894,14 @@ reflective-face change (2026-09-26), where exactly one row went up by one:
 `plex_tri_30_inf_medium_ghost` serial, 11 unscaled to 12 (its count before that change).
 At DG0 the blocks are the diagonal, and since PCAIR's strength of connection is
 row-relative the hierarchy barely moves and no count moves by more than one; at DG1 it is what fixed the coarsening (see the DG1 table).
+
+**Block-Jacobi removal stage (2026-09-26).** Composite index 0 now inverts the
+operator's element blocks through the same `ElementBlockInverse`. At n_basis 1 (every
+structured recipe and every DG0 plex one) that is the old point Jacobi to the bit: the
+full `-ksp_monitor` history of all 247 such recipe lines, serial and np 2, is identical
+before and after. At DG1 the histories move in the third digit but no pinned count does,
+serial or np 2 - the tables below are unchanged. Where it does move a count (the crooked
+pipe, box_layers, cube_diffusive, a tau-1 absorber) it goes down; see TODO.md.
 
 | recipe | plex np=1 | plex np=2 | structured twin np=1 / np=2 | notes |
 |---|---|---|---|---|

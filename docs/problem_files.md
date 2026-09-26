@@ -206,7 +206,9 @@ streaming stage's PCAIR is built on the element-block-scaled pmat
 (`-precon_block_scale`, ON by default here at both orders and off on the
 structured backends; `-precon_block_scale 0` turns it off). At DG0 that is a
 diagonal scaling and changes little; DG1 needs it for PCAIR to coarsen at its
-default strong threshold.
+default strong threshold. The removal stage in front of it inverts the same
+element blocks of the operator on every backend - point Jacobi at one dof per
+cell, block Jacobi at DG1 - so it has no knob.
 
 The mesh comes one of two ways:
 - **A box built in code**: `n_cells` and `lengths` exactly as on a

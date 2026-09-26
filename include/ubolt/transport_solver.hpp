@@ -6,7 +6,9 @@
 #include <petscksp.h>
 
 // KSP + the transport preconditioner: a multiplicative composite of a shell
-// preconditioner for the removal term (index 0), PCAIR for the streaming term
+// preconditioner for the removal term (index 0: the inverse element blocks of
+// the operator - the point diagonal at n_basis 1, the cell-local block at
+// DG1, see ElementBlockInverse), PCAIR for the streaming term
 // (index 1, so its options take the -sub_1_pc_air_ prefix - under block_scale a
 // shell whose inner PCAIR keeps that prefix, see create) and, if the caller
 // hands one over, a shell for the DSA diffusion correction (index 2, whose own
@@ -27,9 +29,9 @@ public:
    // assembled matrix or a streaming-only one
    //
    // op is not owned and must outlive the solver: the removal shell PC takes
-   // its diagonal from the operator, not from a matrix handle, so that a term
+   // its blocks from the operator, not from a matrix handle, so that a term
    // applied matrix-free (and therefore absent from the assembled matrix) is
-   // still in the diagonal being inverted - see RemovalPCFillContext
+   // still in the blocks being inverted - see RemovalPCFillContext
    //
    // dsa is optional and CALLER-OWNED: it must outlive the solver, and passing
    // nullptr (the default) is exactly the preconditioner UBOLT had before DSA
@@ -54,9 +56,9 @@ public:
       DSAPrecon *dsa = nullptr, PetscBool block_scale = PETSC_FALSE);
    PetscErrorCode destroy();
 
-   // Re-take whatever the preconditioner cached off the operator's diagonal.
+   // Re-take whatever the preconditioner cached off the operator's blocks.
    // Must be called once the group's xsections have changed under it: the
-   // removal shell PC holds the inverse diagonal, and the multigroup sweep
+   // removal shell PC holds the inverse element blocks, and the multigroup sweep
    // changes sigma_t every group - whether that lands in the assembled matrix
    // (the default, so this follows the values-only refill) or straight in the
    // term (matrix-free removal, where there is no refill to follow). PCAIR
@@ -75,7 +77,7 @@ public:
 private:
    KSP ksp_ = NULL;
    // Not owned, and it must outlive the solver: the operator the removal PC
-   // takes its diagonal from, per group
+   // takes its blocks from, per group
    const TransportOperator *op_ = nullptr;
    KSPConvergedReason reason_ = KSP_CONVERGED_ITERATING;
 };
