@@ -670,7 +670,7 @@ now direct and tested (see that item).
     the alphas are log-means over the support. A void in every group (a void material)
     leaves one class, and exact coverage is still the full pmat - the single-group void
     files reproduce the default counts exactly under ref-shift, with and without DSA
-    (23 / 26 / 21 / 25 / 34, DSA 6 / 8 / 6 / 8 / 10, where bare `-matfree_removal` takes
+    (23 / 26 / 21 / 25 / 34, bridged DSA 6 / 6 / 5 / 6 / 10, where bare `-matfree_removal` takes
     277 or diverges), and so do the new `{slab,box,plex}_decades4_void.json`. Why
     classes rather than one reference with the voids masked out of the log-mean:
     `box_decades4_void`'s block is transparent in group 0 only, and forcing the four

@@ -1433,7 +1433,7 @@ gives zero (to 1e-12: the inner GAMG's aggregates can straddle the void).
 
 The DSA (bridged by default, or masked) also composes with the reference-shifted pmat on the same void
 files, since 27 Sep 2026 (`-matfree_removal -precon_ref_shift -precon_dsa`, the
-same 6 / 8 / 6 / 8 / 10 as the full pmat): see "Voids" under the
+same 6 / 6 / 5 / 6 / 10 as the full pmat with the bridged DSA): see "Voids" under the
 reference-shifted pmat below.
 
 ### Checks that are not recipes
@@ -1642,26 +1642,29 @@ single-reference variant above measured 0.2 and FAILS.
 
 Counts (opt; per-group for the decades files, the maximum being the pin; `-n 2`
 in brackets where it differs). "bare" is `-matfree_removal` alone,
-left-preconditioned:
+left-preconditioned. The DSA columns are the default, bridged DSA (re-measured
+after rebasing onto void bridging; under the mask, `-dsa_void_bridge 0`, the
+single-group rows take 6 (7) / 8 / 6 / 8 / 10 and the decades exact rows
+4, 5, 7, 8):
 
 | problem | default pc / + DSA | bare | ref-shift | ref-shift + DSA |
 |---|---|---|---|---|
-| `slab_void_gap` | 23 / 6 (7) | 277 (298) | 23 | 6 (7) |
-| `box_void_channel` | 26 / 8 | DIVERGED (300) | 26 | 8 |
-| `cube_void_duct` | 21 / 6 | 45 | 21 | 6 |
-| `plex_box_void_channel` | 25 (26) / 8 | DIVERGED (300) | 25 (26) | 8 |
+| `slab_void_gap` | 23 / 6 | 277 (298) | 23 | 6 |
+| `box_void_channel` | 26 / 6 | DIVERGED (300) | 26 | 6 |
+| `cube_void_duct` | 21 / 5 | 45 | 21 | 5 |
+| `plex_box_void_channel` | 25 (26) / 6 | DIVERGED (300) | 25 (26) | 6 |
 | `plex_box_void_channel_dg1` | 34 (33) / 10 | DIVERGED (300) | 34 (33) | 10 |
-| `slab_decades4_void`, k = 4 (exact) | 5, 8, 14, 23 / 4, 5, 6, 6 (5, 5, 6, 6) | 10, 26, 119, DIVERGED | 5, 8, 14, 23 | - |
-| `slab_decades4_void`, default k = 2 (3.16) | | | 14, 12, 29, 44 | 12, 11, 8, 7 |
-| `slab_decades4_void`, k = 1 (31.6) | | | 90, 21, 21, 68 | 52, 12, 10, 19 |
-| `box_decades4_void`, default (4 bins, 2 classes, exact) | 4, 6, 16, 29 / 4, 5, 7, 8 | 5, 16, 75, DIVERGED | 4, 6, 16, 29 | 4, 5, 7, 8 |
-| `box_decades4_void`, k = 1 (a bin per class, 10) | | | 4, 35, 16, 68 | 4, 23, 7, 12 (11) |
-| `plex_decades4_void`, default (exact) | 4, 6, 15, 27 / 4, 5, 7, 8 | 5, 16, 75, DIVERGED | 4, 6, 15, 27 | 4, 5, 7, 8 |
-| `plex_decades4_void`, k = 1 (10) | | | 4, 34, 15, 67 | 4, 23, 7, 12 (11) |
+| `slab_decades4_void`, k = 4 (exact) | 5, 8, 14, 23 / 4, 4, 5, 6 | 10, 26, 119, DIVERGED | 5, 8, 14, 23 | 4, 4, 5, 6 |
+| `slab_decades4_void`, default k = 2 (3.16) | | | 14, 12, 29, 44 | 11, 11, 7, 6 |
+| `slab_decades4_void`, k = 1 (31.6) | | | 90, 21, 21, 68 | 51, 12, 10, 18 (17) |
+| `box_decades4_void`, default (4 bins, 2 classes, exact) | 4, 6, 16, 29 / 4, 4, 5, 6 | 5, 16, 75, DIVERGED | 4, 6, 16, 29 | 4, 4, 5, 6 |
+| `box_decades4_void`, k = 1 (a bin per class, 10) | | | 4, 35, 16, 68 | 4, 21, 5, 10 |
+| `plex_decades4_void`, default (exact) | 4, 6, 15, 27 / 4, 4, 5, 6 | 5, 16, 75, DIVERGED | 4, 6, 15, 27 | 4, 4, 5, 6 |
+| `plex_decades4_void`, k = 1 (10) | | | 4, 34, 15, 67 | 4, 21, 5, 10 |
 
 Every ref-shift column reproduces the default-pc column exactly where the
-coverage is exact, with and without DSA, serial and `-n 2`, so the void-masked
-DSA composes with it unchanged. The void costs the mismatched runs nothing
+coverage is exact, with and without DSA, serial and `-n 2`, so the void-bridged
+(and the masked) DSA composes with it unchanged. The void costs the mismatched runs nothing
 either: `slab_decades4_void` at the default k takes 44 like `slab_decades4`.
 
 ### Pins and slack
@@ -1680,15 +1683,15 @@ either: `slab_decades4_void` at the default k takes 44 like `slab_decades4`.
 | 2D `box_diffusive`, ref-shift + DSA | 11 | — | 11 |
 | 1D `slab_decades4_stream0`, default k | 22 (Dirichlet-cell 20) | 22 | 22 |
 | 1D `slab_st0`, ref-shift (all streaming-only) | 1 | — | 1 |
-| 1D `slab_void_gap`, ref-shift (+ `-check_ref_shift`) / + DSA | 23 / 6 | — / 7 | 23 / 6, np=2 7 |
-| 2D `box_void_channel`, ref-shift / + DSA | 26 / 8 | — / 8 | 26 / 8 |
-| 3D `cube_void_duct`, ref-shift (+ `-check_ref_shift`) / + DSA | 21 / 6 | 21 / — | 21 / 6 |
-| plex `plex_box_void_channel`, ref-shift + DSA | 8 | 8 | 8 |
+| 1D `slab_void_gap`, ref-shift (+ `-check_ref_shift`) / + DSA | 23 / 6 | — / 6 | 23 / 6 |
+| 2D `box_void_channel`, ref-shift / + DSA | 26 / 6 | — / 6 | 26 / 6 |
+| 3D `cube_void_duct`, ref-shift (+ `-check_ref_shift`) / + DSA | 21 / 5 | 21 / — | 21 / 5 |
+| plex `plex_box_void_channel`, ref-shift + DSA | 6 | 6 | 6 |
 | plex `plex_box_void_channel_dg1`, ref-shift + DSA | 10 | — | 10 |
 | 1D `slab_decades4_void`, `-precon_ref_k 4` (+ `-check_ref_shift`) | 23 | — | 23 |
-| 1D `slab_decades4_void`, default k / + DSA | 44 / 12 | 44 / — | 44 / 12 |
-| 2D `box_decades4_void`, default k (+ `-check_ref_shift`) / + DSA / k = 1 | 29 / 8 / 68 | 29 / — / — | 29 / 8 / 68 |
-| plex `plex_decades4_void`, default k (+ `-check_ref_shift`) / + DSA | 27 / 8 | 27 / — | 27 / 8 |
+| 1D `slab_decades4_void`, default k / + DSA | 44 / 11 | 44 / — | 44 / 11 |
+| 2D `box_decades4_void`, default k (+ `-check_ref_shift`) / + DSA / k = 1 | 29 / 6 / 68 | 29 / — / — | 29 / 6 / 68 |
+| plex `plex_decades4_void`, default k (+ `-check_ref_shift`) / + DSA | 27 / 6 | 27 / — | 27 / 6 |
 
 Every pin sits on the local opt count since the 2026-09-25 ghost-flux re-pin. Before it,
 the exact-coverage 1D pins sat on the measured count and everything else carried one

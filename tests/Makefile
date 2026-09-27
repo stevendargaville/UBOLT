@@ -481,36 +481,36 @@ run_tests_short_serial:
 # is two hierarchies there. Counts: ../docs/dev/testing.md, "Voids"
 	@echo "Test 1D slab with a void gap, reference-shifted pmat (exact: the full-pmat count)"
 	./transportk -problem problems/slab_void_gap.json -matfree_removal -precon_ref_shift -check_ref_shift -ksp_max_it 23
-	@echo "Test 1D slab with a void gap, reference-shifted pmat with the void-masked DSA correction"
+	@echo "Test 1D slab with a void gap, reference-shifted pmat with the void-bridged DSA correction"
 	./transportk -problem problems/slab_void_gap.json -matfree_removal -precon_ref_shift -precon_dsa -ksp_max_it 6
 	@echo "Test 2D box with a void channel, reference-shifted pmat"
 	./transportk -problem problems/box_void_channel.json -matfree_removal -precon_ref_shift -ksp_max_it 26
-	@echo "Test 2D box with a void channel, reference-shifted pmat with the void-masked DSA correction"
-	./transportk -problem problems/box_void_channel.json -matfree_removal -precon_ref_shift -precon_dsa -ksp_max_it 8
+	@echo "Test 2D box with a void channel, reference-shifted pmat with the void-bridged DSA correction"
+	./transportk -problem problems/box_void_channel.json -matfree_removal -precon_ref_shift -precon_dsa -ksp_max_it 6
 	@echo "Test 3D cube with a void duct, reference-shifted pmat"
 	./transportk -problem problems/cube_void_duct.json -matfree_removal -precon_ref_shift -check_ref_shift -ksp_max_it 21
-	@echo "Test 3D cube with a void duct, reference-shifted pmat with the void-masked DSA correction"
-	./transportk -problem problems/cube_void_duct.json -matfree_removal -precon_ref_shift -precon_dsa -ksp_max_it 6
-	@echo "Test 2D unstructured quad box with a void channel, reference-shifted pmat with the void-masked DSA correction"
-	./transportk -problem problems/plex_box_void_channel.json -matfree_removal -precon_ref_shift -precon_dsa -ksp_max_it 8
-	@echo "Test 2D unstructured quad box at DG1 with a void channel, reference-shifted pmat with the void-masked DSA correction"
+	@echo "Test 3D cube with a void duct, reference-shifted pmat with the void-bridged DSA correction"
+	./transportk -problem problems/cube_void_duct.json -matfree_removal -precon_ref_shift -precon_dsa -ksp_max_it 5
+	@echo "Test 2D unstructured quad box with a void channel, reference-shifted pmat with the void-bridged DSA correction"
+	./transportk -problem problems/plex_box_void_channel.json -matfree_removal -precon_ref_shift -precon_dsa -ksp_max_it 6
+	@echo "Test 2D unstructured quad box at DG1 with a void channel, reference-shifted pmat with the void-bridged DSA correction"
 	./transportk -problem problems/plex_box_void_channel_dg1.json -matfree_removal -precon_ref_shift -precon_dsa -ksp_max_it 10
 	@echo "Test 1D decades multigroup with a void gap, reference-shifted pmat, one hierarchy per group (exact)"
 	./transportk -problem problems/slab_decades4_void.json -matfree_removal -precon_ref_shift -precon_ref_k 4 -check_ref_shift -ksp_max_it 23
 	@echo "Test 1D decades multigroup with a void gap, reference-shifted pmat, default number of hierarchies"
 	./transportk -problem problems/slab_decades4_void.json -matfree_removal -precon_ref_shift -ksp_max_it 44
 	@echo "Test 1D decades multigroup with a void gap, MISMATCHED reference-shifted pmat (default k) with DSA"
-	./transportk -problem problems/slab_decades4_void.json -matfree_removal -precon_ref_shift -precon_dsa -ksp_max_it 12
+	./transportk -problem problems/slab_decades4_void.json -matfree_removal -precon_ref_shift -precon_dsa -ksp_max_it 11
 	@echo "Test 2D decades multigroup with two void patterns, reference-shifted pmat (default k, exact)"
 	./transportk -problem problems/box_decades4_void.json -matfree_removal -precon_ref_shift -check_ref_shift -ksp_max_it 29
 	@echo "Test 2D decades multigroup with two void patterns, reference-shifted pmat with DSA"
-	./transportk -problem problems/box_decades4_void.json -matfree_removal -precon_ref_shift -precon_dsa -ksp_max_it 8
+	./transportk -problem problems/box_decades4_void.json -matfree_removal -precon_ref_shift -precon_dsa -ksp_max_it 6
 	@echo "Test 2D decades multigroup with two void patterns, one reference-shifted pmat per pattern"
 	./transportk -problem problems/box_decades4_void.json -matfree_removal -precon_ref_shift -precon_ref_k 1 -ksp_max_it 68
 	@echo "Test 2D unstructured decades multigroup with two void patterns, reference-shifted pmat (default k, exact)"
 	./transportk -problem problems/plex_decades4_void.json -matfree_removal -precon_ref_shift -check_ref_shift -ksp_max_it 27
 	@echo "Test 2D unstructured decades multigroup with two void patterns, reference-shifted pmat with DSA"
-	./transportk -problem problems/plex_decades4_void.json -matfree_removal -precon_ref_shift -precon_dsa -ksp_max_it 8
+	./transportk -problem problems/plex_decades4_void.json -matfree_removal -precon_ref_shift -precon_dsa -ksp_max_it 6
 #
 # Painted regions. The identity file's regions carry the background values, so
 # it must land exactly where the uniform 50x50 recipe does - painting and
@@ -896,14 +896,14 @@ run_tests_short_parallel:
 # The reference-shifted pmat on voids in parallel: the support classes are
 # decided by reductions, so a -n 2 run that did not reproduce the serial count
 # would mean the ranks had disagreed about a group's void pattern
-	@echo "Test 1D slab with a void gap, reference-shifted pmat with the void-masked DSA correction in parallel"
-	$(MPIEXEC) -n 2 ./transportk -problem problems/slab_void_gap.json -matfree_removal -precon_ref_shift -precon_dsa -ksp_max_it 7
-	@echo "Test 2D box with a void channel, reference-shifted pmat with the void-masked DSA correction in parallel"
-	$(MPIEXEC) -n 2 ./transportk -problem problems/box_void_channel.json -matfree_removal -precon_ref_shift -precon_dsa -ksp_max_it 8
+	@echo "Test 1D slab with a void gap, reference-shifted pmat with the void-bridged DSA correction in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/slab_void_gap.json -matfree_removal -precon_ref_shift -precon_dsa -ksp_max_it 6
+	@echo "Test 2D box with a void channel, reference-shifted pmat with the void-bridged DSA correction in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/box_void_channel.json -matfree_removal -precon_ref_shift -precon_dsa -ksp_max_it 6
 	@echo "Test 3D cube with a void duct, reference-shifted pmat in parallel"
 	$(MPIEXEC) -n 2 ./transportk -problem problems/cube_void_duct.json -matfree_removal -precon_ref_shift -ksp_max_it 21
-	@echo "Test 2D unstructured quad box with a void channel, reference-shifted pmat with the void-masked DSA correction in parallel"
-	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_box_void_channel.json -matfree_removal -precon_ref_shift -precon_dsa -ksp_max_it 8
+	@echo "Test 2D unstructured quad box with a void channel, reference-shifted pmat with the void-bridged DSA correction in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_box_void_channel.json -matfree_removal -precon_ref_shift -precon_dsa -ksp_max_it 6
 	@echo "Test 1D decades multigroup with a void gap, reference-shifted pmat, default number of hierarchies in parallel"
 	$(MPIEXEC) -n 2 ./transportk -problem problems/slab_decades4_void.json -matfree_removal -precon_ref_shift -ksp_max_it 44
 	@echo "Test 2D decades multigroup with two void patterns, reference-shifted pmat (default k, exact) in parallel"
