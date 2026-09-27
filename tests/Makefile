@@ -413,6 +413,42 @@ run_tests_short_serial:
 	@echo "Test 2D random-media benchmark with the DSA correction"
 	./transportk -problem problems/box_random8.json -precon_dsa -ksp_max_it 7
 #
+# DSA with VOIDS. The diffusive files again with a Sigma_t = 0 region painted
+# in - a gap across the slab, a channel in from the box's left face, a duct in
+# from the cube's, and the channel on the plex at DG0 and DG1. -precon_dsa
+# refused any void before; now the void cells are masked out of the correction
+# (identity rows, nothing restricted or corrected there, a Marshak face into
+# the void), so each pair is the demonstration that DSA still accelerates the
+# rest. Counts: ../docs/dev/testing.md, "DSA with voids"
+	@echo "Test 1D slab with a void gap WITHOUT the DSA correction (the reference)"
+	./transportk -problem problems/slab_void_gap.json -ksp_max_it 23
+	@echo "Test 1D slab with a void gap with the void-masked DSA correction"
+	./transportk -problem problems/slab_void_gap.json -precon_dsa -ksp_max_it 6
+	@echo "Test 2D box with a void channel WITHOUT the DSA correction (the reference)"
+	./transportk -problem problems/box_void_channel.json -ksp_max_it 26
+	@echo "Test 2D box with a void channel with the void-masked DSA correction"
+	./transportk -problem problems/box_void_channel.json -precon_dsa -ksp_max_it 8
+	@echo "Test 3D cube with a void duct WITHOUT the DSA correction (the reference)"
+	./transportk -problem problems/cube_void_duct.json -ksp_max_it 21
+	@echo "Test 3D cube with a void duct with the void-masked DSA correction"
+	./transportk -problem problems/cube_void_duct.json -precon_dsa -ksp_max_it 6
+	@echo "Test 2D unstructured quad box with a void channel WITHOUT the DSA correction (the reference)"
+	./transportk -problem problems/plex_box_void_channel.json -ksp_max_it 26
+	@echo "Test 2D unstructured quad box with a void channel with the void-masked DSA correction"
+	./transportk -problem problems/plex_box_void_channel.json -precon_dsa -ksp_max_it 8
+	@echo "Test 2D unstructured quad box at DG1 with a void channel WITHOUT the DSA correction (the reference)"
+	./transportk -problem problems/plex_box_void_channel_dg1.json -ksp_max_it 34
+	@echo "Test 2D unstructured quad box at DG1 with a void channel with the void-masked DSA correction"
+	./transportk -problem problems/plex_box_void_channel_dg1.json -precon_dsa -ksp_max_it 10
+# A group that is void EVERYWHERE used to be refused too: now the whole
+# diffusion operator is masked, the correction is zero, and the count is the
+# no-DSA one (slab_st0: 1). The decades file's void top group rides along with
+# three real ones, and the pin is the max over the sweep (1, 5, 5, 5)
+	@echo "Test 1D slab, all-void group with the DSA correction (fully masked, no-DSA count)"
+	./transportk -problem problems/slab_st0.json -precon_dsa -ksp_max_it 1
+	@echo "Test 1D slab, one void group among four with the DSA correction"
+	./transportk -problem problems/slab_decades4_stream0.json -precon_dsa -ksp_max_it 5
+#
 # Painted regions. The identity file's regions carry the background values, so
 # it must land exactly where the uniform 50x50 recipe does - painting and
 # expansion change nothing but which table entry a cell reads. The overlap file
@@ -772,6 +808,19 @@ run_tests_short_parallel:
 	$(MPIEXEC) -n 2 ./transportk -problem problems/box_random8.json -ksp_max_it 19
 	@echo "Test 2D random-media benchmark with the DSA correction in parallel"
 	$(MPIEXEC) -n 2 ./transportk -problem problems/box_random8.json -precon_dsa -ksp_max_it 6
+#
+# DSA with voids in parallel: the void-masked correction on both backends, the
+# void flag (a zero D) crossing the rank boundary in the ghosted D
+	@echo "Test 1D slab with a void gap with the void-masked DSA correction in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/slab_void_gap.json -precon_dsa -ksp_max_it 7
+	@echo "Test 2D box with a void channel with the void-masked DSA correction in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/box_void_channel.json -precon_dsa -ksp_max_it 8
+	@echo "Test 3D cube with a void duct with the void-masked DSA correction in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/cube_void_duct.json -precon_dsa -ksp_max_it 6
+	@echo "Test 2D unstructured quad box with a void channel with the void-masked DSA correction in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_box_void_channel.json -precon_dsa -ksp_max_it 8
+	@echo "Test 2D unstructured quad box at DG1 with a void channel with the void-masked DSA correction in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_box_void_channel_dg1.json -precon_dsa -ksp_max_it 10
 #
 # Painted regions in parallel. The identity runs at -n 4: painting maps cell
 # centres through the patch-lexicographic local ordering, and the 2D processor

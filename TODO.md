@@ -5,7 +5,10 @@ Each phase is a reviewable unit with its own verification. Do not start a phase 
 previous one's verification has passed and been reviewed.
 
 ## Current state (updated 2026-09-27)
-Last landed: **a discretisation-consistent DSA diffusion coefficient** (the default
+Last landed: **void masking in the DSA** (`-precon_dsa` masks `Sigma_t = 0` cells out
+of its correction on every backend and order instead of refusing them, a face into a
+void taking the same consistent-D Marshak face as a vacuum boundary; see the Phase 4
+postscript 5 DSA notes); before it, **a discretisation-consistent DSA diffusion coefficient** (the default
 `DSAPrecon` blends the upwind scheme's numerical diffusion `m h` into every face D as
 `(D^1.5 + (m h)^1.5)^(1/1.5)`, structured and DG0 plex; `-dsa_consistent_d 0` restores
 the physical D - every diffusive recipe 11/11/8 -> 5, crooked pipe 28 -> 8, the
@@ -30,13 +33,13 @@ works at both orders on the plex: at DG0 every quad/hex twin takes the structure
 count and simplices go 35 -> 10 / 31 -> 9; at DG1 (27 Sep 2026) the diffusive quad box,
 hex cube, triangles and tets go 34 / 32 / 40 / 43 -> 6 / 7 / 8 / 9 (DG0+DSA now takes
 5 on all four meshes' DG0 twins, through the consistent D). Next up: 6b CG-SUPG (Phase
-6), or one of the open questions carried as checkboxes since 27 Sep 2026: void masking
-and per-group cached Mat/KSP for the DSA (both in the Phase 4 postscript 5 DSA notes), a
-Phase 6a thing to watch, simplex iteration counts creeping up with refinement (to
-re-measure under ghost-flux first), and the follow-ups the 27 Sep 2026 round left
-(a void-bridging DSA operator, `-precon_ref_shift` on partly-void groups, a stronger
-cheap DSA inner solve, the simplex +1; the list at the end of Phase 6). The other Phase
-6a one, triangle L-infinity below first order, is closed as not a
+6), or one of the open questions carried as checkboxes since 27 Sep 2026: per-group
+cached Mat/KSP for the DSA (in the Phase 4 postscript 5 DSA notes; void masking, the
+other, is done), a Phase 6a thing to watch, simplex iteration counts creeping up with
+refinement (to re-measure under ghost-flux first), and the follow-ups the 27 Sep 2026
+round left (a void-bridging DSA operator, `-precon_ref_shift` on partly-void groups, a
+stronger cheap DSA inner solve, the simplex +1; the list at the end of Phase 6). The
+other Phase 6a one, triangle L-infinity below first order, is closed as not a
 defect: the code matches a Python model of upwind DG0 to 7 digits, and the deficit
 comes from PETSc's simplex box being a different, non-nested diagonal pattern at each
 n (nested refinement of one box gives first order). Details in the Phase 6a item. The
@@ -596,7 +599,9 @@ now direct and tested (see that item).
   postscript 5 DSA notes, the simplex one in the Phase 6a item above):
   - [ ] A void-bridging DSA diffusion operator: the void mask decouples void cells, so
     the correction does not couple regions a void separates, and streaming across the
-    void is left to the removal and PCAIR stages (PR #14).
+    void is left to the removal and PCAIR stages (PR #14). The gap to beat is one
+    iteration: an unmasked tiny `Sigma_t` (1e-3) in the 2D channel takes 7 under the
+    consistent D against the mask's 8 (docs/dev/testing.md, "DSA with voids").
   - [ ] `-precon_ref_shift` still refuses a group that is void in only some cells - a
     check older than the DSA void mask, and separate from it (PR #14).
   - [ ] GAMG on the DSA diffusion matrix is the remaining limit in the thick diffusion
@@ -1003,8 +1008,24 @@ now direct and tested (see that item).
     composite's residual updates onto the amat (the fix in the bullet above) while PCAIR
     is still set up on a streaming-only pmat — unestablished. This matters because Phase 5
     is exactly the streaming-only-pmat direction, so the two land on each other.
-  - [ ] Region masking for voids in the DSA diffusion operator (`sigma_t <= 0` is a hard
-    error today, as in the paper's future work).
+  - [x] Region masking for voids in the DSA diffusion operator (27 Sep 2026; `sigma_t <= 0`
+    used to be a hard error, as in the paper's future work). A cell whose group `Sigma_t`
+    is at or below `-dsa_void_sigma_t` (0 by default) is masked out of the correction on
+    every backend and order: identity diffusion rows (V I on the plex, block by block at
+    DG1), nothing restricted or corrected there, and a face into the void a Marshak (MIP
+    vacuum) face for its neighbour - zero Neumann would leave a non-absorbing island in a
+    void singular. Per group; the void rides the staged D as D = 0, so neighbours on
+    other ranks see it; with no void the arithmetic is unchanged (every DSA recipe's
+    residual histories identical to main, before and after merging the consistent D).
+    Under the consistent D a face into a void is the blended vacuum face exactly, and
+    the D = 0 flag is tested before any blend, so no `m h` coupling crosses it.
+    Measured (opt, serial / np 2; no DSA -> DSA, physical D in brackets):
+    `slab_void_gap` 23 -> 6 / 7 (12 / 13), `box_void_channel` 26 -> 8 / 8 (12),
+    `cube_void_duct` 21 -> 6 / 6 (9), `plex_box_void_channel` 25 -> 8 / 8 (12), `_dg1`
+    34 -> 10 / 10 - against 5 / 5 / 5 / 5 / 6 with no void; the unmasked "tiny Sigma_t"
+    workaround takes 7 on the channel. `verify_plexk` check 12. Not done: coupling the
+    regions a void separates, and `-precon_ref_shift` on a partially-void group (both
+    carried elsewhere).
   - [ ] Per-group cached DSA Mat/KSP instead of one refilled pair (a local change inside
     `DSAPrecon`, see its header; only worth it if a sweep revisits groups).
   - **Literature benchmark study run (Aug 2026)** — six studies (crooked pipe per

@@ -19,8 +19,13 @@
 //
 // Per (cell, basis) node: the cell at n_basis 1, and at DG1 every basis
 // function's moment, which is what the DG1 diffusion operator's rows test with
+//
+// A VOID cell's nodes restrict to zero: they are identity rows of the
+// diffusion operator, decoupled from everything, so a zero there keeps the
+// inner solution zero on them whatever the inner solve does
 static void RestrictKernel(PetscScalarConstKokkosView x_d, PetscScalarKokkosView rhs_d, \
-   PetscScalar2DKokkosView w_d, PetscIntKokkosView is_bc_row_d, PetscInt n_angles, PetscInt n_nodes)
+   PetscScalar2DKokkosView w_d, PetscIntKokkosView is_bc_row_d, PetscIntKokkosView void_cell_d, \
+   PetscInt n_angles, PetscInt n_basis, PetscInt n_nodes)
 {
    Kokkos::parallel_for(
       Kokkos::TeamPolicy<>(PetscGetKokkosExecutionSpace(), n_nodes, Kokkos::AUTO()),
@@ -37,7 +42,9 @@ static void RestrictKernel(PetscScalarConstKokkosView x_d, PetscScalarKokkosView
                if (!is_bc_row_d(r)) acc += w_d(a, 0) * x_d(r);
             }, moment);
 
-         Kokkos::single(Kokkos::PerTeam(t), [&]() { rhs_d(node) = moment; });
+         Kokkos::single(Kokkos::PerTeam(t), [&]() {
+            rhs_d(node) = void_cell_d(node / n_basis) ? (PetscScalar)0.0 : moment;
+         });
       });
 }
 
@@ -49,14 +56,18 @@ static void RestrictKernel(PetscScalarConstKokkosView x_d, PetscScalarKokkosView
 // written, so y needs no zeroing beforehand; the BC rows get an explicit zero,
 // which is what the BC contract owes them - the assembled operator already
 // holds the boundary condition on those rows and a correction there would
-// pollute it. node_d is the inner solution, one entry per (cell, basis) node
+// pollute it. node_d is the inner solution, one entry per (cell, basis) node.
+// A VOID cell's rows are zeroed too: no diffusion correction lives there
 static void ProlongKernel(PetscScalarConstKokkosView node_d, PetscScalarKokkosView y_d, \
-   PetscIntKokkosView is_bc_row_d, PetscInt n_angles, PetscScalar sum_weights, PetscInt local_rows)
+   PetscIntKokkosView is_bc_row_d, PetscIntKokkosView void_cell_d, PetscInt n_angles, PetscInt n_basis, \
+   PetscScalar sum_weights, PetscInt local_rows)
 {
+   const PetscInt rows_per_cell = n_basis * n_angles;
    Kokkos::parallel_for(
       Kokkos::RangePolicy<>(0, local_rows), KOKKOS_LAMBDA(PetscInt r) {
 
-         y_d(r) = is_bc_row_d(r) ? (PetscScalar)0.0 : node_d(r / n_angles) / sum_weights;
+         y_d(r) = (is_bc_row_d(r) || void_cell_d(r / rows_per_cell)) ? (PetscScalar)0.0 : \
+            node_d(r / n_angles) / sum_weights;
       });
 }
 
@@ -464,6 +475,13 @@ PetscErrorCode DSAPrecon::create_ksp()
    PetscCall(KSPSetOperators(ksp_, diff_mat_, diff_mat_));
    PetscCall(KSPSetFromOptions(ksp_));
 
+   // The void threshold, under the same prefix: a cell whose Sigma_t is at or
+   // below it is masked out of the correction (see the header). 0 by default,
+   // so only a true void is masked and a problem without one is untouched
+   PetscCall(PetscOptionsGetReal(NULL, "dsa_", "-void_sigma_t", &void_sigma_t_, NULL));
+   // The per-group void mask, refilled by assemble()
+   void_cell_d_ = PetscIntKokkosView("dsa_void_cell", local_cells_);
+
    PetscFunctionReturn(PETSC_SUCCESS);
 }
 
@@ -492,7 +510,8 @@ PetscErrorCode DSAPrecon::set_group(const PetscScalarKokkosView &sigma_t_d, \
 // COO path would need slot-map machinery of its own to buy nothing
 PetscErrorCode DSAPrecon::assemble()
 {
-   PetscReal min_sigma_t = PETSC_MAX_REAL, max_sigma_a = 0.0;
+   PetscReal max_sigma_a = 0.0;
+   PetscInt n_void = 0;
 
    PetscFunctionBeginUser;
 
@@ -506,34 +525,36 @@ PetscErrorCode DSAPrecon::assemble()
    auto sigma_t_h = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), sigma_t_d_);
    auto sigma_s_h = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), sigma_s_d_);
 
+   // The void mask, per group (a material can be a void in some groups only).
+   // D = 1/(3 sigma_t) is not defined in a void, so rather than a fudged
+   // coefficient the void cells are masked out of the correction altogether
+   // (see the header)
+   auto void_h = Kokkos::create_mirror_view(void_cell_d_);
    for (PetscInt c = 0; c < local_cells_; c++) {
       const PetscReal sigma_t = PetscRealPart(sigma_t_h(c));
-      min_sigma_t = PetscMin(min_sigma_t, sigma_t);
-      max_sigma_a = PetscMax(max_sigma_a, sigma_t - PetscRealPart(sigma_s_h(c)));
+      void_h(c) = (sigma_t <= void_sigma_t_) ? 1 : 0;
+      if (void_h(c)) n_void++;
+      else max_sigma_a = PetscMax(max_sigma_a, sigma_t - PetscRealPart(sigma_s_h(c)));
    }
-   PetscCallMPI(MPIU_Allreduce(MPI_IN_PLACE, &min_sigma_t, 1, MPIU_REAL, MPIU_MIN, comm_));
+   Kokkos::deep_copy(void_cell_d_, void_h);
+   PetscCallMPI(MPIU_Allreduce(MPI_IN_PLACE, &n_void, 1, MPIU_INT, MPI_SUM, comm_));
    PetscCallMPI(MPIU_Allreduce(MPI_IN_PLACE, &max_sigma_a, 1, MPIU_REAL, MPIU_MAX, comm_));
+   n_void_cells_ = n_void;
 
-   // The void guard. D = 1/(3 sigma_t) is not defined in a void, and the fix is
-   // a region-masked diffusion operator (future work, as in the paper) rather
-   // than a fudged coefficient - so say so rather than produce a silent inf
-   PetscCheck(min_sigma_t > 0.0, comm_, PETSC_ERR_ARG_OUTOFRANGE, \
-      "the DSA preconditioner needs Sigma_t > 0 in every cell - D = 1/(3 Sigma_t) is not " \
-      "defined in a void, and the smallest Sigma_t in this group is %g. Run without " \
-      "-precon_dsa, or give the void a small Sigma_t", (double)min_sigma_t);
+   // The singularity guard: with every face reflective and no void the
+   // diffusion operator is pure Neumann, so only the absorption keeps it
+   // nonsingular. That is the same constraint the transport operator itself
+   // carries (see docs/dev/testing.md) - all-reflect with a scattering ratio
+   // of exactly 1 has the constants in its kernel. A face into a void is a
+   // Marshak face, so any void at all is as good as a vacuum face here (on a
+   // connected mesh every non-void region then touches one)
+   PetscCheck(any_vacuum_ || n_void > 0 || max_sigma_a > 0.0, comm_, PETSC_ERR_ARG_WRONGSTATE, \
+      "the DSA diffusion operator is singular: every face is reflective (pure Neumann), there " \
+      "is no void, and Sigma_a = Sigma_t - Sigma_s is zero everywhere in this group. Leave one " \
+      "face vacuum, or give the material absorption");
 
-   // The singularity guard: with every face reflective the diffusion operator
-   // is pure Neumann, so only the absorption keeps it nonsingular. That is the
-   // same constraint the transport operator itself carries (see
-   // docs/dev/testing.md) - all-reflect with a scattering ratio of exactly 1
-   // has the constants in its kernel
-   PetscCheck(any_vacuum_ || max_sigma_a > 0.0, comm_, PETSC_ERR_ARG_WRONGSTATE, \
-      "the DSA diffusion operator is singular: every face is reflective (pure Neumann) and " \
-      "Sigma_a = Sigma_t - Sigma_s is zero everywhere in this group. Leave one face vacuum, " \
-      "or give the material absorption");
-
-   if (plex_) PetscCall(assemble_plex(sigma_t_h.data(), sigma_s_h.data()));
-   else PetscCall(assemble_structured(sigma_t_h.data(), sigma_s_h.data()));
+   if (plex_) PetscCall(assemble_plex(sigma_t_h.data(), sigma_s_h.data(), void_h.data()));
+   else PetscCall(assemble_structured(sigma_t_h.data(), sigma_s_h.data(), void_h.data()));
 
    PetscFunctionReturn(PETSC_SUCCESS);
 }
@@ -541,7 +562,8 @@ PetscErrorCode DSAPrecon::assemble()
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 // The DMDA star
-PetscErrorCode DSAPrecon::assemble_structured(const PetscScalar *sigma_t_h, const PetscScalar *sigma_s_h)
+PetscErrorCode DSAPrecon::assemble_structured(const PetscScalar *sigma_t_h, const PetscScalar *sigma_s_h, \
+   const PetscInt *void_h)
 {
    PetscInt xs = 0, ys = 0, zs = 0, xm = 1, ym = 1, zm = 1;
    PetscInt gxs = 0, gys = 0, gzs = 0, gxm = 1, gym = 1, gzm = 1;
@@ -551,9 +573,10 @@ PetscErrorCode DSAPrecon::assemble_structured(const PetscScalar *sigma_t_h, cons
    PetscFunctionBeginUser;
 
    // D per cell, in local cell order, then ghosted so the harmonic means below
-   // can reach a neighbour rank's cell
+   // can reach a neighbour rank's cell. A void cell's D is ZERO, which no
+   // real cell's can be - that is how a neighbour rank's void is seen
    PetscCall(VecGetArray(d_global_, &d_global_a));
-   for (PetscInt c = 0; c < local_cells_; c++) d_global_a[c] = 1.0 / (3.0 * sigma_t_h[c]);
+   for (PetscInt c = 0; c < local_cells_; c++) d_global_a[c] = void_h[c] ? 0.0 : 1.0 / (3.0 * sigma_t_h[c]);
    PetscCall(VecRestoreArray(d_global_, &d_global_a));
    PetscCall(DMGlobalToLocal(da_, d_global_, INSERT_VALUES, d_local_));
 
@@ -584,6 +607,15 @@ PetscErrorCode DSAPrecon::assemble_structured(const PetscScalar *sigma_t_h, cons
 
             row.i = i; row.j = j; row.k = k; row.c = 0;
 
+            // A void cell is an identity row, decoupled: its rhs is zero and
+            // so is the correction there. Its neighbours skip the coupling
+            // to it too, so the matrix stays symmetric
+            if (void_h[c]) {
+               v[0] = 1.0;
+               PetscCall(MatSetValuesStencil(diff_mat_, 1, &row, 1, &row, v, INSERT_VALUES));
+               continue;
+            }
+
             // The diagonal is built up as the faces are visited and written
             // last, so the entry count is known without a second pass
             PetscScalar diag = sigma_t_h[c] - sigma_s_h[c];
@@ -593,17 +625,23 @@ PetscErrorCode DSAPrecon::assemble_structured(const PetscScalar *sigma_t_h, cons
 
                for (PetscInt side = -1; side <= 1; side += 2) {
                   const PetscInt n = ijk[d] + side;
+                  const PetscBool in_grid = (PetscBool)(n >= 0 && n < n_cells_[d]);
+                  PetscInt nijk[3] = {i, j, k};
+                  PetscScalar d_n = 0.0;
+                  if (in_grid) {
+                     nijk[d] = n;
+                     const PetscInt gn = ((nijk[2] - gzs) * gym + (nijk[1] - gys)) * gxm \
+                        + (nijk[0] - gxs);
+                     d_n = d_local_a[gn];
+                  }
 
-                  if (n >= 0 && n < n_cells_[d]) {
+                  // A face into a void (D = 0 flags one) is a Marshak face,
+                  // exactly as if the grid stopped there
+                  if (in_grid && d_n != 0.0) {
 
                      // Interior face: harmonic mean of the two cells' D, which
                      // is the flux-continuous face value and the reason a
                      // material interface does not need special-casing
-                     PetscInt nijk[3] = {i, j, k};
-                     nijk[d] = n;
-                     const PetscInt gn = ((nijk[2] - gzs) * gym + (nijk[1] - gys)) * gxm \
-                        + (nijk[0] - gxs);
-                     const PetscScalar d_n = d_local_a[gn];
                      PetscScalar d_f = 2.0 * d_c * d_n / (d_c + d_n);
                      // The upwind scheme's numerical diffusion, m h, blended
                      // in (see the header) - a property of the face, so it
@@ -616,12 +654,14 @@ PetscErrorCode DSAPrecon::assemble_structured(const PetscScalar *sigma_t_h, cons
                      n_col++;
                      diag += d_f / (h * h);
                   }
-                  else if (side < 0 ? vacuum_lo_[d] : vacuum_hi_[d]) {
+                  else if (in_grid || (side < 0 ? vacuum_lo_[d] : vacuum_hi_[d])) {
 
                      // Marshak (Robin) vacuum face: eliminating the face value
                      // from J = D_c (phi_c - phi_f) / (h/2) and J = phi_f / 2
                      // leaves an outgoing current proportional to phi_c alone
-                     // with the same consistent D as an interior face
+                     // with the same consistent D as an interior face. A face
+                     // into a void takes this same face, blend included, and
+                     // no coupling (the void has no unknown to couple to)
                      const PetscScalar d_b = consistent_d_ ? \
                         BlendD(d_c, half_range_[d] * h, consistent_power_) : d_c;
                      diag += 1.0 / (h * (2.0 + h / (2.0 * d_b)));
@@ -657,39 +697,63 @@ PetscErrorCode DSAPrecon::assemble_structured(const PetscScalar *sigma_t_h, cons
 // Host values into the COO pattern set at create - the same reasoning as the
 // structured path's host stencil assembly, and MatSetValuesCOO bumps the
 // matrix state so the inner KSP re-does its setup
-PetscErrorCode DSAPrecon::assemble_plex(const PetscScalar *sigma_t_h, const PetscScalar *sigma_s_h)
+PetscErrorCode DSAPrecon::assemble_plex(const PetscScalar *sigma_t_h, const PetscScalar *sigma_s_h, \
+   const PetscInt *void_h)
 {
    PetscScalar *d_global_a = nullptr;
    const PetscScalar *d_nb_a = nullptr;
 
    PetscFunctionBeginUser;
 
+   // A void cell's D is ZERO, the flag its neighbours see it by (the
+   // structured path's convention)
    PetscCall(VecGetArrayWrite(d_global_, &d_global_a));
-   for (PetscInt c = 0; c < local_cells_; c++) d_global_a[c] = 1.0 / (3.0 * sigma_t_h[c]);
+   for (PetscInt c = 0; c < local_cells_; c++) d_global_a[c] = void_h[c] ? 0.0 : 1.0 / (3.0 * sigma_t_h[c]);
    PetscCall(VecRestoreArrayWrite(d_global_, &d_global_a));
    PetscCall(VecScatterBegin(nb_scatter_, d_global_, d_nb_, INSERT_VALUES, SCATTER_FORWARD));
    PetscCall(VecScatterEnd(nb_scatter_, d_global_, d_nb_, INSERT_VALUES, SCATTER_FORWARD));
    if (n_basis_ > 1) {
-      PetscCall(assemble_plex_dg1(sigma_t_h, sigma_s_h));
+      PetscCall(assemble_plex_dg1(sigma_t_h, sigma_s_h, void_h));
       PetscFunctionReturn(PETSC_SUCCESS);
    }
    PetscCall(VecGetArrayRead(d_nb_, &d_nb_a));
 
    for (PetscInt c = 0; c < local_cells_; c++) {
 
+      PetscInt e = cell_entry_offset_[c];
+
+      // A void cell: an identity row times the volume (so the plex matrix
+      // stays V times the structured one), its couplings zeroed - the COO
+      // values persist across groups, so they are written, not skipped
+      if (void_h[c]) {
+         for (; e < cell_entry_offset_[c + 1] - 1; e++) coo_v_[e] = 0.0;
+         coo_v_[e] = volume_[c];
+         continue;
+      }
+
       const PetscScalar d_c = 1.0 / (3.0 * sigma_t_h[c]);
       PetscScalar diag = volume_[c] * (sigma_t_h[c] - sigma_s_h[c]);
-      PetscInt e = cell_entry_offset_[c];
 
       for (PetscInt k = cell_face_offset_[c]; k < cell_face_offset_[c + 1]; k++) {
 
          const PetscReal d_own = face_distance_[2 * k];
-         if (face_nb_[k] >= 0) {
+         const PetscScalar d_n = face_nb_[k] >= 0 ? d_nb_a[face_nb_[k]] : (PetscScalar)0.0;
+         if (face_nb_[k] >= 0 && d_n == 0.0) {
+
+            // A face into a void: no coupling (not even the consistent D's
+            // m h - a void has no unknown to couple to), and Marshak, with
+            // the same blended D a vacuum boundary face takes, as if the
+            // mesh stopped there
+            coo_v_[e++] = 0.0;
+            const PetscScalar d_b = consistent_d_ ? \
+               BlendD(d_c, 2.0 * d_own * face_half_range_[k], consistent_power_) : d_c;
+            diag += face_area_[k] / (2.0 + d_own / d_b);
+         }
+         else if (face_nb_[k] >= 0) {
 
             // Two-point flux: continuity of the current across the face
             // between the two centroids gives the series resistance - the
             // harmonic face D on a uniform grid
-            const PetscScalar d_n = d_nb_a[face_nb_[k]];
             PetscScalar t_f = face_area_[k] / (d_own / d_c + face_distance_[2 * k + 1] / d_n);
             if (consistent_d_) {
                // The structured blend, on the face's effective D over the
@@ -735,7 +799,8 @@ PetscErrorCode DSAPrecon::assemble_plex(const PetscScalar *sigma_t_h, const Pets
 // writes the transpose of the nbr block (both normals and jumps flip). Volume
 // terms: V_c (D_c grad phi_i . grad phi_j + sigma_a delta_ij), the basis being
 // orthonormal in the volume average
-PetscErrorCode DSAPrecon::assemble_plex_dg1(const PetscScalar *sigma_t_h, const PetscScalar *sigma_s_h)
+PetscErrorCode DSAPrecon::assemble_plex_dg1(const PetscScalar *sigma_t_h, const PetscScalar *sigma_s_h, \
+   const PetscInt *void_h)
 {
    const PetscScalar *d_nb_a = nullptr;
    const PetscInt nb = n_basis_;
@@ -748,9 +813,23 @@ PetscErrorCode DSAPrecon::assemble_plex_dg1(const PetscScalar *sigma_t_h, const 
 
    for (PetscInt c = 0; c < local_cells_; c++) {
 
+      const PetscReal vol = volume_[c];
+      // The neighbour blocks are written straight into their COO entries: in
+      // row i's run, the q-th interior face of this cell (cone order) owns
+      // entries [q * nb, (q + 1) * nb), and the own block comes last
+      const PetscInt row_len = (cell_entry_offset_[c + 1] - cell_entry_offset_[c]) / nb;
+      const PetscInt n_interior = row_len / nb - 1;
+
+      // A void cell: V times the identity block, every coupling zeroed (the
+      // DG0 path's rule, node by node)
+      if (void_h[c]) {
+         for (PetscInt e = cell_entry_offset_[c]; e < cell_entry_offset_[c + 1]; e++) coo_v_[e] = 0.0;
+         for (PetscInt i = 0; i < nb; i++) coo_v_[cell_entry_offset_[c] + i * row_len + n_interior * nb + i] = vol;
+         continue;
+      }
+
       const PetscScalar d_c = 1.0 / (3.0 * sigma_t_h[c]);
       const PetscScalar sigma_a = sigma_t_h[c] - sigma_s_h[c];
-      const PetscReal vol = volume_[c];
 
       for (PetscInt i = 0; i < nb; i++) {
          for (PetscInt j = 0; j < nb; j++) {
@@ -760,17 +839,23 @@ PetscErrorCode DSAPrecon::assemble_plex_dg1(const PetscScalar *sigma_t_h, const 
          }
       }
 
-      // The neighbour blocks are written straight into their COO entries: in
-      // row i's run, the q-th interior face of this cell (cone order) owns
-      // entries [q * nb, (q + 1) * nb), and the own block comes last
-      const PetscInt row_len = (cell_entry_offset_[c + 1] - cell_entry_offset_[c]) / nb;
-      const PetscInt n_interior = row_len / nb - 1;
       PetscInt q = 0;
 
       for (PetscInt k = cell_face_offset_[c]; k < cell_face_offset_[c + 1]; k++) {
 
-         const PetscBool interior = (PetscBool)(face_nb_[k] >= 0);
-         if (!interior && !face_vacuum_[k]) continue;
+         // A face into a void (D = 0 flags one) keeps its COO slots, zeroed,
+         // and is treated as a vacuum face below - as if the mesh stopped
+         // there
+         const PetscBool has_nb = (PetscBool)(face_nb_[k] >= 0);
+         const PetscScalar d_n = has_nb ? d_nb_a[face_nb_[k]] : (PetscScalar)0.0;
+         const PetscBool interior = (PetscBool)(has_nb && d_n != 0.0);
+         if (has_nb && !interior) {
+            for (PetscInt i = 0; i < nb; i++) {
+               for (PetscInt j = 0; j < nb; j++) coo_v_[cell_entry_offset_[c] + i * row_len + q * nb + j] = 0.0;
+            }
+            q++;
+         }
+         if (!has_nb && !face_vacuum_[k]) continue;
 
          const PetscReal scale = vol * face_area_[k];
          const PetscScalar *f_own = &face_own_[k * nb * nb];
@@ -787,7 +872,6 @@ PetscErrorCode DSAPrecon::assemble_plex_dg1(const PetscScalar *sigma_t_h, const 
          const PetscReal h_c = 2.0 * face_distance_[2 * k];
          if (interior) {
 
-            const PetscScalar d_n = d_nb_a[face_nb_[k]];
             const PetscReal h_n = 2.0 * face_distance_[2 * k + 1];
             const PetscReal kappa = PetscMax(0.5 * mip_penalty_ * PetscRealPart(d_c / h_c + d_n / h_n), 0.25);
 
@@ -847,7 +931,7 @@ PetscErrorCode DSAPrecon::apply(Vec x, Vec y)
       PetscScalarKokkosView rhs_d;
       PetscCall(VecGetKokkosView(x, &x_d));
       PetscCall(VecGetKokkosViewWrite(rhs_, &rhs_d));
-      RestrictKernel(x_d, rhs_d, w_d_, is_bc_row_d_, n_angles_, local_cells_ * n_basis_);
+      RestrictKernel(x_d, rhs_d, w_d_, is_bc_row_d_, void_cell_d_, n_angles_, n_basis_, local_cells_ * n_basis_);
       PetscCall(VecRestoreKokkosViewWrite(rhs_, &rhs_d));
       PetscCall(VecRestoreKokkosView(x, &x_d));
    }
@@ -863,7 +947,7 @@ PetscErrorCode DSAPrecon::apply(Vec x, Vec y)
       PetscScalarKokkosView y_d;
       PetscCall(VecGetKokkosView(sol_, &sol_d));
       PetscCall(VecGetKokkosViewWrite(y, &y_d));
-      ProlongKernel(sol_d, y_d, is_bc_row_d_, n_angles_, sum_weights_, local_rows);
+      ProlongKernel(sol_d, y_d, is_bc_row_d_, void_cell_d_, n_angles_, n_basis_, sum_weights_, local_rows);
       PetscCall(VecRestoreKokkosViewWrite(y, &y_d));
       PetscCall(VecRestoreKokkosView(sol_, &sol_d));
    }
