@@ -11,8 +11,10 @@
 // is streaming only), -precon_ref_shift + -precon_ref_k (put a representative
 // removal back onto that streaming pmat, in k reference-shifted copies),
 // -precon_dsa (add the DSA diffusion correction to the composite - its inner
-// solve takes the -dsa_ prefix, as does -dsa_mip_penalty, the interior penalty
-// constant of the DG1 operator), -precon_block_scale (build PCAIR on the
+// solve takes the -dsa_ prefix, as do -dsa_mip_penalty, the interior penalty
+// constant of the DG1 operator, and -dsa_consistent_d / -dsa_consistent_d_power,
+// the upwind numerical diffusion blended into D - on by default, 0 for the
+// physical D alone), -precon_block_scale (build PCAIR on the
 // element-block-scaled pmat - the default on the DG backend, both orders, and
 // off on the structured ones), -diag_scale, and the verification ones,
 // -check_inf_medium, -check_matfree and the -flux_vtk output override

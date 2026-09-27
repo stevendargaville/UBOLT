@@ -61,6 +61,62 @@ static void ProlongKernel(PetscScalarConstKokkosView node_d, PetscScalarKokkosVi
 }
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+// The half-range current of an isotropic unit scalar flux through a face of
+// unit normal n: sum over the ordinates leaving through it of w_a (Omega_a . n),
+// over sum_weights. 1/4 in the continuum, the quadrature's own value here.
+// cos_h(a) is Omega_a . n, one per ordinate, on the host
+static PetscErrorCode HalfRangeCurrent(const AngularQuadrature &quad, const std::vector<PetscReal> &cos_h, \
+   PetscReal *m)
+{
+   PetscFunctionBeginUser;
+
+   auto w_h = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), quad.w_d());
+   PetscReal sum = 0.0;
+   for (PetscInt a = 0; a < quad.n_angles(); a++) {
+      if (cos_h[a] > 0.0) sum += PetscRealPart(w_h(a, 0)) * cos_h[a];
+   }
+   *m = sum / PetscRealPart(quad.sum_weights());
+
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+// The face D with the upwind numerical diffusion M blended in: the p-norm of
+// (D, M), which at p = 1 is plain addition
+static inline PetscScalar BlendD(PetscScalar d, PetscReal m, PetscReal p)
+{
+   if (p == 1.0) return d + m;
+   return PetscPowReal(PetscPowReal(PetscRealPart(d), p) + PetscPowReal(m, p), 1.0 / p);
+}
+
+// -dsa_consistent_d and its blend power, under the inner solve's prefix like
+// -dsa_mip_penalty. p < 1 would add MORE than the sum, which nothing supports
+static PetscErrorCode ConsistentDOptions(MPI_Comm comm, PetscBool *on, PetscReal *power)
+{
+   PetscFunctionBeginUser;
+
+   PetscCall(PetscOptionsGetBool(NULL, "dsa_", "-consistent_d", on, NULL));
+   PetscCall(PetscOptionsGetReal(NULL, "dsa_", "-consistent_d_power", power, NULL));
+   PetscCheck(*power >= 1.0, comm, PETSC_ERR_ARG_OUTOFRANGE, \
+      "-dsa_consistent_d_power must be at least 1, got %g", (double)*power);
+
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+// Per axis of a structured backend: the ordinates' cosine on that axis
+static PetscErrorCode AxisHalfRangeCurrent(const AngularQuadrature &quad, const PetscScalar *cos, PetscReal *m)
+{
+   std::vector<PetscReal> cos_h(quad.n_angles());
+
+   PetscFunctionBeginUser;
+
+   for (PetscInt a = 0; a < quad.n_angles(); a++) cos_h[a] = PetscRealPart(cos[a]);
+   PetscCall(HalfRangeCurrent(quad, cos_h, m));
+
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 // create
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -74,6 +130,10 @@ PetscErrorCode DSAPrecon::create(MPI_Comm comm, const PhaseSpace &ps, const Stru
    h_[0] = disc.dx();
    vacuum_lo_[0] = (PetscBool)(bcs.type(StructuredFD1D::FACE_LEFT) == BCType::VACUUM);
    vacuum_hi_[0] = (PetscBool)(bcs.type(StructuredFD1D::FACE_RIGHT) == BCType::VACUUM);
+
+   const SNQuadrature *sn = dynamic_cast<const SNQuadrature *>(&quad);
+   PetscCheck(sn, comm, PETSC_ERR_ARG_WRONG, "the 1D DSA needs the 1D SNQuadrature");
+   PetscCall(AxisHalfRangeCurrent(quad, sn->mu_host(), &half_range_[0]));
 
    PetscCall(create_common(comm, ps, disc, quad));
 
@@ -97,6 +157,11 @@ PetscErrorCode DSAPrecon::create(MPI_Comm comm, const PhaseSpace &ps, const Stru
    vacuum_hi_[0] = (PetscBool)(bcs.type(StructuredFD2D::FACE_RIGHT) == BCType::VACUUM);
    vacuum_lo_[1] = (PetscBool)(bcs.type(StructuredFD2D::FACE_BOTTOM) == BCType::VACUUM);
    vacuum_hi_[1] = (PetscBool)(bcs.type(StructuredFD2D::FACE_TOP) == BCType::VACUUM);
+
+   const SNQuadrature2D *sn = dynamic_cast<const SNQuadrature2D *>(&quad);
+   PetscCheck(sn, comm, PETSC_ERR_ARG_WRONG, "the 2D DSA needs the SNQuadrature2D");
+   PetscCall(AxisHalfRangeCurrent(quad, sn->mu_host(), &half_range_[0]));
+   PetscCall(AxisHalfRangeCurrent(quad, sn->eta_host(), &half_range_[1]));
 
    PetscCall(create_common(comm, ps, disc, quad));
 
@@ -123,6 +188,12 @@ PetscErrorCode DSAPrecon::create(MPI_Comm comm, const PhaseSpace &ps, const Stru
    vacuum_hi_[1] = (PetscBool)(bcs.type(StructuredFD3D::FACE_BACK) == BCType::VACUUM);
    vacuum_lo_[2] = (PetscBool)(bcs.type(StructuredFD3D::FACE_BOTTOM) == BCType::VACUUM);
    vacuum_hi_[2] = (PetscBool)(bcs.type(StructuredFD3D::FACE_TOP) == BCType::VACUUM);
+
+   const SNQuadrature3D *sn = dynamic_cast<const SNQuadrature3D *>(&quad);
+   PetscCheck(sn, comm, PETSC_ERR_ARG_WRONG, "the 3D DSA needs the SNQuadrature3D");
+   PetscCall(AxisHalfRangeCurrent(quad, sn->mu_host(), &half_range_[0]));
+   PetscCall(AxisHalfRangeCurrent(quad, sn->eta_host(), &half_range_[1]));
+   PetscCall(AxisHalfRangeCurrent(quad, sn->xi_host(), &half_range_[2]));
 
    PetscCall(create_common(comm, ps, disc, quad));
 
@@ -227,6 +298,24 @@ PetscErrorCode DSAPrecon::create(MPI_Comm comm, const PhaseSpace &ps, const Unst
    }
    coo_v_.assign(coo_i.size(), 0.0);
 
+   // The upwind numerical diffusion per face (see assemble_plex), off the
+   // backend's own ordinates so the two cannot disagree. DG0 only - DG1's
+   // interior penalty already floors at the same half-range current
+   PetscCall(ConsistentDOptions(comm, &consistent_d_, &consistent_power_));
+   if (nb == 1) {
+      auto omega_h = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), disc.omega_d());
+      std::vector<PetscReal> cos_h(n_angles_);
+      face_half_range_.assign(n_slots, 0.0);
+      for (PetscInt k = 0; k < n_slots; k++) {
+         for (PetscInt a = 0; a < n_angles_; a++) {
+            PetscReal dot = 0.0;
+            for (PetscInt d = 0; d < 3; d++) dot += PetscRealPart(omega_h(3 * a + d) * nA[3 * k + d]);
+            cos_h[a] = dot / face_area_[k];
+         }
+         PetscCall(HalfRangeCurrent(quad, cos_h, &face_half_range_[k]));
+      }
+   }
+
    if (nb > 1) {
 
       // DG1: the backend's face matrices and basis gradients, and the unit
@@ -312,6 +401,7 @@ PetscErrorCode DSAPrecon::create_common(MPI_Comm comm, const PhaseSpace &ps, \
    sum_weights_ = quad.sum_weights();
    w_d_ = quad.w_d();
    is_bc_row_d_ = disc.boundary_info().is_bc_row_d;
+   PetscCall(ConsistentDOptions(comm, &consistent_d_, &consistent_power_));
 
    // A dof-1 twin of the backend's DMDA: same grid, same decomposition, one
    // unknown per cell. Its global vector holds the owned patch contiguously in
@@ -514,7 +604,11 @@ PetscErrorCode DSAPrecon::assemble_structured(const PetscScalar *sigma_t_h, cons
                      const PetscInt gn = ((nijk[2] - gzs) * gym + (nijk[1] - gys)) * gxm \
                         + (nijk[0] - gxs);
                      const PetscScalar d_n = d_local_a[gn];
-                     const PetscScalar d_f = 2.0 * d_c * d_n / (d_c + d_n);
+                     PetscScalar d_f = 2.0 * d_c * d_n / (d_c + d_n);
+                     // The upwind scheme's numerical diffusion, m h, blended
+                     // in (see the header) - a property of the face, so it
+                     // goes on after the harmonic mean, not per cell
+                     if (consistent_d_) d_f = BlendD(d_f, half_range_[d] * h, consistent_power_);
 
                      col[n_col].i = nijk[0]; col[n_col].j = nijk[1]; col[n_col].k = nijk[2];
                      col[n_col].c = 0;
@@ -527,7 +621,10 @@ PetscErrorCode DSAPrecon::assemble_structured(const PetscScalar *sigma_t_h, cons
                      // Marshak (Robin) vacuum face: eliminating the face value
                      // from J = D_c (phi_c - phi_f) / (h/2) and J = phi_f / 2
                      // leaves an outgoing current proportional to phi_c alone
-                     diag += 1.0 / (h * (2.0 + h / (2.0 * d_c)));
+                     // with the same consistent D as an interior face
+                     const PetscScalar d_b = consistent_d_ ? \
+                        BlendD(d_c, half_range_[d] * h, consistent_power_) : d_c;
+                     diag += 1.0 / (h * (2.0 + h / (2.0 * d_b)));
                   }
                   // A reflective face is zero Neumann: no current through it,
                   // so it contributes nothing at all
@@ -593,14 +690,23 @@ PetscErrorCode DSAPrecon::assemble_plex(const PetscScalar *sigma_t_h, const Pets
             // between the two centroids gives the series resistance - the
             // harmonic face D on a uniform grid
             const PetscScalar d_n = d_nb_a[face_nb_[k]];
-            const PetscScalar t_f = face_area_[k] / (d_own / d_c + face_distance_[2 * k + 1] / d_n);
+            PetscScalar t_f = face_area_[k] / (d_own / d_c + face_distance_[2 * k + 1] / d_n);
+            if (consistent_d_) {
+               // The structured blend, on the face's effective D over the
+               // centroid-to-centroid length (on a box, the harmonic D and h)
+               const PetscReal len = d_own + face_distance_[2 * k + 1];
+               t_f = face_area_[k] / len * BlendD(t_f * len / face_area_[k], face_half_range_[k] * len, \
+                  consistent_power_);
+            }
             coo_v_[e++] = -t_f;
             diag += t_f;
          }
          else if (face_vacuum_[k]) {
 
             // Marshak: the structured face, times the volume
-            diag += face_area_[k] / (2.0 + d_own / d_c);
+            const PetscScalar d_b = consistent_d_ ? \
+               BlendD(d_c, 2.0 * d_own * face_half_range_[k], consistent_power_) : d_c;
+            diag += face_area_[k] / (2.0 + d_own / d_b);
          }
       }
       coo_v_[e++] = diag;

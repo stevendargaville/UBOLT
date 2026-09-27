@@ -987,17 +987,20 @@ paths per cell, ratio 0.99) with `"type": "unstructured"`, and `"simplex": true`
 in the DG1 space (27 Sep 2026; the rows below replaced the cell-average correction's 25 /
 26 / 9 / 34, see TODO.md); it takes every diffusive problem further than DSA does at
 DG0. The thin (c = 0.5) infinite-medium box barely needs DSA and went 9 -> 11.
+The DG0 rows were re-measured 2026-09-27 for the consistent D (the physical-D count
+follows as "phys"); the twins still take exactly the structured count, and the DG0
+diffusive files now match or beat DG1 with DSA. DG1 ignores `-dsa_consistent_d`.
 
 | recipe | plex np=1 | plex np=2 | structured twin np=1 | no DSA np=1 |
 |---|---|---|---|---|
-| `plex_box_diffusive`, `-precon_dsa` | 11 | 11 | 11 | 29 (structured 29) |
-| the same, `-matfree_removal -precon_ref_shift -precon_dsa` | 11 | 11 | 11 | - |
-| the same, `-precon_dsa -pc_composite_type additive` | 14 | - | 14 | - |
+| `plex_box_diffusive`, `-precon_dsa` | 5 (phys 11) | 5 (phys 11) | 5 (phys 11) | 29 (structured 29) |
+| the same, `-matfree_removal -precon_ref_shift -precon_dsa` | 5 (phys 11) | 5 (phys 11) | 5 (phys 11) | - |
+| the same, `-precon_dsa -pc_composite_type additive` | 7 (phys 14) | - | 7 (phys 14) | - |
 | `plex_box_50_st2_dirichlet_cell`, `-precon_dsa` | 5 | - | 5 | 6 |
 | `plex_box_50_st2`, `-precon_dsa` (not a recipe) | 5 | - | 5 | 7 |
-| `plex_cube_diffusive`, `-precon_dsa` | 8 | 8 | 8 | 18 (structured 18) |
-| `plex_tri_diffusive` (5000 triangles), `-precon_dsa` | 10 | 10 | - | 35 |
-| `plex_tet_diffusive` (6000 tets), `-precon_dsa` | 9 | 9 | - | 31 (not a recipe) |
+| `plex_cube_diffusive`, `-precon_dsa` | 5 (phys 8) | 5 (phys 8) | 5 (phys 8) | 18 (structured 18) |
+| `plex_tri_diffusive` (5000 triangles), `-precon_dsa` | 5 (phys 10) | 5 (phys 10) | - | 35 |
+| `plex_tet_diffusive` (6000 tets), `-precon_dsa` | 5 (phys 9) | 5 (phys 9) | - | 31 (not a recipe) |
 | `plex_tri_30_inf_medium_ghost`, `-precon_dsa -check_inf_medium -ksp_rtol 1e-12` | 9 | - | - | 12 |
 | `plex_tet_6_inf_medium_ghost`, the same (not a recipe) | 9 | - | - | 11 |
 | DG1 `plex_box_diffusive_dg1`, `-precon_dsa` | 6 | 7 | - | 34 |
@@ -1154,34 +1157,58 @@ of 10, `box_diffusive.json` 50x50 over 5x5 and `cube_diffusive.json` 10^3 over
 1^3. Only the dimension changes between them, which is what makes the counts
 comparable. Re-measured 2026-09-25 (local opt) under the ghost-flux default, which
 every row with a vacuum face runs in; the Dirichlet-cell count follows in brackets where
-it moved. Rows without a recipe at that np (np=2 of the st=2, additive, CG and yreflect
+it moved. The DSA rows were re-measured again 2026-09-27 for the discretisation-consistent
+D (the default since then, see "Discretisation-consistent D" below); the physical-D count
+they replaced follows as "phys" where it moved. Rows without a recipe at that np (np=2 of the st=2, additive, CG and yreflect
 rows) were measured by hand.
 
 | config | np=1 | np=2 |
 |---|---|---|
 | 1D diffusive slab, no DSA (the reference) | 23 (Dirichlet-cell 20) | 23 (Dirichlet-cell 20) |
-| 1D diffusive slab, `-precon_dsa` | 11 | 11 (Dirichlet-cell 10) |
+| 1D diffusive slab, `-precon_dsa` | 5 (phys 11) | 5 (phys 11, Dirichlet-cell 10) |
 | 1D all-reflect infinite medium, `-precon_dsa` (rtol 1e-12) | 9 | 10 |
 | 1D slab st=2, `-precon_dsa` | 5 | 5 |
 | 2D diffusive box, no DSA (the reference) | 29 | 29 |
-| 2D diffusive box, `-precon_dsa` | 11 | 11 |
-| 2D diffusive box, `-precon_dsa -pc_composite_type additive` | 14 (Dirichlet-cell 23) | 14 (Dirichlet-cell 23) |
-| 2D diffusive box, `-precon_dsa -dsa_ksp_type cg -dsa_ksp_max_it 5` | 11 | 11 |
+| 2D diffusive box, `-precon_dsa` | 5 (phys 11) | 5 (phys 11) |
+| 2D diffusive box, `-precon_dsa -pc_composite_type additive` | 7 (phys 14, Dirichlet-cell 23) | not re-measured (phys 14, Dirichlet-cell 23) |
+| 2D diffusive box, `-precon_dsa -dsa_ksp_type cg -dsa_ksp_max_it 5` | 4 (phys 11) | not re-measured (phys 11) |
 | 2D all-reflect infinite medium, `-precon_dsa` (rtol 1e-12) | 9 | 9 |
 | 2D box st=2, `-precon_dsa` | 5 | 5 |
 | 3D diffusive cube, no DSA (the reference) | 18 (Dirichlet-cell 21) | 18 (Dirichlet-cell 21) |
-| 3D diffusive cube, `-precon_dsa` | 8 (Dirichlet-cell 10) | 8 (Dirichlet-cell 10) |
-| 3D diffusive cube, Y faces reflective, anisotropic box, `-precon_dsa` | 9 (Dirichlet-cell 10) | 12 before 2026-09-26, not re-measured (Dirichlet-cell 11) |
+| 3D diffusive cube, `-precon_dsa` | 5 (phys 8, Dirichlet-cell 10) | 5 (phys 8, Dirichlet-cell 10) |
+| 3D diffusive cube, Y faces reflective, anisotropic box, `-precon_dsa` | 5 (phys 9, Dirichlet-cell 10) | 12 before 2026-09-26, not re-measured (Dirichlet-cell 11) |
 | 3D all-reflect infinite medium, `-precon_dsa` (rtol 1e-12) | 8 | 8 |
 | 3D cube st=2, `-precon_dsa` | 4 | 4 |
 
 Read each dimension's first two rows together: that pair IS the test, and
-halving the count is what the correction buys — 23 to 11 in 1D, 29 to 11 in 2D,
-18 to 8 in 3D (20 to 11, 29 to 11 and 21 to 10 under Dirichlet-cell). **The
-corrected count is 8 to 11 in every dimension** while the uncorrected one is not,
-so what the correction removes is exactly the part that varies with dimension.
-That is the claim DSA makes, and it is the number to beat for anything that comes
-after (see the numerical-diffusion note in `TODO.md`).
+what the correction buys — 23 to 5 in 1D, 29 to 5 in 2D, 18 to 5 in 3D (with the
+physical D it was 23 to 11, 29 to 11 and 18 to 8; 20 to 11, 29 to 11 and 21 to 10
+under Dirichlet-cell). **The corrected count is 5 in every dimension** while the
+uncorrected one is not, so what the correction removes is exactly the part that
+varies with dimension. That is the claim DSA makes, and it is the number to beat
+for anything that comes after.
+
+### Discretisation-consistent D (the default since 2026-09-27)
+
+The physical `D = 1/(3 sigma_t)` is the PDE's, not the discretisation's: first-order
+upwind streaming adds a numerical diffusion `m h` per face (m = the quadrature's
+half-range current, sum over outgoing ordinates of `w (Omega . n)` over the weight sum,
+~1/4), exact for a linear flux in an infinite pure scatterer, and at ten mean free
+paths per cell it is several times D. `DSAPrecon` now blends it into every face
+coefficient, Marshak faces included, as `(D^p + (m h)^p)^(1/p)` with p = 1.5
+(`-dsa_consistent_d_power`); `-dsa_consistent_d 0` is the old operator, pinned on
+`box_diffusive` (11) and `box_crooked_pipe` (28), and power 1 (the exact sum) on
+`box_diffusive` (5). Why 1.5: a 1D Fourier analysis of step-differenced source
+iteration + DSA puts the optimal face D below `D + m h` for intermediate cells (tau =
+sigma_t h ~ 0.3-2) and p = 1.5 tracks it to a few hundredths of spectral radius at
+every tau and ratio, where the exact sum costs +1-2 on the literature classics at tau
+0.5 (`J_box2d_60_st10_c1` 9 -> 11) and p = 2 over-shoots at ratio ~1. The recipe pins
+that moved, serial / np 2 identical unless shown: every diffusive file 11/11/8 -> 5
+(1D/2D/3D), the plex twins the same, triangles 10 -> 5, tets 9 -> 5, crooked pipe 28 ->
+8, layers 12 -> 11, random8 8 -> 7 (np 2 8 -> 6), additive 14 -> 7, the CG inner solve
+11 -> 4, `cube_diffusive -precon_stream -precon_dsa` 44 -> 25, the decades4 DSA lines
+11 -> 5 at exact k and 10 -> 8 (2D) at the default k. Nothing got worse. The external
+literature suite (~110 problems) is in `TODO.md`.
 
 The remaining rows say DSA does not break what already worked — st=2 goes 6 to
 5 in 1D, 7 to 5 in 2D and 6 to 4 in 3D, and the infinite media still land on
@@ -1273,10 +1300,10 @@ runs both ways, reference and `-precon_dsa`, serial and `-n 2`, in
 
 | problem | regime pinned | np=1 | np=2 |
 |---|---|---|---|
-| `box_crooked_pipe.json` (28x20) | discontinuous D through the harmonic face mean (Southworth et al. crooked pipe, Table I set 2) | 113 / 28 (Dirichlet-cell 123 / 72) | 114 (pinned 117, OpenMP CI) / 28 (Dirichlet-cell 95 / 69) |
-| `box_layers.json` (40x40) | alternating thick/thin layers (the Warsa mixed regime) | 24 / 12 (Dirichlet-cell 25 / 13) | 24 / 11 (Dirichlet-cell 25 / 12) |
+| `box_crooked_pipe.json` (28x20) | discontinuous D through the harmonic face mean (Southworth et al. crooked pipe, Table I set 2) | 113 / 8 (phys D 28; Dirichlet-cell 123 / 72) | 114 (pinned 117, OpenMP CI) / 8 (phys D 28; Dirichlet-cell 95 / 69) |
+| `box_layers.json` (40x40) | alternating thick/thin layers (the Warsa mixed regime) | 24 / 11 (phys D 12; Dirichlet-cell 25 / 13) | 24 / 11 (Dirichlet-cell 25 / 12) |
 | `box_lattice.json` (56x56) | scattering ratio exactly 1 with painted pure absorbers | 9 / 5 | 9 / 5 |
-| `box_random8.json` (32x32) | fixed-seed blockwise random thick/thin/absorber mix | 19 / 8 (Dirichlet-cell 27 / 11) | 19 / 8 (Dirichlet-cell 27 / 11) |
+| `box_random8.json` (32x32) | fixed-seed blockwise random thick/thin/absorber mix | 19 / 7 (phys D 8; Dirichlet-cell 27 / 11) | 19 / 6 (phys D 8; Dirichlet-cell 27 / 11) |
 
 Counts are reference / `-precon_dsa`, measured on the local **opt** arch under the
 ghost-flux default (2026-09-25) and pinned exactly; until then the pins sat at
@@ -1284,6 +1311,8 @@ measured + 1 like the other DSA pins, and CI ran green with that. Under
 Dirichlet-cell the crooked pipe was the one file whose reference count moved
 with the rank count (123 vs 95 — PCAIR on a strongly heterogeneous operator);
 under ghost-flux the two are 113 and 114, and its DSA count is 28 at both.
+The DSA column was re-measured 2026-09-27 for the discretisation-consistent D ("phys
+D" is the count it replaced).
 
 The crooked pipe's counts were re-measured on 2026-08-04 when inflow went per
 face: the file used to be driven by a painted unit-`Source` strip in the first
