@@ -14,7 +14,7 @@ Codebase map
   physics comes from `-problem <file.json>` (schema: `docs/problem_files.md`), the CLI
   keeps only PETSc options and the strategy/verification knobs (`-precon_stream`,
   `-matfree_removal`, `-precon_ref_shift`, `-precon_dsa`, `-precon_block_scale`, `-diag_scale`,
-  `-check_inf_medium`, `-check_matfree`, `-flux_vtk` override). It is also where the group
+  `-check_inf_medium`, `-check_matfree`, `-check_ref_shift`, `-flux_vtk` override). It is also where the group
   Gauss-Seidel sweep lives, until a second sweep strategy justifies promoting it into
   the library. It replaced the per-problem drivers (`slab_1dk`, `slab_1d_mgk`,
   `box_2dk`) in Aug 2026, verified byte-for-byte against all 24 baselines first.
@@ -190,7 +190,12 @@ Codebase map
   and it is kept on DG though it scales the same blocks (dropping it measured 1-2 worse),
   `RefShiftPmats` (the OTHER optional pmat strategy, behind `-precon_ref_shift` and only
   under `-matfree_removal`: k copies of the streaming matrix each carrying a
-  REPRESENTATIVE removal `alpha_k * D_ref`, plus the group-to-bin map. It owns those
+  REPRESENTATIVE removal `alpha_k * D_ref`, plus the group-to-bin map. VOIDS: the
+  groups are sorted by support (the cells where `Sigma_t > 0`), one reference group
+  per support class, binned per class (`-precon_ref_k` is per class) - the reference
+  is zero in the class's voids, so a void cell's pmat row is the bare streaming row the
+  operator has there, and an empty support is the one unshifted bin whose pmat IS the
+  streaming matrix; only a negative `Sigma_t` is an error. It owns those
   matrices and nothing else — the driver keeps one `TransportSolver`, hence one PCAIR
   hierarchy, per bin, because the group loop is the driver's),
   `UboltWriteScalarFluxVTK` (the scalar flux — at DG1 the cell average — of a

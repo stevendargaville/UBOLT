@@ -5,7 +5,11 @@ Each phase is a reviewable unit with its own verification. Do not start a phase 
 previous one's verification has passed and been reviewed.
 
 ## Current state (updated 2026-09-27)
-Last landed: **void bridging in the DSA** (by default `-precon_dsa` keeps `Sigma_t = 0`
+Last landed: **`-precon_ref_shift` on voids** (`RefShiftPmats` sorts the groups by
+their void cells, one reference per pattern, zero in the void, so a void cell's pmat
+row is the bare streaming row the operator has there; exact coverage stays the full
+pmat, voids included - see the ticked item at the end of Phase 6); before it, **void
+bridging in the DSA** (by default `-precon_dsa` keeps `Sigma_t = 0`
 cells IN its diffusion operator with the free-flight `D = L / 3`, `L = 4 V / S` the
 voids' mean chord, and at DG1 a harmonic-D weighted interior penalty on the faces
 touching a void, so the correction couples the regions a void separates: the void
@@ -40,9 +44,9 @@ hex cube, triangles and tets go 34 / 32 / 40 / 43 -> 6 / 7 / 8 / 9 (DG0+DSA now 
 5 on all four meshes' DG0 twins, through the consistent D). Next up: 6b CG-SUPG (Phase
 6), or one of the open questions carried as checkboxes since 27 Sep 2026: per-group
 cached Mat/KSP for the DSA (in the Phase 4 postscript 5 DSA notes; void masking, the
-other, is done), and the follow-ups the 27 Sep 2026 round left (`-precon_ref_shift`
-on partly-void groups, a stronger cheap DSA inner solve, the simplex +1; the list at
-the end of Phase 6; the void-bridging DSA operator from that list is done). Both Phase 6a things to watch are
+other, is done), and the follow-ups the 27 Sep 2026 round left (a stronger cheap
+DSA inner solve, the simplex +1; the list at the end of Phase 6 - the void-bridging
+DSA operator and `-precon_ref_shift` on partly-void groups from it are done). Both Phase 6a things to watch are
 closed (27 Sep 2026): simplex iteration counts creeping up with refinement is
 explained and gone under the current defaults - it was PCAIR's row-relative R drop on
 the old unscaled Dirichlet-cell pmat, which either ghost-flux or the element-block
@@ -351,7 +355,9 @@ now direct and tested (see that item).
       no assembly in the sweep at all; the new decades files are where the bare streaming
       pmat does not converge at all and the shift does. DSA re-attaches on it (exactly the
       full-pmat + DSA counts) where it cannot attach to a bare L. Counts, the bare-L
-      comparison and the mismatch cost: `docs/dev/testing.md`.
+      comparison and the mismatch cost: `docs/dev/testing.md`. Since 27 Sep 2026 voids
+      too: one reference per set of void cells, zero in the void (see the ticked item
+      at the end of Phase 6).
 - Verify: matvec equivalence vs assembled path on random vectors (<1e-13); solution norms
   match Phase 2; iteration counts recorded (not pinned) — preconditioner quality is the
   research question; findings recorded below.
@@ -654,8 +660,27 @@ now direct and tested (see that item).
     Details and the scans behind the choice of D in the Phase 4 postscript 5 DSA
     notes and docs/dev/testing.md, "DSA with voids". Left: the chord is one number
     per group, not per connected void; DG1 is held at a tie by the one GAMG V-cycle.
-  - [ ] `-precon_ref_shift` still refuses a group that is void in only some cells - a
-    check older than the DSA void mask, and separate from it (PR #14).
+  - [x] `-precon_ref_shift` refused a group that is void in only some cells - a check
+    older than the DSA void mask, and separate from it (PR #14). DONE 27 Sep 2026:
+    `RefShiftPmats` sorts the groups into SUPPORT classes (the cells where `Sigma_t >
+    0`), each with its own reference - its first group - and bins each class on its own
+    (`-precon_ref_k` is per class); the empty support is the streaming-only bin it
+    already had. The reference is zero in the class's voids, so the shift is too and a
+    void cell's pmat row is the bare streaming row, which is the operator's row there;
+    the alphas are log-means over the support. A void in every group (a void material)
+    leaves one class, and exact coverage is still the full pmat - the single-group void
+    files reproduce the default counts exactly under ref-shift, with and without DSA
+    (23 / 26 / 21 / 25 / 34, DSA 6 / 8 / 6 / 8 / 10, where bare `-matfree_removal` takes
+    277 or diverges), and so do the new `{slab,box,plex}_decades4_void.json`. Why
+    classes rather than one reference with the voids masked out of the log-mean:
+    `box_decades4_void`'s block is transparent in group 0 only, and forcing the four
+    groups onto group 0's reference leaves the block unshifted for groups 1-3, taking
+    the thick group 29 -> 801 iterations. Negative `Sigma_t` stays an error. New check
+    `-check_ref_shift` (the driver): every group's pmat against its assembled
+    streaming + removal operator, 9e-14 relative at exact coverage on the void files
+    (the one-reference variant: 0.2, FAIL). All 35 pre-existing ref-shift recipes'
+    residual histories are identical to main's. Counts and pins: docs/dev/testing.md,
+    "Voids" under the reference-shifted pmat.
   - [ ] GAMG on the DSA diffusion matrix is the remaining limit in the thick diffusion
     limit under the consistent D: with an exact inner solve eps 1e-4 takes 4, and two
     V-cycles (`-dsa_ksp_type richardson -dsa_ksp_max_it 2`) take 64^2 from 11 to 7, but
@@ -1077,7 +1102,7 @@ now direct and tested (see that item).
     34 -> 10 / 10 - against 5 / 5 / 5 / 5 / 6 with no void; the unmasked "tiny Sigma_t"
     workaround takes 7 on the channel. `verify_plexk` check 12. Not done here: coupling
     the regions a void separates (done since - the next item), and `-precon_ref_shift`
-    on a partially-void group (carried at the end of Phase 6).
+    on a partially-void group (done since, at the end of Phase 6).
   - [x] Void BRIDGING in the DSA (27 Sep 2026, the default; `-dsa_void_bridge 0` is the
     mask above). A void cell stays in the diffusion operator, no absorption, with the
     FREE-FLIGHT coefficient: D = 1/(3 sigma_t) is <mu^2> times the flight 1/sigma_t,

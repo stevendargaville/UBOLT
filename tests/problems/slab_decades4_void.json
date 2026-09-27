@@ -1,0 +1,20 @@
+{
+ "_comment": "slab_decades4.json with a VOID gap: the same 100 cells over 10, the same four decades groups and 5x dense block over [4, 6], plus a void (materials/decades4_void.json's material 2, Sigma_t = 0 in every group) over [7, 8]. Pins -precon_ref_shift on a partly-void problem: every group is void in the same cells, so they share one reference, which is zero in the gap - the shift leaves the gap's pmat rows pure streaming (exactly the operator's rows there) and exact coverage (-precon_ref_k 4) is still the full pmat. Painted on cell boundaries.",
+ "dimension": 1,
+ "mesh": {
+  "n_cells": [100],
+  "lengths": [10.0]
+ },
+ "sn_order": 4,
+ "materials": "materials/decades4_void.json",
+ "regions": {
+  "paint": [
+   {"material": 1, "interval": [4.0, 6.0]},
+   {"material": "void", "interval": [7.0, 8.0]}
+  ]
+ },
+ "boundary_conditions": {
+  "left": {"type": "vacuum", "inflow": 2.0},
+  "right": {"type": "vacuum", "inflow": 2.0}
+ }
+}

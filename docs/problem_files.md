@@ -383,8 +383,11 @@ the channel). `-dsa_void_d <D>` fixes the bridged voids' D in place of `L / 3`.
 The threshold is `-dsa_void_sigma_t` (default 0, only a true void): raising
 it treats near-voids as voids too, for a thin region where `D` would be huge
 (a bridged near-void takes `D = 1 / (3 (Sigma_t + 1 / L))`). The
-reference-shift pmat (`-precon_ref_shift`) still refuses a group that is zero
-in some cells only - a single ratio cannot represent it.
+reference-shift pmat (`-precon_ref_shift`) takes voids too: it leaves a void
+cell's rows unshifted (pure streaming, which is exactly the operator there),
+and a group void in different cells from the others - a material transparent
+in some groups only - gets a reference and hierarchies of its own
+(`{slab,box,plex}_decades4_void.json`).
 
 The interoperability asymmetry, documented so nobody trips on it: UBOLT is
 unitless and ignores `length_unit` (the mesh lengths are in whatever unit the

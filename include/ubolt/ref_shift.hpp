@@ -19,22 +19,32 @@
 // roughly one mean free path per cell), because the operator it is set up on is
 // then nothing like the one being solved. A pmat of L + alpha * D_ref puts the
 // removal back:
-//   - D_ref is the REFERENCE removal: the first group whose per-cell Sigma_t
-//     is positive everywhere (group 0 whenever group 0 qualifies). Per cell,
+//   - D_ref is the REFERENCE removal: a group's per-cell Sigma_t. Per cell,
 //     not a scalar: on a heterogeneous problem a scalar shift is wrong
 //     everywhere except one material, while a per-cell reference tracks the
 //     geometry
-//   - a group whose removal is identically ZERO (streaming-only) has no ratio
-//     to anything, and needs none: its operator is exactly L, so all such
-//     groups share one unshifted bin whose pmat IS the streaming matrix
-//     (reference-counted, not copied) - exact for them by construction. Only
-//     a group that is zero in SOME cells is refused, since one ratio cannot
-//     represent a field that is removal here and void there
+//   - VOIDS are part of that geometry. Each group's SUPPORT - the cells where
+//     its Sigma_t is positive - sorts the groups into support classes, and
+//     every class has its own reference, its first group (group 0 whenever
+//     group 0 qualifies). The reference is zero exactly where the class is
+//     void, so the shift is too: a void cell's pmat row is the bare streaming
+//     row, which is the true operator's row there (a void has no removal to
+//     approximate). The ratios are taken over the support only, where both
+//     fields are positive. On a void-free problem there is one class, the
+//     whole mesh, and nothing about this is new. Groups with different
+//     supports (a material void in some groups only) never share a bin: the
+//     pmat of one would carry removal where the other has none
+//   - a group whose removal is identically ZERO (streaming-only) is the class
+//     with an empty support: no ratio to anything, and none needed, since its
+//     operator is exactly L - so all such groups share one unshifted bin whose
+//     pmat IS the streaming matrix (reference-counted, not copied), exact by
+//     construction
 //   - alpha_g is what relates group g's removal to that reference. If every
 //     material shares the same group-to-group ratio structure - a
 //     density-scaled copy of one material, the common case - then
 //     alpha_g * D_ref IS Sigma_t(g) exactly, cell by cell, and the pmat is the
-//     full one. Otherwise it is the best per-group rank-0 fit to it
+//     full one - void cells included. Otherwise it is the best per-group
+//     rank-0 fit to it
 //
 // Why k of them rather than one per group. One pmat per group is exact and
 // costs a PCAIR hierarchy per group; one pmat for the whole sweep costs one
@@ -48,7 +58,9 @@
 //
 // Which is what this class is: the alphas, the binning, and the k matrices. The
 // group loop stays with the caller, which owns one solver per bin and asks
-// bin_of_group() which one this group belongs to
+// bin_of_group() which one this group belongs to. The binning is per support
+// class (one class on any problem whose groups are void in the same cells, or
+// in none), so k is the number of shifted bins PER CLASS
 class PETSC_VISIBILITY_PUBLIC RefShiftPmats {
 public:
    // The default binning rule: the fewest bins that keep every group's
@@ -74,8 +86,10 @@ public:
    // as it was
    //
    // n_bins <= 0 asks for the default rule above. A positive value is taken as
-   // given, clamped to [1, n_groups] - n_groups bins is one per group, which is
-   // exact whatever the alphas are
+   // given, per support class, clamped to [1, groups in the class] - one bin
+   // per group is exact whatever the alphas are
+   //
+   // A negative Sigma_t anywhere is an error
    //
    // ps must already carry the decomposition (this reads local_cells), and xs
    // must already be filled - the alphas are computed here, once
@@ -86,18 +100,23 @@ public:
    PetscInt n_bins() const { return (PetscInt)pmats_.size(); }
    // Which bin's pmat group g is preconditioned with
    PetscInt bin_of_group(PetscInt g) const { return bin_of_group_[g]; }
-   // The pmat of a bin: L + bin_alpha(bin) * D_ref on the non-BC rows, and the
-   // streaming matrix's exact boundary rows everywhere else. Not owned by the
-   // caller - destroy() frees them
+   // The pmat of a bin: L + bin_alpha(bin) * D_ref on the non-BC rows (D_ref
+   // being the bin's class reference, zero in its voids), and the streaming
+   // matrix's exact boundary rows everywhere else. Not owned by the caller -
+   // destroy() frees them
    Mat pmat(PetscInt bin) const { return pmats_[bin]; }
 
-   // Group g's own ratio to the reference removal (the reference group's is 1
+   // Group g's own ratio to its class's reference removal (a reference's is 1
    // by definition; a streaming-only group's is 0)
    PetscReal alpha(PetscInt g) const { return alpha_[g]; }
-   // The group whose per-cell Sigma_t is the reference D_ref - the first with
-   // removal in every cell; -1 when every group is streaming-only (there is
-   // then nothing to reference and the one bin is the streaming matrix)
-   PetscInt ref_group() const { return ref_group_; }
+   // How many support classes carry removal - 1 on any problem whose groups
+   // are void in the same cells or in none; the streaming-only groups, if
+   // any, are not counted (they have no reference)
+   PetscInt n_classes() const { return (PetscInt)class_ref_.size(); }
+   // The group whose per-cell Sigma_t is the bin's D_ref - the first group of
+   // its support class; -1 for the unshifted bin, whose pmat is the streaming
+   // matrix itself
+   PetscInt bin_ref_group(PetscInt bin) const { return bin_ref_group_[bin]; }
    // The ratio the bin's pmat was actually built with
    PetscReal bin_alpha(PetscInt bin) const { return bin_alpha_[bin]; }
    // The worst mismatch any group is preconditioned at, as a ratio >= 1
@@ -107,23 +126,23 @@ public:
    PetscReal worst_mismatch() const { return worst_mismatch_; }
 
 private:
-   // The log-mean of Sigma_t(g) / Sigma_t(ref) over every cell, per group -
-   // and the classification that picks ref and flags streaming-only groups
+   // Classify the groups by support (streaming-only, or one of the removal
+   // classes), and the log-mean of Sigma_t(g) / Sigma_t(ref) over the class's
+   // support, per group
    PetscErrorCode compute_alphas(const GroupXSections &xs);
-   // Partition the sorted log-alphas into contiguous bins minimising the
-   // widest bin - see the .cxx for why this beats cutting at the largest gaps,
-   // how ties are broken the same way on every rank count, and where the spare
-   // bins go when the optimal width needs fewer than were asked for
-   void bin_alphas(PetscInt n_bins);
 
    MPI_Comm comm_ = MPI_COMM_NULL;
    PhaseSpace ps_;
    PetscInt n_groups_ = 0;
-   PetscInt ref_group_ = -1;
    std::vector<bool> is_streaming_group_;
+   // Per group: its support class, -1 for a streaming-only group
+   std::vector<PetscInt> class_of_group_;
+   // Per class: its reference group
+   std::vector<PetscInt> class_ref_;
    std::vector<PetscReal> alpha_;
    std::vector<PetscReal> bin_alpha_;
    std::vector<PetscInt> bin_of_group_;
+   std::vector<PetscInt> bin_ref_group_;
    std::vector<Mat> pmats_;
    PetscReal worst_mismatch_ = 1.0;
 };
