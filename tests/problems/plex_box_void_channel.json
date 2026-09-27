@@ -1,0 +1,45 @@
+{
+ "_comment": "The unstructured DG0 twin of box_void_channel.json (quads, only \"type\": \"unstructured\" added): the plex DSA masks the same void cells, its matrix still V times the structured one, so the -precon_dsa count pins against the structured one.",
+ "dimension": 2,
+ "mesh": {
+  "type": "unstructured",
+  "n_cells": [50, 50],
+  "lengths": [5.0, 5.0]
+ },
+ "sn_order": 4,
+ "materials": {
+  "n_groups": 1,
+  "materials": [
+   {
+    "id": 0,
+    "name": "diffusive",
+    "Sigma_t": [100.0],
+    "Sigma_s": [
+     [99.0]
+    ],
+    "Source": [1.0]
+   },
+   {
+    "id": 1,
+    "name": "void",
+    "Sigma_t": [0.0],
+    "Sigma_s": [
+     [0.0]
+    ],
+    "Source": [0.0]
+   }
+  ]
+ },
+ "regions": {
+  "background": "diffusive",
+  "paint": [
+   {"material": "void", "box": [0.0, 3.5, 2.2, 2.8]}
+  ]
+ },
+ "boundary_conditions": {
+  "left": {"type": "vacuum", "inflow": 12.566370614359172},
+  "right": {"type": "vacuum", "inflow": 12.566370614359172},
+  "bottom": {"type": "vacuum", "inflow": 12.566370614359172},
+  "top": {"type": "vacuum", "inflow": 12.566370614359172}
+ }
+}

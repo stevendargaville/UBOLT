@@ -1,0 +1,42 @@
+{
+ "_comment": "slab_diffusive.json with a VOID gap: the same 100-cell slab of ten mean free paths per cell at a scattering ratio of 0.99, with a Sigma_t = 0 gap over x in [4, 6], so two diffusive slabs that only talk to each other by streaming across the void. The 1D pin of the DSA's void masking: the void cells are masked out of the diffusion correction and each slab sees a Marshak face at the gap, so the correction does not couple the two slabs - the transport stages carry what crosses the gap.",
+ "dimension": 1,
+ "mesh": {
+  "n_cells": [100],
+  "lengths": [10.0]
+ },
+ "sn_order": 4,
+ "materials": {
+  "n_groups": 1,
+  "materials": [
+   {
+    "id": 0,
+    "name": "diffusive",
+    "Sigma_t": [100.0],
+    "Sigma_s": [
+     [99.0]
+    ],
+    "Source": [1.0]
+   },
+   {
+    "id": 1,
+    "name": "void",
+    "Sigma_t": [0.0],
+    "Sigma_s": [
+     [0.0]
+    ],
+    "Source": [0.0]
+   }
+  ]
+ },
+ "regions": {
+  "background": "diffusive",
+  "paint": [
+   {"material": "void", "interval": [4.0, 6.0]}
+  ]
+ },
+ "boundary_conditions": {
+  "left": {"type": "vacuum", "inflow": 2.0},
+  "right": {"type": "vacuum", "inflow": 2.0}
+ }
+}

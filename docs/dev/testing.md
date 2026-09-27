@@ -1325,15 +1325,62 @@ cells `j = 8..11` (centres 2.125–2.875) the strip covered. The magnitude is
 only relative in a linear fixed-source solve, so `1.0` angle-integrated is the
 faithful replacement for the retired unit angle-integrated `Source` strip.
 
-### Checks that are not recipes
-A recipe passes on exit 0, so the two guards are checked BY HAND:
+### DSA with voids
 
-- **Void guard**: `./transportk -problem problems/slab_st0.json -precon_dsa`
-  must fail with the `Sigma_t > 0 in every cell` message —
-  `D = 1/(3 Sigma_t)` is undefined in a void, and the fix is a region-masked
-  diffusion operator (future work, as in the paper) rather than a fudged
-  coefficient.
-- **Singularity guard**: an all-reflective problem whose within-group `Sigma_s`
+Until 27 Sep 2026 `-precon_dsa` refused any cell with `Sigma_t <= 0` (the "void
+guard"; `D = 1/(3 Sigma_t)` is undefined there). Now those cells are MASKED out
+of the correction, per group, on every backend and order (`DSAPrecon`'s header
+has the design): identity diffusion rows (V I on the plex), nothing restricted
+or corrected there, and a face into the void a Marshak / MIP-vacuum face for its
+neighbour. Under the consistent D (the default, see above) that face is the
+vacuum boundary face exactly, blend included - `(D_c^p + (m h)^p)^(1/p)` on
+the real cell's side - and nothing crosses it: the void cell's D = 0 flag is
+tested BEFORE any blend, so no `m h` coupling reaches a masked cell and the
+matrix stays SPD. The threshold is `-dsa_void_sigma_t` (default 0). With no void
+cell the masked code runs the unmasked arithmetic: every `-precon_dsa` recipe in
+the Makefile (61, after merging the consistent D), pin-lifted with
+`-ksp_monitor`, gave output identical to main's.
+
+The void files are the diffusive ones (ten mean free paths per cell, ratio 0.99,
+S4, all faces vacuum) with a `Sigma_t = 0` region painted in, run both ways:
+
+| problem | void | no DSA np=1 | DSA np=1 / np=2 | physical-D DSA | void-free DSA |
+|---|---|---|---|---|---|
+| `slab_void_gap.json` (100) | x in [4, 6], splits the slab | 23 | 6 / 7 | 12 / 13 | 5 |
+| `box_void_channel.json` (50x50) | channel in from the left face | 26 | 8 / 8 | 12 / 12 | 5 |
+| `cube_void_duct.json` (10^3) | 2x2-cell duct in from the left face | 21 | 6 / 6 | 9 / 9 | 5 |
+| `plex_box_void_channel.json` (quads, DG0) | as the box | 25 (np=2 26; pinned 26, gnu_opt CI) | 8 / 8 | 12 / 12 | 5 |
+| `plex_box_void_channel_dg1.json` (quads, DG1) | as the box | 34 | 10 / 10 | 10 / 10 | 6 |
+
+"DSA" is the default consistent D, "physical-D DSA" `-dsa_consistent_d 0` (what
+the pins were before the consistent D merged, not pinned now); DG1 has no blend,
+so its two columns agree. Pinned at the local opt counts (np=2 of the no-DSA
+references not pinned). The void costs the consistent-D DSA 1-3 iterations at
+DG0 (four at DG1) against the same problem with no void. For scale: the channel
+with an unmasked tiny `Sigma_t` (1e-3, the old workaround) takes 7, and masking
+that one with `-dsa_void_sigma_t 1e-2` 8 (physical D: 12 both ways) - the
+workaround's thin-region coupling is worth one iteration here, which is what a
+void-bridging operator would have to beat.
+The correction does not couple the regions a void separates (the slab gap's two
+halves each see a Marshak face); that coupling is left to the transport stages.
+
+A group void EVERYWHERE is now fully masked, so the correction is zero and the
+count is the no-DSA one: `slab_st0 -precon_dsa` is pinned at 1, and
+`slab_decades4_stream0 -precon_dsa` (void top group) at 5, its groups taking
+1, 5, 5, 5 against 1, 8, 14, 22 without DSA (physical D: 1, 5, 6, 11).
+
+`verify_plexk` check 12 holds the masking itself: the FD twin with its painted
+box made a void (Dirichlet-cell and ghost-flux with a reflective corner — the
+masked structured and plex operators agree to rounding), and at DG0 and DG1 a
+quad (and at DG1 a hex) box whose high-x cells are void against the box of only
+its low-x cells: every non-void row identical (so the face into the void IS the
+cut box's vacuum face), void rows V I, and `P D^-1 R` equal on the non-void
+nodes and exactly zero on the void ones, serial and -n 2/4.
+
+### Checks that are not recipes
+A recipe passes on exit 0, so the guard is checked BY HAND:
+
+- **Singularity guard**: an all-reflective, void-free problem whose within-group `Sigma_s`
   equals its `Sigma_t` must fail with the pure-Neumann message. This is the same
   constraint the transport operator carries (see the reflective section above),
   which is why no shipped problem file is in that state.
@@ -1474,8 +1521,9 @@ and the old rounding-decided choice fails that pin serially.) The `mg4_t05` file
 mismatch and DSA takes 5-6 in 1D and 4-5 in 3D at every k. The 179 lived in
 the Dirichlet-cell boundary rows, the same DSA-mask artefact as the
 `-precon_stream -precon_dsa` divergence (see the DSA section).
-`slab_decades4_stream0` + DSA is a clean error by design (a void group has no
-`D = 1/(3 Sigma_t)`).
+`slab_decades4_stream0` + DSA was a clean error by design until the DSA's void
+masking (27 Sep 2026); it now runs, the void group fully masked (see "DSA with
+voids").
 
 ### Streaming-only groups
 A group whose `Sigma_t` is identically zero has no ratio to any reference — and
@@ -1548,8 +1596,8 @@ Three guards, all of which exit non-zero, so all of which are checked BY HAND:
   `slab_decades4_stream0.json` with the flags — it must fail with the "zero in
   some cells and positive in others" message. A group zero EVERYWHERE is the
   handled streaming-only case above; a group zero SOMEWHERE is a void region,
-  which no single ratio can represent — same stance, and the same eventual fix
-  (a region-masked operator), as `-precon_dsa`'s void guard above.
+  which no single ratio can represent. (`-precon_dsa` had the same guard until
+  it got a region-masked operator, 27 Sep 2026; the ref-shift pmat has none yet.)
 
 ## Source and inflow conventions
 Both rhs knobs are **isotropic, angle-integrated strengths**, divided by the
