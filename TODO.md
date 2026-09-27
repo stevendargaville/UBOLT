@@ -582,6 +582,24 @@ now direct and tested (see that item).
   centroid); the infinite-medium closed form on triangles and tets through reflective
   faces; layout, geometry and error-path checks; pinned iterations on the plex twins of
   the structured recipes and on a Gmsh file with Cell Sets and Face Sets.
+- Open questions left by the 27 Sep 2026 round (PRs #14, #15, #17; the findings are in
+  their ticked items - the void-masking and consistent-D ones under the Phase 4
+  postscript 5 DSA notes, the simplex one in the Phase 6a item above):
+  - [ ] A void-bridging DSA diffusion operator: the void mask decouples void cells, so
+    the correction does not couple regions a void separates, and streaming across the
+    void is left to the removal and PCAIR stages (PR #14).
+  - [ ] `-precon_ref_shift` still refuses a group that is void in only some cells - a
+    check older than the DSA void mask, and separate from it (PR #14).
+  - [ ] GAMG on the DSA diffusion matrix is the remaining limit in the thick diffusion
+    limit under the consistent D: with an exact inner solve eps 1e-4 takes 4, and two
+    V-cycles (`-dsa_ksp_type richardson -dsa_ksp_max_it 2`) take 64^2 from 11 to 7, but
+    double the DSA cost, so one V-cycle stays the default. A cheaper stronger inner
+    solve is the item (PR #17).
+  - [ ] A constant +1 iteration on simplices against quads/hexes at ratio 1 (not a
+    creep): with an exact (LU) streaming inverse the counts match, so it is PCAIR's
+    approximation. `-sub_1_pc_air_strong_threshold 0.25` or
+    `-sub_1_pc_air_inverse_sparsity_order 2` remove it at small n but it returns at
+    larger n, so the defaults stay (PR #15).
 
 ## Phase 7 — deferred
 - [ ] CI: clone PFLARE's docker model + docs/dev/ci.md
