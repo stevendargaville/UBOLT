@@ -213,6 +213,23 @@ public:
    const PetscScalarKokkosView &centroid_d() const { return centroid_d_; }
    const std::vector<PetscReal> &volume_host() const { return volume_h_; }
 
+   // The host-side face data, per (cell, face) slot of the same CSR as
+   // cell_face_offset_d (what DSAPrecon's diffusion operator is built from):
+   //  face_nA_host:            3 per slot, as face_nA_d
+   //  face_neighbour_row_host: the neighbour's GLOBAL row base, (global cell) *
+   //                           rows_per_cell, or -1 on a boundary face
+   //  face_label_host:         a boundary face's "Face Sets" value, -1 if
+   //                           unlabelled or interior
+   //  face_distance_host:      2 per slot, (own, neighbour): each centroid's
+   //                           distance to the face's plane along its normal,
+   //                           the neighbour's 0 on a boundary face. Taken from
+   //                           the FVM centroids at both orders
+   const std::vector<PetscInt> &cell_face_offset_host() const { return cell_face_offset_h_; }
+   const std::vector<PetscScalar> &face_nA_host() const { return face_nA_h_; }
+   const std::vector<PetscInt> &face_neighbour_row_host() const { return face_neighbour_row_h_; }
+   const std::vector<PetscInt> &face_label_host() const { return face_label_h_; }
+   const std::vector<PetscReal> &face_distance_host() const { return face_distance_h_; }
+
    // Local cell k is the k-th OWNED cell in DMPlex point order - the order
    // CheckPlexLayout asserts the global numbering follows. This is its point
    const std::vector<PetscInt> &cell_point_host() const { return cell_of_local_; }
@@ -287,6 +304,7 @@ private:
    std::vector<PetscScalar> face_nA_h_;
    std::vector<PetscInt> face_neighbour_row_h_;
    std::vector<PetscInt> face_label_h_;
+   std::vector<PetscReal> face_distance_h_;
 
    PetscScalarKokkosView omega_d_;
    PetscIntKokkosView cell_face_offset_d_;

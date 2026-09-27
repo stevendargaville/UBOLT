@@ -61,8 +61,11 @@ cell) for `dimension + 1` times the unknowns and at most a few more iterations
 (PCAIR is built on the element-block-scaled operator, the unstructured default,
 without which DG1's multigrid hierarchy stops coarsening) — the choice when accuracy per cell matters more than cost per cell. DG1 takes the
 default ghost-flux vacuum treatment only. It carries more per-row bookkeeping (a face list per cell instead
-of a fixed stencil). **No DSA yet** (`-precon_dsa` errors), so diffusive
-problems stay on the structured backends for now. And reflective faces must be
+of a fixed stencil). `-precon_dsa` works at DG0 exactly as on the structured
+backends (a diffusive box takes the structured count; triangles and tets about the
+same), but at DG1 it corrects only the cell averages and pays far less (32 -> 25 on a
+diffusive hex cube, nothing on the quad box), so a diffusive problem that needs DG1
+accuracy will cost several times the DG0 iteration count for now. And reflective faces must be
 axis-aligned: a mesh file can only reflect on the straight x/y/z parts of its
 boundary.
 

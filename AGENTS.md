@@ -39,7 +39,10 @@ Codebase map
   interior cells, and second-order convergence against an exact SN solution; at both
   orders, the `ElementBlockInverse` of every operator those checks build (identity blocks
   in `D^{-1} A`, invariance under a row scaling, `apply()` against the scaled matrix, and a
-  reuse `scale()` bumping the matrix state a PC compares, which fails only at -n 2+). `tests/meshes/`: mesh files the problem
+  reuse `scale()` bumping the matrix state a PC compares, which fails only at -n 2+); and
+  the plex DSA — its diffusion matrix = the twin's structured one times the cell volume,
+  `P D^-1 R` to rounding with tight inner solves, and at DG1 the DG0 correction on basis 0
+  with exactly zero on the slopes. `tests/meshes/`: mesh files the problem
   files name (a hand-written Gmsh 2.2 `.msh` today).
   `tests/verify_quadraturek.kokkos.cxx`: the quadrature sets themselves, against the
   moment conditions that define them — needed because they are generated, not tabulated.
@@ -117,7 +120,8 @@ Codebase map
   BCs are keyed by "Face Sets" values, which on a box ARE the `FACE_*` ids; a reflective
   face must be AXIS-ALIGNED (PETSC_ERR_SUP otherwise); materials by centroid
   `paint_boxes`, "Cell Sets" `paint_cell_sets`, or both layered via `paint_boxes_over`.
-  NO DSA — `DSAPrecon` is a DMDA operator, and the driver errors. DG1: a MODAL basis
+  DSA through `DSAPrecon`'s plex overload (a two-point-flux operator off the backend's
+  host face data, `face_*_host()`; at DG1 cell averages only, which pays little). DG1: a MODAL basis
   orthonormal on each cell (phi_0 = 1, the linear ones through the Cholesky factor of the
   cell's second moments from a fan of simplices, exact for planar faces), so the mass
   matrix is the identity and removal/scatter/source stay per node — the source lands on
@@ -138,7 +142,12 @@ Codebase map
   ordinates, inverted inexactly under the `dsa_` prefix; NOT an `OperatorTerm`, it
   preconditions rather than contributes, and it is caller-owned with a per-group
   `set_group()` the driver makes because the solver has no group context. Geometry, so
-  per-dimension `create` overloads like the streaming term),
+  per-backend `create` overloads like the streaming term: a dof-1 DMDA twin + a star on
+  the structured ones; on `UnstructuredDG` a two-point flux per face, assembled
+  VOLUME-WEIGHTED (SPD where volumes vary, the restricted moment scaled by V to match),
+  which on a quad/hex box is exactly V times the structured matrix. At DG1 it restricts
+  basis 0's rows and corrects basis 0 only - NOT the DG1 thick diffusion limit, so it pays
+  little there; a DG1-consistent operator is the open item in TODO.md),
   `ElementBlockInverse` (the inverse of each (cell, angle) n_basis x n_basis element
   block of a MATAIJKOKKOS matrix, read straight off its device CSR — strided by
   n_angles under layout A, so not PETSc's contiguous-block inverse — plus `D^{-1} x` and

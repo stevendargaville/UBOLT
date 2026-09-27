@@ -469,8 +469,8 @@ int main(int argc, char **args) {
       // ~~~~~~~~~~~~~
       DSAPrecon dsa;
       if (precon_dsa) {
-         if (spec.mesh_unstructured) SETERRQ(PETSC_COMM_WORLD, PETSC_ERR_SUP, \
-            "the DSA correction has no unstructured backend yet (it is a DMDA diffusion operator)");
+         if (spec.mesh_unstructured) PetscCall(dsa.create(PETSC_COMM_WORLD, ps, disc_dg, \
+            *quad, spec.bcs));
          else if (spec.dimension == 1) PetscCall(dsa.create(PETSC_COMM_WORLD, ps, disc_1d, \
             *quad, spec.bcs));
          else if (spec.dimension == 2) PetscCall(dsa.create(PETSC_COMM_WORLD, ps, disc_2d, \

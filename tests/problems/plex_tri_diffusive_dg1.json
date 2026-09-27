@@ -1,0 +1,32 @@
+{
+ "_comment": "plex_tri_diffusive.json at DG1 (\"order\": 1): the cell-average DSA correction on triangles (needs triangle).",
+ "dimension": 2,
+ "mesh": {
+  "type": "unstructured",
+  "simplex": true,
+  "n_cells": [50, 50],
+  "lengths": [5.0, 5.0],
+  "order": 1
+ },
+ "sn_order": 4,
+ "materials": {
+  "n_groups": 1,
+  "materials": [
+   {
+    "id": 0,
+    "name": "diffusive",
+    "Sigma_t": [100.0],
+    "Sigma_s": [
+     [99.0]
+    ],
+    "Source": [1.0]
+   }
+  ]
+ },
+ "boundary_conditions": {
+  "left": {"type": "vacuum", "inflow": 12.566370614359172},
+  "right": {"type": "vacuum", "inflow": 12.566370614359172},
+  "bottom": {"type": "vacuum", "inflow": 12.566370614359172},
+  "top": {"type": "vacuum", "inflow": 12.566370614359172}
+ }
+}

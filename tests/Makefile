@@ -528,6 +528,34 @@ endif
 	./transportk -problem problems/plex_decades4.json -matfree_removal -precon_ref_shift -precon_ref_k 4 -ksp_max_it 29
 	@echo "Test 2D unstructured reference-shifted pmat, the default k"
 	./transportk -problem problems/plex_decades4.json -matfree_removal -precon_ref_shift -ksp_max_it 51
+# DSA on the plex: a two-point-flux diffusion operator on the cells, which on
+# the quad/hex twins IS the structured star times the cell volume (verify_plexk
+# checks it to rounding), so every twin line below takes the structured
+# recipe's count; the simplex boxes have no twin
+	@echo "Test 2D unstructured quad box, diffusive regime WITHOUT the DSA correction (the reference, twin of box_diffusive)"
+	./transportk -problem problems/plex_box_diffusive.json -ksp_max_it 29
+	@echo "Test 2D unstructured quad box, diffusive regime with the DSA correction"
+	./transportk -problem problems/plex_box_diffusive.json -precon_dsa -ksp_max_it 11
+	@echo "Test 2D unstructured quad box, diffusive regime, DSA on a reference-shifted pmat"
+	./transportk -problem problems/plex_box_diffusive.json -matfree_removal -precon_ref_shift -precon_dsa -ksp_max_it 11
+	@echo "Test 2D unstructured quad box, DSA as an additive stage"
+	./transportk -problem problems/plex_box_diffusive.json -precon_dsa -pc_composite_type additive -ksp_max_it 14
+	@echo "Test 2D unstructured quad box, DSA under the Dirichlet-cell vacuum treatment"
+	./transportk -problem problems/plex_box_50_st2_dirichlet_cell.json -precon_dsa -ksp_max_it 5
+	@echo "Test 3D unstructured hex cube, diffusive regime with the DSA correction (twin of cube_diffusive)"
+	./transportk -problem problems/plex_cube_diffusive.json -precon_dsa -ksp_max_it 8
+ifeq ($(PETSC_HAVE_TRIANGLE),1)
+	@echo "Test 2D unstructured triangles, diffusive regime WITHOUT the DSA correction (the reference)"
+	./transportk -problem problems/plex_tri_diffusive.json -ksp_max_it 35
+	@echo "Test 2D unstructured triangles, diffusive regime with the DSA correction"
+	./transportk -problem problems/plex_tri_diffusive.json -precon_dsa -ksp_max_it 10
+	@echo "Test 2D unstructured triangles, DSA against the infinite-medium solution"
+	./transportk -problem problems/plex_tri_30_inf_medium_ghost.json -precon_dsa -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 9
+endif
+ifeq ($(PETSC_HAVE_TETMESHER),1)
+	@echo "Test 3D unstructured tetrahedra, diffusive regime with the DSA correction"
+	./transportk -problem problems/plex_tet_diffusive.json -precon_dsa -ksp_max_it 9
+endif
 # The DG1 (linear) twins of the recipes above: "order": 1 in the mesh, three
 # dofs per cell in 2D, four in 3D. No structured twin at this order, and DG1
 # has no BC rows (a reflective face is a face coupling), so the counts are
@@ -577,6 +605,19 @@ endif
 	./transportk -problem problems/plex_decades4_dg1.json -matfree_removal -precon_ref_shift -precon_ref_k 4 -ksp_max_it 36
 	@echo "Test 2D unstructured reference-shifted pmat at DG1, the default k"
 	./transportk -problem problems/plex_decades4_dg1.json -matfree_removal -precon_ref_shift -ksp_max_it 66
+# DSA at DG1 corrects the cell averages only - not the DG1 thick diffusion
+# limit, so it pays far less than at DG0 (32 -> 25 on the hex cube here; on
+# the quad box_diffusive twin nothing at all, see ../TODO.md)
+	@echo "Test 3D unstructured hex cube at DG1, diffusive regime WITHOUT the DSA correction (the reference)"
+	./transportk -problem problems/plex_cube_diffusive_dg1.json -ksp_max_it 32
+	@echo "Test 3D unstructured hex cube at DG1, diffusive regime with the cell-average DSA correction"
+	./transportk -problem problems/plex_cube_diffusive_dg1.json -precon_dsa -ksp_max_it 25
+	@echo "Test 2D unstructured quad box at DG1, DSA against the infinite-medium solution"
+	./transportk -problem problems/plex_box_30_inf_medium_dg1.json -precon_dsa -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 9
+ifeq ($(PETSC_HAVE_TRIANGLE),1)
+	@echo "Test 2D unstructured triangles at DG1, diffusive regime with the cell-average DSA correction"
+	./transportk -problem problems/plex_tri_diffusive_dg1.json -precon_dsa -ksp_max_it 26
+endif
 
 # ~~~~~~~~~~~
 # ~~~~~~~~~~~
@@ -806,6 +847,22 @@ endif
 	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_decades4.json -matfree_removal -precon_ref_shift -precon_ref_k 4 -ksp_max_it 29
 	@echo "Test 2D unstructured reference-shifted pmat, the default k, in parallel"
 	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_decades4.json -matfree_removal -precon_ref_shift -ksp_max_it 51
+# DSA on the plex in parallel: a face across the partition reads the
+# neighbour's diffusion coefficient through the DSA's own scatter
+	@echo "Test 2D unstructured quad box, diffusive regime with the DSA correction in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_box_diffusive.json -precon_dsa -ksp_max_it 11
+	@echo "Test 2D unstructured quad box, DSA on a reference-shifted pmat in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_box_diffusive.json -matfree_removal -precon_ref_shift -precon_dsa -ksp_max_it 11
+	@echo "Test 3D unstructured hex cube, diffusive regime with the DSA correction in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_cube_diffusive.json -precon_dsa -ksp_max_it 8
+ifeq ($(PETSC_HAVE_TRIANGLE),1)
+	@echo "Test 2D unstructured triangles, diffusive regime with the DSA correction in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_tri_diffusive.json -precon_dsa -ksp_max_it 10
+endif
+ifeq ($(PETSC_HAVE_TETMESHER),1)
+	@echo "Test 3D unstructured tetrahedra, diffusive regime with the DSA correction in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_tet_diffusive.json -precon_dsa -ksp_max_it 9
+endif
 # DG1 in parallel: the upwind block of a face across the partition reads the
 # overlap ghost's basis, which the backend builds on every cell of the local mesh
 	@echo "Test 2D unstructured quad box at DG1 in parallel"
@@ -834,6 +891,8 @@ ifeq ($(PETSC_HAVE_TETMESHER),1)
 endif
 	@echo "Test 2D unstructured reference-shifted pmat at DG1, one hierarchy per group, in parallel"
 	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_decades4_dg1.json -matfree_removal -precon_ref_shift -precon_ref_k 4 -ksp_max_it 36
+	@echo "Test 3D unstructured hex cube at DG1, cell-average DSA correction in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_cube_diffusive_dg1.json -precon_dsa -ksp_max_it 25
 
 # ~~~~~~~~~~~
 # ~~~~~~~~~~~

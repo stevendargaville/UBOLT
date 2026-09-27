@@ -4,8 +4,10 @@ Full plan and architecture rationale: see the approved plan (design discussion J
 Each phase is a reviewable unit with its own verification. Do not start a phase before the
 previous one's verification has passed and been reviewed.
 
-## Current state (updated 2026-09-26)
-Last landed: **`ElementBlockInverse::scale` bumps its state directly** (the MPI wrapper's,
+## Current state (updated 2026-09-27)
+Last landed: **DSA on the plex backend** (`DSAPrecon`'s `UnstructuredDG` overload, a
+volume-weighted two-point-flux diffusion operator; see the Phase 6 item); before it,
+**`ElementBlockInverse::scale` bumps its state directly** (the MPI wrapper's,
 through `PetscObjectStateIncrease`, pinned in `verify_plexk` via `MatGetState` - which
 needs PETSc main from 3 Sep 2026); before it, **the block-Jacobi removal stage** (composite index 0 inverts the
 operator's element blocks through `ElementBlockInverse`, bitwise the old point Jacobi at
@@ -16,8 +18,10 @@ orders, PR #9), which lets PCAIR coarsen DG1 at its default strong threshold; be
 reflective face is a face coupling to the mirrored angle in the same cell, in every
 backend, so there are no BC rows and a reflect/vacuum corner takes both faces' ghost
 values, PR #8), on top of linear DG (DG1) on the plex backend (PR #7), Phase 6a (DG0 on
-DMPlex, PR #2) and the ghost-flux vacuum treatment as the default (PR #4). Next up: DSA
-on the plex backend (the biggest gap both orders share), then 6b CG-SUPG (Phase 6); the
+DMPlex, PR #2) and the ghost-flux vacuum treatment as the default (PR #4). Now in: DSA
+on the plex backend (27 Sep 2026: every quad/hex twin takes the structured DSA count,
+simplices 35 -> 10 / 31 -> 9; at DG1 it corrects the cell averages only and pays
+little). Next up: a DG1-consistent DSA or 6b CG-SUPG (Phase 6); the
 half-quadrature transposed PC stays blocked on PFLARE's PCAIR `PCApplyTranspose`. The
 reflective-face re-pins were swept in the 64-bit CI image (one +1,
 `cube_10_inf_medium_ghost -matfree_removal` pinned 22); the block-scaled plex pins are
@@ -370,8 +374,8 @@ now direct and tested (see that item).
       existing Dirichlet-cell contract, keyed by real "Face Sets" values (the box ids ARE
       the structured `FACE_*` ids); reflection needs an axis-aligned face. Materials:
       `paint_boxes` by centroid plus "Cell Sets" -> material. Output: `.vtu`. Not in this
-      cut: DSA (a DMDA operator), DG1+ (DG1 landed later, under the ghost-flux
-      postscript). The ghost-flux vacuum BC landed afterwards, on top of the structured
+      cut: DSA (a DMDA operator; its plex operator landed 27 Sep 2026, below), DG1+ (DG1
+      landed later, under the ghost-flux postscript). The ghost-flux vacuum BC landed afterwards, on top of the structured
       ghost-flux commit (see the postscript below).
   - Measured (22 Sep 2026, opt arch, under the then-default Dirichlet-cell treatment;
     the pins have since run green on every CI arch, and were re-pinned for the
@@ -402,7 +406,8 @@ now direct and tested (see that item).
     ratio 1: 6, 7, 7, 8 at n = 30..240; tets 6, 7, 8) where quads/hexes match the
     structured backend exactly and are flat. Without DSA a diffusive problem costs
     simplices 3.3-3.5x the structured+DSA count (36 against 11 on box_diffusive),
-    quads/hexes 2.6x (29) — the size of the DSA gap this cut leaves open. The plex path
+    quads/hexes 2.6x (29) — the size of the DSA gap this cut leaves open (closed at DG0
+    on 27 Sep 2026, see the DSA item below). The plex path
     costs ~4% of a serial run in host-side create and 8-13% more peak memory than the
     DMDA on the same mesh; PCAIR setup is 85-95% of both. Debug-arch sweep: every count
     equals the opt pin at np 1 and 2, no leaks under -malloc_dump.
@@ -427,11 +432,40 @@ now direct and tested (see that item).
   - Found in the driver pass: the plex `.vtu` arrays were named `scalar_flux(null)` —
     PETSc's writer appends the section's field name, and a section with no fields gives
     it a null one. Fixed by giving the output twin's section one empty-named field.
-- [ ] DSA on the plex backend. 6a left it out (`DSAPrecon` is a DMDA operator), and it is
-      the biggest gap that cut left: without it a diffusive problem costs simplices
-      3.3-3.5x the structured+DSA count, quads/hexes 2.6x (see the 6a measurements
-      above). Needs a cell-centred diffusion operator on the plex (two-point flux across
-      each face, harmonic-mean D, Marshak on vacuum faces) behind the same R/P.
+- [x] DSA on the plex backend (27 Sep 2026). 6a left it out (`DSAPrecon` was a DMDA
+      operator), and it was the biggest gap that cut left. `DSAPrecon::create` now has an
+      `UnstructuredDG` overload: a cell-centred finite-volume diffusion operator, a
+      two-point flux per face `T_f = A_f / (d_c / D_c + d_n / D_n)` (d the centroids'
+      normal distances to the face, which the backend now stores per face slot next to
+      its other host face data, `face_*_host()`), Marshak `A_f / (2 + d_c / D_c)` on
+      vacuum faces, nothing on reflective ones, behind the same R/P. Assembled
+      VOLUME-WEIGHTED (V_c times the structured per-unit-volume row), which keeps it SPD
+      where volumes vary; the restricted moment is scaled by V to match. Host values into
+      a COO pattern set once (`MatSetValuesCOO`), the neighbours' D through a VecScatter
+      onto one entry per interior face slot. No DMDA twin, so the matrix is sized off the
+      owned cells, whose global order is the transport rows'.
+  - Verified (verify_plexk check 11): on every quad/hex FD twin case the plex diffusion
+    matrix is V times the structured one to ~1e-15, and `P D^-1 R` agrees to rounding
+    with tight inner solves, in both vacuum treatments, serial, -n 2 and -n 4.
+  - Measured (opt arch, table in docs/dev/testing.md, "Unstructured iteration counts"):
+    every quad/hex twin takes EXACTLY the structured DSA count, serial and np 2
+    (box_diffusive 29 -> 11, ref-shift + DSA 11, additive 14, cube_diffusive 18 -> 8,
+    box_50_st2_dirichlet_cell 5). Simplices close the 3.3-3.5x gap entirely: 5000
+    triangles 35 -> 10, 6000 tets 31 -> 9 - at or below the structured+DSA count.
+  - DG1 does NOT get the same: the restriction sums basis 0's ordinates (the cell
+    balance rows) and the prolongation corrects basis 0 only, which is an INCONSISTENT
+    DSA for DG1 - its thick diffusion limit is a continuous linear discretisation, not
+    this cell-centred one (the Warsa-Wareing-Morel result for DG in multi-D). Measured on
+    the diffusive problems: quad box 34 -> 34 (nothing), hex cube 32 -> 25, triangles
+    40 -> 26, tets 43 -> 21. A slope rebuilt from the neighbours' corrections
+    (Green-Gauss onto the modal coefficients, Marshak face values on vacuum faces) was
+    tried in the prolongation and made it WORSE on quads/hexes (34 -> 37, 25 -> 33) and
+    barely better on simplices (26 -> 24, 21 -> 20), so it was dropped.
+- [ ] DG1-consistent DSA: a diffusion operator in the DG1 space itself (a MIP-style
+      symmetric interior penalty discretisation, Wang & Ragusa), restricted from and
+      prolonged onto every basis node, or a continuous P1 vertex operator on simplices.
+      This is what the DG1 rows above are missing; until then a diffusive DG1 problem
+      costs roughly 2-3x its DG0+DSA count.
 - [ ] 6b CGSUPG: PetscFE/PetscDS host-only for quadrature/tabulations copied to device
       once; volume kernels; Dirichlet via identity-row mechanism
 - BCs: consume the existing `BCSpec` with real "Face Sets" label values (the structured

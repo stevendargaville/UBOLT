@@ -595,6 +595,7 @@ PetscErrorCode UnstructuredDG::create_common(PhaseSpace &ps, PetscInt quad_dim, 
    face_nA_h_.clear();
    face_neighbour_row_h_.clear();
    face_label_h_.clear();
+   face_distance_h_.clear();
    std::vector<PetscReal> face_centroid;
    std::vector<PetscInt> face_axis;
    std::vector<PetscInt> face_point;
@@ -643,6 +644,15 @@ PetscErrorCode UnstructuredDG::create_common(PhaseSpace &ps, PetscInt quad_dim, 
          face_axis.push_back(DominantAxis(nA, dim));
          face_point.push_back(f);
 
+         // This cell's centroid to the face's plane, along the outward unit
+         // normal - the half-distance a two-point flux across the face uses
+         // (DSAPrecon). Positive for any convex cell
+         PetscReal dist_own = 0.0;
+         for (PetscInt d = 0; d < dim; d++) dist_own += PetscRealPart(nA[d]) / area * (fcen[d] - cen[d]);
+         PetscCheck(dist_own > 0.0, PETSC_COMM_SELF, PETSC_ERR_ARG_WRONG, "the centroid of cell %" \
+            PetscInt_FMT " is not inside its face %" PetscInt_FMT, c, f);
+         face_distance_h_.push_back(dist_own);
+
          const PetscInt *support = nullptr;
          PetscInt n_support = 0;
          PetscCall(DMPlexGetSupportSize(dm_, f, &n_support));
@@ -661,6 +671,14 @@ PetscErrorCode UnstructuredDG::create_common(PhaseSpace &ps, PetscInt quad_dim, 
             face_neighbour_row_h_.push_back(g);
             face_label_h_.push_back(-1);
 
+            // And the face's plane to the neighbour's centroid, the other half
+            PetscReal ncen[3] = {0.0, 0.0, 0.0}, dist_nb = 0.0;
+            PetscCall(DMPlexComputeCellGeometryFVM(dm_, other, NULL, ncen, NULL));
+            for (PetscInt d = 0; d < dim; d++) dist_nb += PetscRealPart(nA[d]) / area * (ncen[d] - fcen[d]);
+            PetscCheck(dist_nb > 0.0, PETSC_COMM_SELF, PETSC_ERR_ARG_WRONG, "the centroid of cell %" \
+               PetscInt_FMT " is not inside its face %" PetscInt_FMT, other, f);
+            face_distance_h_.push_back(dist_nb);
+
          } else {
 
             // A boundary face. With a one-cell face-adjacent overlap, an OWNED
@@ -670,6 +688,7 @@ PetscErrorCode UnstructuredDG::create_common(PhaseSpace &ps, PetscInt quad_dim, 
             if (face_sets) PetscCall(DMLabelGetValue(face_sets, f, &value));
             face_neighbour_row_h_.push_back(-1);
             face_label_h_.push_back(value);
+            face_distance_h_.push_back(0.0);
 
             // The face's family is used below; validate its shape here, once
             const BCFace bc = bcs.face(value);
