@@ -5,7 +5,9 @@ Each phase is a reviewable unit with its own verification. Do not start a phase 
 previous one's verification has passed and been reviewed.
 
 ## Current state (updated 2026-09-27)
-Last landed: **DG1-consistent DSA** (at DG1 `DSAPrecon`'s plex overload builds the MIP
+Last landed: **void masking in the DSA** (`-precon_dsa` masks `Sigma_t = 0` cells out
+of its correction on every backend and order instead of refusing them; see the Phase 4
+postscript 5 DSA notes); before it, **DG1-consistent DSA** (at DG1 `DSAPrecon`'s plex overload builds the MIP
 interior penalty diffusion operator in the DG1 space itself, every basis node restricted
 and corrected; see the Phase 6 item); before it, **DSA on the plex backend** (a
 volume-weighted two-point-flux diffusion operator, PR #12); before that,
@@ -26,8 +28,9 @@ count and simplices go 35 -> 10 / 31 -> 9; at DG1 (27 Sep 2026) the diffusive qu
 hex cube, triangles and tets go 34 / 32 / 40 / 43 -> 6 / 7 / 8 / 9, each at or below
 the same mesh's DG0+DSA count. Next up: 6b CG-SUPG (Phase 6), or one of the open
 questions carried as checkboxes since 27 Sep 2026: a discretisation-consistent DSA
-diffusion coefficient (the top one), void masking and per-group cached Mat/KSP for the
-DSA (all three in the Phase 4 postscript 5 DSA notes), and two Phase 6a things to watch,
+diffusion coefficient (the top one) and per-group cached Mat/KSP for the
+DSA (both in the Phase 4 postscript 5 DSA notes; the third, void masking, is done -
+`-precon_dsa` now masks `Sigma_t = 0` cells out of its correction), and two Phase 6a things to watch,
 triangle L-infinity below first order and simplex iteration counts creeping up with
 refinement (both to re-measure under ghost-flux first); the
 half-quadrature transposed PC stays blocked on PFLARE's PCAIR `PCApplyTranspose`. The
@@ -930,8 +933,21 @@ now direct and tested (see that item).
     composite's residual updates onto the amat (the fix in the bullet above) while PCAIR
     is still set up on a streaming-only pmat — unestablished. This matters because Phase 5
     is exactly the streaming-only-pmat direction, so the two land on each other.
-  - [ ] Region masking for voids in the DSA diffusion operator (`sigma_t <= 0` is a hard
-    error today, as in the paper's future work).
+  - [x] Region masking for voids in the DSA diffusion operator (27 Sep 2026; `sigma_t <= 0`
+    used to be a hard error, as in the paper's future work). A cell whose group `Sigma_t`
+    is at or below `-dsa_void_sigma_t` (0 by default) is masked out of the correction on
+    every backend and order: identity diffusion rows (V I on the plex, block by block at
+    DG1), nothing restricted or corrected there, and a face into the void a Marshak (MIP
+    vacuum) face for its neighbour - zero Neumann would leave a non-absorbing island in a
+    void singular. Per group; the void rides the staged D as D = 0, so neighbours on
+    other ranks see it; with no void the arithmetic is unchanged (all 58 DSA recipes'
+    residual histories identical to main). Measured (opt, serial / np 2; no DSA -> DSA):
+    `slab_void_gap` 23 -> 12 / 13, `box_void_channel` 26 -> 12 / 12, `cube_void_duct`
+    21 -> 9 / 9, `plex_box_void_channel` 25 -> 12 / 12, `_dg1` 34 -> 10 / 10 - within 1
+    of the void-free diffusive counts, and the channel equals the "tiny Sigma_t" fudge
+    (Sigma_t 1e-3 unmasked: 12). `verify_plexk` check 12. Open: the correction does not
+    couple regions a void separates (a void-bridging diffusion operator is the known
+    refinement), and `-precon_ref_shift` still refuses a group void in some cells only.
   - [ ] Per-group cached DSA Mat/KSP instead of one refilled pair (a local change inside
     `DSAPrecon`, see its header; only worth it if a sweep revisits groups).
   - **Literature benchmark study run (Aug 2026)** — six studies (crooked pipe per

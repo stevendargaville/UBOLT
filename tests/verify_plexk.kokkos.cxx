@@ -65,6 +65,13 @@
 //     penalty diffusion matrix is symmetric, maps a linear field u to
 //     V sigma_a u on every cell with no boundary face (to rounding), and
 //     P D^-1 R hands back u / sum_w from the x that restricts to D u
+// 12. The DSA's void masking (Sigma_t = 0 cells out of the correction): the
+//     FD twin of 1 with its painted box made a void, under both vacuum
+//     treatments, so (g) holds the two masked operators to each other; and,
+//     at DG0 and DG1, a box whose high-x cells are void against the box of
+//     only the low-x cells - the non-void rows identical to rounding (a face
+//     into the void is the cut box's vacuum face), the void rows V times the
+//     identity, and P D^-1 R equal on the non-void nodes, zero on the void
 //  Plus two DG1 error paths in 5: Dirichlet-cell vacuum, and the DG0
 //  streaming term on a DG1 backend
 //
@@ -90,7 +97,10 @@
 // The materials every case solves: material 0 everywhere, material 1 where a
 // case paints it. Distinct sigma_t, sigma_s and source, so a painting mismatch
 // between the twins shows up in the matrix, the scatter and the rhs alike
-static PetscErrorCode TwinMaterials(MaterialSpec &mats)
+//
+// With void_1, material 1 is a VOID instead (Sigma_t = Sigma_s = source = 0),
+// which the DSA masks out of its correction (check 12)
+static PetscErrorCode TwinMaterials(MaterialSpec &mats, PetscBool void_1 = PETSC_FALSE)
 {
    PetscFunctionBeginUser;
 
@@ -98,9 +108,11 @@ static PetscErrorCode TwinMaterials(MaterialSpec &mats)
    PetscCall(mats.set_sigma_t(0, 0, 1.5));
    PetscCall(mats.set_sigma_s(0, 0, 0, 0.7));
    PetscCall(mats.set_source(0, 0, 1.0));
-   PetscCall(mats.set_sigma_t(1, 0, 0.7));
-   PetscCall(mats.set_sigma_s(1, 0, 0, 0.3));
-   PetscCall(mats.set_source(1, 0, 0.5));
+   if (!void_1) {
+      PetscCall(mats.set_sigma_t(1, 0, 0.7));
+      PetscCall(mats.set_sigma_s(1, 0, 0, 0.3));
+      PetscCall(mats.set_source(1, 0, 0.5));
+   }
 
    PetscFunctionReturn(PETSC_SUCCESS);
 }
@@ -348,7 +360,7 @@ static PetscErrorCode CompareTwins(const char *desc, PetscInt n_cells, PetscInt 
    const PhaseSpace &ps_plex, const Discretisation &disc_plex, const OperatorTerm &streaming_plex, \
    const PetscIntKokkosView &mat_id_plex, const std::vector<PetscInt> &key_plex, \
    const AngularQuadrature &quad, const MaterialSpec &mats, DSAPrecon &dsa_fd, DSAPrecon &dsa_plex, \
-   PetscReal cell_volume, PetscBool *ok)
+   PetscReal cell_volume, PetscInt expected_void, PetscBool *ok)
 {
    Solve fd, plex;
    TwinPerm perm, perm_cell;
@@ -483,10 +495,14 @@ static PetscErrorCode CompareTwins(const char *desc, PetscInt n_cells, PetscInt 
    PetscCall(VecAXPY(d_composed, -1.0, d_mat));
    PetscCall(VecNorm(d_composed, NORM_INFINITY, &diag_diff));
 
+   // The void cells both DSAs masked out - a void case that masked nothing
+   // would pass the comparison vacuously
+   const PetscBool void_ok = (PetscBool)(dsa_fd.n_void_cells() == expected_void && \
+      dsa_plex.n_void_cells() == expected_void);
    const PetscBool pass = (PetscBool)(mat_diff <= mat_tol * norm_fd && flag_diff == 0.0 && \
       dirichlet_diff <= value_tol && rhs_diff <= value_tol && scatter_diff <= value_tol && diag_diff == 0.0 && \
       sol_diff <= sol_tol && conv_fd && conv_plex && dsa_mat_diff <= mat_tol * dsa_norm && \
-      dsa_apply_diff <= sol_tol * dsa_apply_norm);
+      dsa_apply_diff <= sol_tol * dsa_apply_norm && void_ok);
    if (!pass) *ok = PETSC_FALSE;
 
    PetscCall(PetscPrintf(PETSC_COMM_WORLD, "  FD twin, %s:%s\n", desc, pass ? "" : " FAILED"));
@@ -502,6 +518,10 @@ static PetscErrorCode CompareTwins(const char *desc, PetscInt n_cells, PetscInt 
       "    DSA diffusion matrix vs V x FD %.3e (tol %.0e x |D| = %.3e), DSA apply %.3e (tol %.0e x |y| = %.3e)\n", \
       (double)dsa_mat_diff, (double)mat_tol, (double)(mat_tol * dsa_norm), (double)dsa_apply_diff, (double)sol_tol, \
       (double)(sol_tol * dsa_apply_norm)));
+   if (expected_void > 0 || !void_ok) {
+      PetscCall(PetscPrintf(PETSC_COMM_WORLD, "    DSA void cells masked: FD %" PetscInt_FMT ", plex %" PetscInt_FMT \
+         " (expected %" PetscInt_FMT ")\n", dsa_fd.n_void_cells(), dsa_plex.n_void_cells(), expected_void));
+   }
 
    PetscCall(MatDestroy(&A_fd));
    PetscCall(MatDestroy(&A_plex));
@@ -596,8 +616,12 @@ static void PlexKeys(const UnstructuredDG &disc, PetscInt dim, const PetscInt *n
 // "Cell Sets" label written here onto the cells whose centroid is inside them
 // (value 7, an arbitrary label id, mapped onto material 1) - the path a Gmsh
 // file's physical groups take - so paint_cell_sets is held to the same FD twin
+// With expected_void >= 0 the painted material is a VOID (TwinMaterials'
+// void_1) covering that many cells, and the DSA comparison (g) is of the two
+// masked operators (check 12)
 static PetscErrorCode CheckTwin2D(PetscInt nx, PetscInt ny, PetscInt sn_order, const BCSpec &bcs, \
-   const std::vector<MaterialBox2D> &boxes, PetscBool via_cell_sets, const char *bc_desc, PetscBool *ok)
+   const std::vector<MaterialBox2D> &boxes, PetscBool via_cell_sets, const char *bc_desc, PetscBool *ok, \
+   PetscInt expected_void = -1)
 {
    const PetscReal lx = 1.0, ly = 2.0;
    SNQuadrature2D quad;
@@ -615,7 +639,7 @@ static PetscErrorCode CheckTwin2D(PetscInt nx, PetscInt ny, PetscInt sn_order, c
    PetscFunctionBeginUser;
 
    PetscCall(quad.create(sn_order));
-   PetscCall(TwinMaterials(mats));
+   PetscCall(TwinMaterials(mats, (PetscBool)(expected_void >= 0)));
    const PetscInt n_angles = quad.n_angles();
 
    PetscCall(ps_fd.create(PETSC_COMM_WORLD, nx * ny, n_angles));
@@ -667,7 +691,8 @@ static PetscErrorCode CheckTwin2D(PetscInt nx, PetscInt ny, PetscInt sn_order, c
    PetscCall(dsa_fd.create(PETSC_COMM_WORLD, ps_fd, fd, quad, bcs));
    PetscCall(dsa_plex.create(PETSC_COMM_WORLD, ps_plex, plex, quad, bcs));
    PetscCall(CompareTwins(desc, nx * ny, n_angles, ps_fd, fd, streaming_fd, mat_id_fd, key_fd, \
-      ps_plex, plex, streaming_plex, mat_id_plex, key_plex, quad, mats, dsa_fd, dsa_plex, h[0] * h[1], ok));
+      ps_plex, plex, streaming_plex, mat_id_plex, key_plex, quad, mats, dsa_fd, dsa_plex, h[0] * h[1], \
+      PetscMax(expected_void, 0), ok));
 
    PetscCall(dsa_fd.destroy());
    PetscCall(dsa_plex.destroy());
@@ -740,7 +765,7 @@ static PetscErrorCode CheckTwin3D(PetscInt nx, PetscInt ny, PetscInt nz, PetscIn
    PetscCall(dsa_fd.create(PETSC_COMM_WORLD, ps_fd, fd, quad, bcs));
    PetscCall(dsa_plex.create(PETSC_COMM_WORLD, ps_plex, plex, quad, bcs));
    PetscCall(CompareTwins(desc, nx * ny * nz, n_angles, ps_fd, fd, streaming_fd, mat_id_fd, key_fd, \
-      ps_plex, plex, streaming_plex, mat_id_plex, key_plex, quad, mats, dsa_fd, dsa_plex, h[0] * h[1] * h[2], ok));
+      ps_plex, plex, streaming_plex, mat_id_plex, key_plex, quad, mats, dsa_fd, dsa_plex, h[0] * h[1] * h[2], 0, ok));
 
    PetscCall(dsa_fd.destroy());
    PetscCall(dsa_plex.destroy());
@@ -2323,6 +2348,254 @@ static PetscErrorCode CheckDSADG1(const char *where, const PlexMeshSpec &mesh, c
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
+// Check 12's helpers: a DSA diffusion matrix and a transport-sized vector as
+// DENSE arrays keyed by position, identical on every rank. The key of node
+// (c, i) is key_c * n_basis + i with key_c the cell's lexicographic index in
+// the FULL box, so two meshes of different extent (and different parallel
+// layouts) compare entry by entry. Check sizes only - n_keys^2 entries
+static PetscErrorCode KeyedMatrix(Mat D, const std::vector<PetscInt> &node_key, PetscInt n_keys, \
+   std::vector<PetscScalar> &dense)
+{
+   Mat D_aij = NULL;
+   Vec key_vec = NULL, key_all = NULL;
+   VecScatter to_all = NULL;
+   PetscInt rstart = 0, rend = 0;
+   const PetscScalar *key_a = nullptr;
+
+   PetscFunctionBeginUser;
+
+   // Every global column's key, on every rank
+   PetscCall(MatCreateVecs(D, &key_vec, NULL));
+   PetscCall(MatGetOwnershipRange(D, &rstart, &rend));
+   for (PetscInt r = rstart; r < rend; r++) PetscCall(VecSetValue(key_vec, r, (PetscScalar)node_key[r - rstart], INSERT_VALUES));
+   PetscCall(VecAssemblyBegin(key_vec));
+   PetscCall(VecAssemblyEnd(key_vec));
+   PetscCall(VecScatterCreateToAll(key_vec, &to_all, &key_all));
+   PetscCall(VecScatterBegin(to_all, key_vec, key_all, INSERT_VALUES, SCATTER_FORWARD));
+   PetscCall(VecScatterEnd(to_all, key_vec, key_all, INSERT_VALUES, SCATTER_FORWARD));
+
+   dense.assign(n_keys * n_keys, 0.0);
+   PetscCall(MatConvert(D, MATAIJ, MAT_INITIAL_MATRIX, &D_aij));
+   PetscCall(VecGetArrayRead(key_all, &key_a));
+   for (PetscInt r = rstart; r < rend; r++) {
+      PetscInt n_cols = 0;
+      const PetscInt *cols = nullptr;
+      const PetscScalar *vals = nullptr;
+      PetscCall(MatGetRow(D_aij, r, &n_cols, &cols, &vals));
+      const PetscInt kr = node_key[r - rstart];
+      for (PetscInt j = 0; j < n_cols; j++) {
+         dense[kr * n_keys + (PetscInt)PetscRealPart(key_a[cols[j]])] += vals[j];
+      }
+      PetscCall(MatRestoreRow(D_aij, r, &n_cols, &cols, &vals));
+   }
+   PetscCall(VecRestoreArrayRead(key_all, &key_a));
+   PetscCallMPI(MPIU_Allreduce(MPI_IN_PLACE, dense.data(), (PetscMPIInt)dense.size(), MPIU_SCALAR, MPIU_SUM, \
+      PETSC_COMM_WORLD));
+
+   PetscCall(MatDestroy(&D_aij));
+   PetscCall(VecDestroy(&key_vec));
+   PetscCall(VecDestroy(&key_all));
+   PetscCall(VecScatterDestroy(&to_all));
+
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+// One side of check 12: a plex box of n[0] x n[1] (x n[2]) cells of the given
+// spacing h, the cells at or beyond x = x_void painted void (none if x_void is
+// past the box), the DSA built on it, and its diffusion matrix and apply()
+// output keyed onto the FULL box of n_full cells in x. x is a smooth function
+// of (node key, angle), so both sides see the same residual on the nodes they
+// share - and the void nodes get a nonzero one, which the mask must drop
+template <class Quad>
+static PetscErrorCode VoidSide(PetscInt dim, const PetscInt *n, PetscInt n_full, const PetscReal *h, PetscReal x_void, \
+   PetscInt order, PetscInt sn_order, const BCSpec &bcs, std::vector<PetscScalar> &d_dense, \
+   std::vector<PetscScalar> &y_dense, PetscInt &n_void, PetscInt &n_keys)
+{
+   Quad quad;
+   MaterialSpec mats;
+   PhaseSpace ps;
+   UnstructuredDG disc;
+   GroupXSections xs;
+   DSAPrecon dsa;
+   PetscIntKokkosView mat_id;
+   Mat D = NULL;
+   Vec x = NULL, y = NULL;
+
+   PetscFunctionBeginUser;
+
+   PetscCall(quad.create(sn_order));
+   PetscCall(TwinMaterials(mats, PETSC_TRUE));
+   const PetscInt n_angles = quad.n_angles();
+
+   PlexMeshSpec mesh;
+   mesh.dimension = dim;
+   for (PetscInt d = 0; d < dim; d++) {
+      mesh.n_cells[d] = n[d];
+      mesh.lengths[d] = n[d] * h[d];
+   }
+   PetscCall(disc.create_mesh(PETSC_COMM_WORLD, mesh));
+   PetscCall(ps.create(PETSC_COMM_WORLD, disc.n_global_cells(), n_angles));
+   PetscCall(disc.create(ps, quad, bcs, order));
+   const PetscReal big = 1e3;
+   if (dim == 2) {
+      std::vector<MaterialBox2D> boxes(1);
+      boxes[0].x0 = x_void;
+      boxes[0].x1 = big;
+      boxes[0].y0 = -big;
+      boxes[0].y1 = big;
+      boxes[0].material = 1;
+      PetscCall(disc.paint_boxes(0, boxes, mat_id));
+   }
+   else {
+      std::vector<MaterialBox3D> boxes(1);
+      boxes[0].x0 = x_void;
+      boxes[0].x1 = big;
+      boxes[0].y0 = -big;
+      boxes[0].y1 = big;
+      boxes[0].z0 = -big;
+      boxes[0].z1 = big;
+      boxes[0].material = 1;
+      PetscCall(disc.paint_boxes(0, boxes, mat_id));
+   }
+   PetscCall(xs.create(ps));
+   PetscCall(xs.set_from_materials(mats, mat_id));
+   PetscCall(dsa.create(PETSC_COMM_WORLD, ps, disc, quad, bcs));
+   PetscCall(dsa.set_group(xs.sigma_t(0), xs.sigma_s(0, 0)));
+   PetscCall(KSPSetType(dsa.ksp(), KSPCG));
+   PetscCall(KSPSetTolerances(dsa.ksp(), 1e-14, 1e-50, PETSC_CURRENT, 5000));
+   PetscCall(KSPGetOperators(dsa.ksp(), &D, NULL));
+   n_void = dsa.n_void_cells();
+
+   // Node keys, on the full box
+   const PetscInt nb = ps.n_basis, local_cells = ps.local_cells;
+   const PetscInt n_full_cells = n_full * n[1] * (dim == 3 ? n[2] : 1);
+   n_keys = n_full_cells * nb;
+   const std::vector<PetscReal> &cen = disc.centroid_host();
+   std::vector<PetscInt> node_key(local_cells * nb);
+   for (PetscInt c = 0; c < local_cells; c++) {
+      PetscInt idx[3] = {0, 0, 0};
+      const PetscInt nf[3] = {n_full, n[1], dim == 3 ? n[2] : 1};
+      for (PetscInt d = 0; d < dim; d++) {
+         idx[d] = PetscMin(PetscMax((PetscInt)PetscFloorReal(cen[3 * c + d] / h[d]), 0), nf[d] - 1);
+      }
+      const PetscInt key = (idx[2] * nf[1] + idx[1]) * nf[0] + idx[0];
+      for (PetscInt i = 0; i < nb; i++) node_key[c * nb + i] = key * nb + i;
+   }
+   PetscCall(KeyedMatrix(D, node_key, n_keys, d_dense));
+
+   PetscCall(VecCreate(PETSC_COMM_WORLD, &x));
+   PetscCall(VecSetSizes(x, ps.local_rows(), PETSC_DETERMINE));
+   PetscCall(VecSetType(x, VECKOKKOS));
+   PetscCall(VecDuplicate(x, &y));
+   {
+      PetscScalar *xa = nullptr;
+      PetscCall(VecGetArrayWrite(x, &xa));
+      for (PetscInt node = 0; node < local_cells * nb; node++) {
+         for (PetscInt a = 0; a < n_angles; a++) {
+            xa[node * n_angles + a] = 1.0 + 0.5 * PetscSinReal(0.37 * node_key[node] + 1.3 * a);
+         }
+      }
+      PetscCall(VecRestoreArrayWrite(x, &xa));
+   }
+   PetscCall(dsa.apply(x, y));
+   y_dense.assign(n_keys * n_angles, 0.0);
+   {
+      const PetscScalar *ya = nullptr;
+      PetscCall(VecGetArrayRead(y, &ya));
+      for (PetscInt node = 0; node < local_cells * nb; node++) {
+         for (PetscInt a = 0; a < n_angles; a++) y_dense[node_key[node] * n_angles + a] = ya[node * n_angles + a];
+      }
+      PetscCall(VecRestoreArrayRead(y, &ya));
+   }
+   PetscCallMPI(MPIU_Allreduce(MPI_IN_PLACE, y_dense.data(), (PetscMPIInt)y_dense.size(), MPIU_SCALAR, MPIU_SUM, \
+      PETSC_COMM_WORLD));
+
+   PetscCall(VecDestroy(&x));
+   PetscCall(VecDestroy(&y));
+   PetscCall(dsa.destroy());
+   PetscCall(disc.destroy());
+
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+// Check 12 (the part with no FD twin, so DG1 too): the DSA's void masking
+// against the region it leaves behind. A box whose cells beyond x = n_keep h
+// are void, against a box of just the first n_keep cells in x - same h, the
+// same faces reflective (none of them an x face), every other face vacuum:
+//  (a) on every non-void node the masked diffusion row IS the small box's
+//      row, to rounding - the face into the void is exactly the small box's
+//      vacuum (Marshak / MIP boundary) face, and no coupling reaches a void
+//      node from either side;
+//  (b) every void node's row is V times the identity (to rounding: the plex
+//      volume is computed from the geometry), and the void
+//      cells were counted;
+//  (c) with the inner solves driven tight, P D^-1 R of the same x agrees on
+//      every non-void node's ordinates and is exactly zero on the void ones
+//      (the restriction dropped their residual, the prolongation corrects
+//      nothing there)
+template <class Quad>
+static PetscErrorCode CheckDSAVoid(const char *where, PetscInt dim, const PetscInt *n_full, PetscInt n_keep, \
+   PetscInt order, PetscInt sn_order, const std::vector<PetscInt> &reflect_ids, PetscBool *ok)
+{
+   BCSpec bcs;
+   std::vector<PetscScalar> d_full, d_keep, y_full, y_keep;
+   PetscInt n_void_full = 0, n_void_keep = 0, n_keys = 0, n_keys_keep = 0;
+   PetscReal row_diff = 0.0, row_norm = 0.0, void_diff = 0.0, y_diff = 0.0, y_norm = 0.0, y_void = 0.0;
+   const PetscReal h[3] = {0.25, 0.4, 0.3};
+   const PetscReal tol = 1e-12, apply_tol = 1e-9;
+
+   PetscFunctionBeginUser;
+
+   for (PetscInt f = 1; f <= 2 * dim; f++) bcs.set(f, BCType::VACUUM);
+   for (const PetscInt f : reflect_ids) bcs.set(f, BCType::REFLECT);
+   PetscInt n_keep_box[3] = {n_keep, n_full[1], dim == 3 ? n_full[2] : 1};
+   const PetscReal x_void = n_keep * h[0];
+
+   PetscCall(VoidSide<Quad>(dim, n_full, n_full[0], h, x_void, order, sn_order, bcs, d_full, y_full, n_void_full, n_keys));
+   PetscCall(VoidSide<Quad>(dim, n_keep_box, n_full[0], h, 2.0 * n_full[0] * h[0], order, sn_order, bcs, d_keep, y_keep, \
+      n_void_keep, n_keys_keep));
+
+   const PetscInt nb = order == 0 ? 1 : dim + 1;
+   const PetscInt n_angles = (PetscInt)y_full.size() / n_keys;
+   PetscReal vol = 1.0;
+   for (PetscInt d = 0; d < dim; d++) vol *= h[d];
+
+   for (PetscInt kr = 0; kr < n_keys; kr++) {
+      const PetscBool is_void = (PetscBool)((kr / nb) % n_full[0] >= n_keep);
+      for (PetscInt kc = 0; kc < n_keys; kc++) {
+         const PetscScalar full = d_full[kr * n_keys + kc];
+         if (is_void) void_diff = PetscMax(void_diff, PetscAbsScalar(full - (kr == kc ? vol : 0.0)));
+         else {
+            row_norm = PetscMax(row_norm, PetscAbsScalar(full));
+            row_diff = PetscMax(row_diff, PetscAbsScalar(full - d_keep[kr * n_keys + kc]));
+         }
+      }
+      for (PetscInt a = 0; a < n_angles; a++) {
+         const PetscScalar yf = y_full[kr * n_angles + a];
+         if (is_void) y_void = PetscMax(y_void, PetscAbsScalar(yf));
+         else {
+            y_norm = PetscMax(y_norm, PetscAbsScalar(yf));
+            y_diff = PetscMax(y_diff, PetscAbsScalar(yf - y_keep[kr * n_angles + a]));
+         }
+      }
+   }
+   const PetscInt expected_void = (n_full[0] - n_keep) * n_full[1] * (dim == 3 ? n_full[2] : 1);
+
+   const PetscBool pass = (PetscBool)(row_diff <= tol * row_norm && void_diff <= tol * vol && y_diff <= apply_tol * y_norm && \
+      y_void == 0.0 && n_void_full == expected_void && n_void_keep == 0 && y_norm > 0.0);
+   if (!pass) *ok = PETSC_FALSE;
+   PetscCall(PetscPrintf(PETSC_COMM_WORLD, "  DSA void masking at DG%" PetscInt_FMT ", %s, S%" PetscInt_FMT \
+      ": %" PetscInt_FMT " void cells (expected %" PetscInt_FMT "), non-void rows vs the cut box %.3e (tol %.0e x |D| = " \
+      "%.3e), void rows vs V I %.1e (tol %.0e x V), apply %.3e (tol %.0e x |y| = %.3e), apply on void rows %.1e (exact)%s\n", \
+      order, where, sn_order, n_void_full, expected_void, (double)row_diff, (double)tol, (double)(tol * row_norm), \
+      (double)void_diff, (double)tol, (double)y_diff, (double)apply_tol, (double)(apply_tol * y_norm), (double)y_void, \
+      pass ? "" : " FAILED"));
+
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
 int main(int argc, char **args) {
 
    PetscBool ok = PETSC_TRUE;
@@ -2396,6 +2669,15 @@ int main(int argc, char **args) {
       PetscCall(CheckTwin2D(6, 4, 2, GhostFlux(inflow), no_boxes, PETSC_FALSE, \
          "inflow 1.0 on left in y [0.5, 1.5], 0.3 on bottom, ghost-flux", &ok));
       PetscCall(CheckTwin2D(4, 3, 4, GhostFlux(vacuum), boxes, PETSC_FALSE, "vacuum, painted box, ghost-flux", &ok));
+
+      // 12. The painted box as a VOID (two cells), so (g) compares the two
+      // masked DSA operators, under both vacuum treatments and with the
+      // reflective corner in
+      BCSpec vacuum_dc = vacuum;
+      vacuum_dc.set_vacuum_treatment(VacuumTreatment::DIRICHLET_CELL);
+      PetscCall(CheckTwin2D(4, 3, 4, vacuum_dc, boxes, PETSC_FALSE, "vacuum, painted VOID box, Dirichlet-cell", &ok, 2));
+      PetscCall(CheckTwin2D(4, 3, 4, GhostFlux(reflect_lb), boxes, PETSC_FALSE, \
+         "reflect left + bottom, painted VOID box, ghost-flux", &ok, 2));
    }
 
    // ~~~~~~~~~~
@@ -2511,6 +2793,19 @@ int main(int argc, char **args) {
          StructuredFD3D::FACE_BOTTOM}, {StructuredFD3D::FACE_RIGHT, StructuredFD3D::FACE_BACK, StructuredFD3D::FACE_TOP}, \
          4, &ok));
 #endif
+   }
+
+   // ~~~~~~~~~~
+   // 12. DSA void masking against the cut box (the FD twin half is in 1)
+   // ~~~~~~~~~~
+   {
+      const PetscInt n2[2] = {6, 4}, n3[3] = {4, 3, 3};
+      PetscCall(CheckDSAVoid<SNQuadrature2D>("2D quads 6x4, cells 3.. void, reflect bottom", 2, n2, 3, 0, 4, \
+         {StructuredFD2D::FACE_BOTTOM}, &ok));
+      PetscCall(CheckDSAVoid<SNQuadrature2D>("2D quads 6x4, cells 3.. void, reflect bottom", 2, n2, 3, 1, 4, \
+         {StructuredFD2D::FACE_BOTTOM}, &ok));
+      PetscCall(CheckDSAVoid<SNQuadrature3D>("3D hexes 4x3x3, cells 2.. void, reflect front + bottom", 3, n3, 2, 1, 2, \
+         {StructuredFD3D::FACE_FRONT, StructuredFD3D::FACE_BOTTOM}, &ok));
    }
 
    // ~~~~~~~~~~

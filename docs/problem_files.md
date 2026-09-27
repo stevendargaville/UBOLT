@@ -353,10 +353,27 @@ Per material:
 |---|---|
 | `id` | required; ids must be DENSE `0..n-1` - they are the `MaterialSpec` indices, because the tables reach device kernels |
 | `name` | optional string; lets regions reference the material by name |
-| `Sigma_t` | required, `[n_groups]`: the total xsection, including scattering |
+| `Sigma_t` | required, `[n_groups]`: the total xsection, including scattering. `0` is a VOID (give it a zero `Sigma_s` row too): the transport handles it as pure streaming, and `-precon_dsa` masks void cells out of its diffusion correction (see below) |
 | `Sigma_s` | required, `[n_groups][n_groups]` indexed `[from][to]`: row `g` is everything scattering OUT of group `g`; the diagonal is the within-group scatter that stays on the lhs. Groups are ordered high energy (0) to low. The driver's forward sweep consumes the upper triangle only - upscatter entries (below the diagonal) are silently unused until an outer iteration arrives |
 | `Source` | optional, `[n_groups]`: UBOLT's one extension - the external source as an isotropic, angle-integrated strength, shared over the ordinates as `Source / sum_weights` by `UboltFillSource`. Absent = zero (void) |
 | `Sigma_f`, `Nu`, `Chi` | accepted, ignored - UBOLT is a fixed-source solver today; these come back with a fission phase |
+
+**Voids and the DSA.** A material whose group `Sigma_t` is zero is a void in
+that group, and a void is fine everywhere except where a diffusion coefficient
+`D = 1/(3 Sigma_t)` is wanted. `-precon_dsa` masks those cells out of its
+correction, per group, on every backend and order: no diffusion unknown does
+anything there (identity rows), nothing is restricted from or corrected on
+them, and a face between a real cell and a void is a Marshak (vacuum) face for
+the real cell - the correction treats what streams into the void as leaked. So
+a void region costs the DSA nothing and the rest of the problem keeps its
+acceleration (`box_void_channel.json` and its siblings in `tests/problems/`:
+26 -> 12 on the 2D channel, the same count as the problem with no void at
+all within 1). What the correction does NOT do is couple the regions a void
+separates; streaming across it is left to the transport stages. The threshold
+is `-dsa_void_sigma_t` (default 0, only a true void): raising it masks
+near-voids too, for a thin region where `D` would be huge. The reference-shift
+pmat (`-precon_ref_shift`) still refuses a group that is zero in some cells
+only - a single ratio cannot represent it.
 
 The interoperability asymmetry, documented so nobody trips on it: UBOLT is
 unitless and ignores `length_unit` (the mesh lengths are in whatever unit the
