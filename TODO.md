@@ -5,7 +5,12 @@ Each phase is a reviewable unit with its own verification. Do not start a phase 
 previous one's verification has passed and been reviewed.
 
 ## Current state (updated 2026-09-27)
-Last landed: **DG1-consistent DSA** (at DG1 `DSAPrecon`'s plex overload builds the MIP
+Last landed: **a discretisation-consistent DSA diffusion coefficient** (the default
+`DSAPrecon` blends the upwind scheme's numerical diffusion `m h` into every face D as
+`(D^1.5 + (m h)^1.5)^(1/1.5)`, structured and DG0 plex; `-dsa_consistent_d 0` restores
+the physical D - every diffusive recipe 11/11/8 -> 5, crooked pipe 28 -> 8, the
+literature crooked-pipe sets 51-106 -> 17-21 and the eps sweep flat at 9-11, see the
+Phase 4 DSA notes); before it, **DG1-consistent DSA** (at DG1 `DSAPrecon`'s plex overload builds the MIP
 interior penalty diffusion operator in the DG1 space itself, every basis node restricted
 and corrected; see the Phase 6 item); before it, **DSA on the plex backend** (a
 volume-weighted two-point-flux diffusion operator, PR #12); before that,
@@ -23,11 +28,10 @@ values, PR #8), on top of linear DG (DG1) on the plex backend (PR #7), Phase 6a 
 DMPlex, PR #2) and the ghost-flux vacuum treatment as the default (PR #4). DSA now
 works at both orders on the plex: at DG0 every quad/hex twin takes the structured DSA
 count and simplices go 35 -> 10 / 31 -> 9; at DG1 (27 Sep 2026) the diffusive quad box,
-hex cube, triangles and tets go 34 / 32 / 40 / 43 -> 6 / 7 / 8 / 9, each at or below
-the same mesh's DG0+DSA count. Next up: 6b CG-SUPG (Phase 6), or one of the open
-questions carried as checkboxes since 27 Sep 2026: a discretisation-consistent DSA
-diffusion coefficient (the top one), void masking and per-group cached Mat/KSP for the
-DSA (all three in the Phase 4 postscript 5 DSA notes), and a Phase 6a thing to watch,
+hex cube, triangles and tets go 34 / 32 / 40 / 43 -> 6 / 7 / 8 / 9 (DG0+DSA now takes
+5 on all four meshes' DG0 twins, through the consistent D). Next up: 6b CG-SUPG (Phase
+6), or one of the open questions carried as checkboxes since 27 Sep 2026: void masking
+and per-group cached Mat/KSP for the DSA (both in the Phase 4 postscript 5 DSA notes), and a Phase 6a thing to watch,
 triangle L-infinity below first order (to re-measure under ghost-flux first). The other
 one, simplex iteration counts creeping up with refinement, is explained and gone under
 the current defaults (27 Sep 2026): it was PCAIR's row-relative R drop on the old
@@ -510,6 +514,8 @@ now direct and tested (see that item).
     (box_diffusive 29 -> 11, ref-shift + DSA 11, additive 14, cube_diffusive 18 -> 8,
     box_50_st2_dirichlet_cell 5). Simplices close the 3.3-3.5x gap entirely: 5000
     triangles 35 -> 10, 6000 tets 31 -> 9 - at or below the structured+DSA count.
+    (All physical-D counts: with the consistent D, 27 Sep 2026, every one of these
+    diffusive files takes 5.)
   - DG1 did NOT get the same (superseded the same day by the interior penalty
     operator, the next item): the restriction sums basis 0's ordinates (the cell
     balance rows) and the prolongation corrects basis 0 only, which is an INCONSISTENT
@@ -540,7 +546,7 @@ now direct and tested (see that item).
   - Measured (opt arch, one GAMG V-cycle, no DSA -> old cell-average -> MIP): quad box
     34 -> 34 -> 6, hex cube 32 -> 25 -> 7, triangles 40 -> 26 -> 8, tets 43 -> 21 -> 9;
     np 2 and 4 within 1. Every one is now at or below the same mesh's DG0+DSA count
-    (11 / 8 / 10 / 9). With the inner solve exact every case is 5, so what remains is
+    (11 / 8 / 10 / 9, physical D; the consistent D later took DG0 to 5 on all four). With the inner solve exact every case is 5, so what remains is
     GAMG on the IP matrix: the block size took tets 16 -> 9 and triangles 11 -> 8, two
     V-cycles or 4 smoothing steps each take another 1-3 off at more cost per apply, and
     the GAMG threshold or no smoothed aggregation do nothing. The penalty barely moves
@@ -957,7 +963,8 @@ now direct and tested (see that item).
     mean free paths per cell is several times the physical `D = 1/(3 sigma_t)`, so the
     correction is consistent with the PDE and not with the discretisation. A
     discretisation-consistent D (or a `D + c dx` fudge) is the obvious next experiment,
-    and the table above is what to beat.
+    and the table above is what to beat. DONE 27 Sep 2026 - see the ticked item below:
+    the table is now 5 / 5 / 5.
   - CLOSED 2026-09-25 (a Dirichlet-cell artefact, see the Phase 5 follow-up on the
     mismatched ref-shift + DSA; ghost-flux takes 44 with and without DSA on
     `cube_diffusive`, and that is pinned). Original note: `-precon_stream` +
@@ -987,14 +994,56 @@ now direct and tested (see that item).
     solvable; random media are a strength (2.5x flat reduction, seed-to-seed spread
     compressed from ~20% to <= 2 iterations). The additive composite lost every one of
     100+ paired comparisons — settled as non-viable here.
-  - [ ] **A discretisation-consistent DSA diffusion coefficient - the top open item,
-    with targets in three regimes** (the "Open:" note above is the diagnosis): the epsilon sweep doubles per decade below 1e-2 (67 at eps 1e-4, 64^2)
-    where Haut et al.'s O(eps) theory says flat; the crooked-pipe level is ~80 vs the
-    paper's ~30; and the E4 exact-LU cross-check is a null result in the worst corner
-    (222 -> 225 on set 5, sigma_a = 0), so the bottleneck is the correction's fidelity,
-    NOT GAMG-on-the-diffusion-matrix — the paper's central AMG-failure mode does not
-    reproduce on the cell-centred operator. If consistent-D does not close the gap, a
-    heterogeneous-DSA-style variant (precondition only the thick region) is the fallback.
+  - [x] **A discretisation-consistent DSA diffusion coefficient** (27 Sep 2026, the
+    "Open:" note above was the diagnosis and it was right). The targets as written were
+    measured before ghost-flux; re-measured on main first, ghost-flux had already taken
+    the eps sweep at 1e-4 from 67 to 17 and the crooked-pipe sets from ~200 to 51-106,
+    so the gap left was the correction's D, not the boundary.
+    - **What landed** (`DSAPrecon`, default on): every face D, Marshak faces included,
+      becomes `(D^p + (m h)^p)^(1/p)`, p = 1.5, m = the quadrature's half-range current
+      `sum_{Omega.n>0} w (Omega . n) / sum_w` (~1/4) and h the cell width across the
+      face (on the plex, per face off the backend's ordinates and the normal, h the
+      centroid-to-centroid distance; DG1 untouched, its penalty floor is the same 1/4).
+      Derivation: for a linear flux in an infinite pure scatterer the upwind face
+      current is EXACTLY `-(D + m h) grad phi`. `-dsa_consistent_d 0` is the physical
+      D, `-dsa_consistent_d_power 1` the exact sum.
+    - **Why p = 1.5, not the exact sum**: the sum is right in both limits but
+      over-diffuses intermediate cells. A 1D Fourier analysis of step-differenced source
+      iteration + DSA (Gauss S4) puts the optimal D below `D + m h` at tau = sigma_t h
+      ~ 0.3-2 (and even below the physical D at tau < 0.3); the p = 1.5 blend is within
+      ~0.03 of the optimal spectral radius at every tau in 0.1-100 and every ratio
+      0.9-0.9999, p = 1 loses 0.02-0.05 at tau <= 1, p = 2 loses 0.1 at tau 1-2, ratio
+      ~1. Measured: p = 1 cost +1-2 on the tau-0.5 classics (J box c = 1 9 -> 11, A box
+      9 -> 11), p = 1.5 and 2 did not; on the hard cases the three agree within 1.
+    - **Targets** (serial, rtol 1e-10, S4, one GAMG V-cycle; before = main under
+      ghost-flux, "paper-era" = the Aug 2026 report):
+
+      | problem | paper-era | before | after | exact-LU inner |
+      |---|---|---|---|---|
+      | eps sweep 64^2, eps 1 / 1e-1 / 1e-2 / 1e-3 / 1e-4 | 5/11/14/29/67 | 5/10/12/17/17 | 5/10/9/11/11 | eps 1e-4: 4 |
+      | eps 1e-4, 128^2 | 59 | 17 | 11 | 4 |
+      | crooked pipe 56x40, sets 1-5 at cdt 1e3 (set 5 sigma_a = 0) | 199/101/198/106/222 | 70/51/79/106/89 | 17/18/20/18/21 | set 5: 19, set 3 (sigma_a = 0): 17 |
+      | crooked pipe set 1 cdt 1e3, 14x10 / 28x20 / 56x40 | 171/-/199 | 56/70/70 | 13/13/17 | 12/12/13 |
+      | two-material pipe 56x40, sigma_pipe 1e-6 .. 100 | 77-98 | 25-48 | 11-19 | - |
+
+      So the eps sweep is flat (9-11 from 1e-2 down, h-independent at 1e-4) as Haut et
+      al.'s O(eps) theory says, and the crooked pipe is at 17-21 against the paper's
+      ~30 (theirs is S8 DG, so like-for-like it is "at or below", not a claim of
+      beating it). With an exact inner solve the eps 1e-4 case takes 4 and the pipe
+      12-19, so the correction's FIDELITY gap is closed; what remains at eps 1e-4 is
+      GAMG on the diffusion matrix (two V-cycles, `-dsa_ksp_type richardson
+      -dsa_ksp_max_it 2`, take it 11 -> 7; not made a default - it doubles the DSA
+      cost, and the pipe gains 2). That reverses the E4 conclusion recorded here before
+      (a null exact-LU result was the physical D being wrong, not GAMG being fine).
+    - **The rest of the external suite** (~110 problems, A-J + P5, serial, rtol 1e-10):
+      nothing lost more than 1 (3 cases +1: lattice 56, J box c = 0.9, P5 box st1 c0.9
+      s2); iron-water 16/13 -> 9/9 (60/120), layers with thick 1000-sigma layers 23-26 ->
+      11-16, random media -1 to -3, P5 thick c = 0.99 boxes/slabs 20-21 -> 9, thin
+      and intermediate problems unchanged. Repo pins: every diffusive file 11/11/8 -> 5
+      in 1D/2D/3D and on every plex DG0 mesh (tri 10 -> 5, tet 9 -> 5), crooked pipe 28
+      -> 8, additive composite 14 -> 7, `cube_diffusive -precon_stream -precon_dsa` 44 ->
+      25; table in docs/dev/testing.md, "Discretisation-consistent D".
+    - The heterogeneous-DSA fallback was NOT needed and was not tried.
   - Four benchmark problems promoted to pinned recipes (`box_crooked_pipe`, `box_layers`,
     `box_lattice`, `box_random8`, serial + np2 in `tests_short`, measured on the local
     opt arch, +1 slack) — CI runs green with these pins (Aug 2026).

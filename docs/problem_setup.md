@@ -64,9 +64,9 @@ default ghost-flux vacuum treatment only. It carries more per-row bookkeeping (a
 of a fixed stencil). `-precon_dsa` works at DG0 exactly as on the structured
 backends (a diffusive box takes the structured count; triangles and tets about the
 same), and at DG1 through an interior penalty diffusion operator in the DG1 space
-itself, which does even better (a diffusive quad box 34 -> 6, hexes 32 -> 7, against
-11 and 8 for DG0 with DSA; its penalty constant is `-dsa_mip_penalty`, 4, and rarely
-worth touching). And reflective faces must be
+itself (a diffusive quad box 34 -> 6, hexes 32 -> 7; DG0 with DSA takes 5 on both,
+through its discretisation-consistent D; the DG1 penalty constant is
+`-dsa_mip_penalty`, 4, and rarely worth touching). And reflective faces must be
 axis-aligned: a mesh file can only reflect on the straight x/y/z parts of its
 boundary.
 
