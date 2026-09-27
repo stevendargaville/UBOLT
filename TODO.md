@@ -5,10 +5,15 @@ Each phase is a reviewable unit with its own verification. Do not start a phase 
 previous one's verification has passed and been reviewed.
 
 ## Current state (updated 2026-09-27)
-Last landed: **void masking in the DSA** (`-precon_dsa` masks `Sigma_t = 0` cells out
-of its correction on every backend and order instead of refusing them, a face into a
-void taking the same consistent-D Marshak face as a vacuum boundary; see the Phase 4
-postscript 5 DSA notes); before it, **a discretisation-consistent DSA diffusion coefficient** (the default
+Last landed: **void bridging in the DSA** (by default `-precon_dsa` keeps `Sigma_t = 0`
+cells IN its diffusion operator with the free-flight `D = L / 3`, `L = 4 V / S` the
+voids' mean chord, and at DG1 a harmonic-D weighted interior penalty on the faces
+touching a void, so the correction couples the regions a void separates: the void
+recipes 6 / 8 / 6 / 8 / 10 -> 6 / 6 / 5 / 6 / 10 serial; `-dsa_void_bridge 0` is the
+mask; see the Phase 4 postscript 5 DSA notes); before it, **void masking in the DSA**
+(`-precon_dsa` masks `Sigma_t = 0` cells out of its correction on every backend and
+order instead of refusing them, a face into a void taking the same consistent-D
+Marshak face as a vacuum boundary); before it, **a discretisation-consistent DSA diffusion coefficient** (the default
 `DSAPrecon` blends the upwind scheme's numerical diffusion `m h` into every face D as
 `(D^1.5 + (m h)^1.5)^(1/1.5)`, structured and DG0 plex; `-dsa_consistent_d 0` restores
 the physical D - every diffusive recipe 11/11/8 -> 5, crooked pipe 28 -> 8, the
@@ -35,9 +40,9 @@ hex cube, triangles and tets go 34 / 32 / 40 / 43 -> 6 / 7 / 8 / 9 (DG0+DSA now 
 5 on all four meshes' DG0 twins, through the consistent D). Next up: 6b CG-SUPG (Phase
 6), or one of the open questions carried as checkboxes since 27 Sep 2026: per-group
 cached Mat/KSP for the DSA (in the Phase 4 postscript 5 DSA notes; void masking, the
-other, is done), and the follow-ups the 27 Sep 2026 round left (a void-bridging DSA
-operator, `-precon_ref_shift` on partly-void groups, a stronger cheap DSA inner solve,
-the simplex +1; the list at the end of Phase 6). Both Phase 6a things to watch are
+other, is done), and the follow-ups the 27 Sep 2026 round left (`-precon_ref_shift`
+on partly-void groups, a stronger cheap DSA inner solve, the simplex +1; the list at
+the end of Phase 6; the void-bridging DSA operator from that list is done). Both Phase 6a things to watch are
 closed (27 Sep 2026): simplex iteration counts creeping up with refinement is
 explained and gone under the current defaults - it was PCAIR's row-relative R drop on
 the old unscaled Dirichlet-cell pmat, which either ghost-flux or the element-block
@@ -636,11 +641,19 @@ now direct and tested (see that item).
 - Open questions left by the 27 Sep 2026 round (PRs #14, #15, #17; the findings are in
   their ticked items - the void-masking and consistent-D ones under the Phase 4
   postscript 5 DSA notes, the simplex one in the Phase 6a item above):
-  - [ ] A void-bridging DSA diffusion operator: the void mask decouples void cells, so
-    the correction does not couple regions a void separates, and streaming across the
-    void is left to the removal and PCAIR stages (PR #14). The gap to beat is one
-    iteration: an unmasked tiny `Sigma_t` (1e-3) in the 2D channel takes 7 under the
-    consistent D against the mask's 8 (docs/dev/testing.md, "DSA with voids").
+  - [x] A void-bridging DSA diffusion operator (27 Sep 2026): the void mask decouples
+    void cells, so the correction did not couple regions a void separates (PR #14).
+    Done as the default, `-dsa_void_bridge 0` keeping the mask: a void cell stays in
+    the diffusion operator with no absorption and the free-flight `D = L / 3`, `L =
+    4 V / S` the group's voids' mean chord (Cauchy / Behrens; `1 / (3 (Sigma_t + 1/L))`
+    for a near-void under `-dsa_void_sigma_t`), and at DG1 the faces touching a void
+    take the Ern-Stephansen-Zunino weighted interior penalty (harmonic face D). Beat
+    the target (the tiny-`Sigma_t` workaround's 7 on the channel): 6 serial and np 2
+    on the box and the plex channels, 5 on the duct, the slab gap 6 / 6 (np 2 7 -> 6),
+    DG1 tied at 10 (7 with an exact inner solve, against the mask's 10 either way).
+    Details and the scans behind the choice of D in the Phase 4 postscript 5 DSA
+    notes and docs/dev/testing.md, "DSA with voids". Left: the chord is one number
+    per group, not per connected void; DG1 is held at a tie by the one GAMG V-cycle.
   - [ ] `-precon_ref_shift` still refuses a group that is void in only some cells - a
     check older than the DSA void mask, and separate from it (PR #14).
   - [ ] GAMG on the DSA diffusion matrix is the remaining limit in the thick diffusion
@@ -1062,9 +1075,39 @@ now direct and tested (see that item).
     `slab_void_gap` 23 -> 6 / 7 (12 / 13), `box_void_channel` 26 -> 8 / 8 (12),
     `cube_void_duct` 21 -> 6 / 6 (9), `plex_box_void_channel` 25 -> 8 / 8 (12), `_dg1`
     34 -> 10 / 10 - against 5 / 5 / 5 / 5 / 6 with no void; the unmasked "tiny Sigma_t"
-    workaround takes 7 on the channel. `verify_plexk` check 12. Not done: coupling the
-    regions a void separates, and `-precon_ref_shift` on a partially-void group (both
-    carried elsewhere).
+    workaround takes 7 on the channel. `verify_plexk` check 12. Not done here: coupling
+    the regions a void separates (done since - the next item), and `-precon_ref_shift`
+    on a partially-void group (carried at the end of Phase 6).
+  - [x] Void BRIDGING in the DSA (27 Sep 2026, the default; `-dsa_void_bridge 0` is the
+    mask above). A void cell stays in the diffusion operator, no absorption, with the
+    FREE-FLIGHT coefficient: D = 1/(3 sigma_t) is <mu^2> times the flight 1/sigma_t,
+    and in a void the flight is ended by the walls, whose mean is the chord L = 4 V / S
+    (Cauchy; the Behrens void correction of reactor diffusion theory). V is the
+    group's voids' volume, S the area of their faces onto material or a vacuum
+    boundary (reflective faces mirror the flight on); D = L / 3, or 1/(3 (sigma_t +
+    1/L)) for a near-void (Wigner's rational form); `-dsa_void_d` fixes it. Everything
+    else is the plain operator's, so with no void the arithmetic is unchanged: all 63
+    no-void `-precon_dsa` recipes pin-lifted with `-ksp_monitor` identical to main's.
+    An all-void group, or one with no vacuum face and no absorption (pure Neumann once
+    the voids are in), falls back to the mask. How D was chosen (opt, serial, fixed D
+    swept 0.01-1e5): at DG0 the optimum scales with the void's width - a channel of
+    height H wants D ~ 0.2 at H = 0.2, ~1 at H = 0.6 and 1.4 - and 1D wants D large
+    (a planar gap is a perfect conductor in P1: partial currents cross it unchanged),
+    but the count is flat within a factor ~3 of L / 3 in every case; D -> infinity
+    (the tiny-Sigma_t workaround) loses one on the 2D channel. At DG1 the plain MIP
+    form got WORSE with the void in (10 -> 13; its arithmetic penalty C/2 (D_c/h_c +
+    D_n/h_n) welds the material's surface to the void, and even an exact inner solve
+    only reached 9 at a hand-picked D); the weighted interior penalty (Ern, Stephansen &
+    Zunino 2009: both averages and kappa off the face's harmonic D - the DG1 sibling
+    of DG0's harmonic face D) on faces touching a void fixed it: 7 with LU, 10 (a tie)
+    with the default GAMG V-cycle, 8-9 with two V-cycles or a GAMG threshold of 0.05
+    where the mask stays at 10. Masking only the void's slope nodes, or the whole
+    void's restriction / prolongation, changed nothing; the natural Robin form on a
+    void's vacuum face moved the rate by two hundredths and no count. Measured (opt, serial /
+    np 2, mask -> bridge): `slab_void_gap` 6 / 7 -> 6 / 6, `box_void_channel` 8 / 8 ->
+    6 / 6, `cube_void_duct` 6 / 6 -> 5 / 5, `plex_box_void_channel` 8 / 8 -> 6 / 6,
+    `_dg1` 10 / 10 -> 10 / 10. `verify_plexk` check 13; the mask keeps its recipes
+    under `-dsa_void_bridge 0`.
   - [ ] Per-group cached DSA Mat/KSP instead of one refilled pair (a local change inside
     `DSAPrecon`, see its header; only worth it if a sweep revisits groups).
   - **Literature benchmark study run (Aug 2026)** — six studies (crooked pipe per

@@ -43,10 +43,14 @@ Codebase map
   the plex DSA — its diffusion matrix = the twin's structured one times the cell volume,
   `P D^-1 R` to rounding with tight inner solves, and at DG1 the interior penalty matrix
   symmetric, a linear field mapped to `V sigma_a u` on interior cells to rounding, and a
-  round trip through `apply()`; and the DSA's void masking — the FD twin with its
-  painted box made a void (both masked operators agree), and at DG0/DG1 a box with
-  void high-x cells against the box of only the low-x ones (non-void rows identical,
-  void rows V I, the correction equal there and zero in the void). `tests/meshes/`: mesh files the problem
+  round trip through `apply()`; and the DSA's voids — the FD twin with its painted box
+  made a void (the two operators agree bridged and masked), under the mask at DG0/DG1 a
+  box with void high-x cells against the box of only the low-x ones (non-void rows
+  identical, void rows V I, the correction equal there and zero in the void), and the
+  bridge at DG0/DG1, 2D/3D, on a box split by a void slab (the chord 4 V / S, SPD by
+  a dense Cholesky, a constant mapped to V sigma_a off the vacuum boundary - zero in
+  the void - and a residual on one side corrected on the other, where the mask gives
+  zero). `tests/meshes/`: mesh files the problem
   files name (a hand-written Gmsh 2.2 `.msh` today).
   `tests/verify_quadraturek.kokkos.cxx`: the quadrature sets themselves, against the
   moment conditions that define them — needed because they are generated, not tabulated.
@@ -158,11 +162,18 @@ Codebase map
   unknown is DG1 too: the MIP interior penalty form (Wang & Ragusa) on the backend's
   modal basis, one unknown per (cell, basis) node, block size n_basis for GAMG, every
   node restricted and corrected; penalty constant `-dsa_mip_penalty`, 4 by default.
-  VOIDS are masked, every backend and order: a cell with group `Sigma_t <=
-  -dsa_void_sigma_t` (0 by default) is an identity row (times V on the plex), restricted
-  and corrected to zero, and a face into it is the (consistent-D) Marshak or MIP vacuum face for its
-  neighbour; per group, the void flagged as D = 0 in the staged D so it crosses ranks
-  with the ghosting, and bit-for-bit the unmasked operator when there is no void),
+  VOIDS (a cell with group `Sigma_t <= -dsa_void_sigma_t`, 0 by default) are BRIDGED
+  by default, every backend and order: kept in the operator with no absorption and the
+  free-flight `D = L / 3`, `L = 4 V / S` the voids' mean chord (one per group, summed
+  over ranks; S = faces onto material or vacuum, not reflective ones), so the
+  correction couples the regions a void separates; at DG1 a face touching a void takes
+  the harmonic-D weighted interior penalty (plain MIP welds the material to the void).
+  `-dsa_void_bridge 0` MASKS them instead (an identity row, times V on the plex,
+  restricted and corrected to zero, a face into it the (consistent-D) Marshak or MIP
+  vacuum face for its neighbour), and an all-void or would-be-singular group falls back
+  to the mask; per group, the void flagged in the staged D (0 masked, negative bridged
+  on the plex) so it crosses ranks with the ghosting, and bit-for-bit the plain
+  operator when there is no void),
   `ElementBlockInverse` (the inverse of each (cell, angle) n_basis x n_basis element
   block of a MATAIJKOKKOS matrix, read straight off its device CSR — strided by
   n_angles under layout A, so not PETSc's contiguous-block inverse — plus `D^{-1} x` and

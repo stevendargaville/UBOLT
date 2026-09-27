@@ -1347,7 +1347,7 @@ faithful replacement for the retired unit angle-integrated `Source` strip.
 ### DSA with voids
 
 Until 27 Sep 2026 `-precon_dsa` refused any cell with `Sigma_t <= 0` (the "void
-guard"; `D = 1/(3 Sigma_t)` is undefined there). Now those cells are MASKED out
+guard"; `D = 1/(3 Sigma_t)` is undefined there). Then those cells were MASKED out
 of the correction, per group, on every backend and order (`DSAPrecon`'s header
 has the design): identity diffusion rows (V I on the plex), nothing restricted
 or corrected there, and a face into the void a Marshak / MIP-vacuum face for its
@@ -1360,28 +1360,53 @@ cell the masked code runs the unmasked arithmetic: every `-precon_dsa` recipe in
 the Makefile (61, after merging the consistent D), pin-lifted with
 `-ksp_monitor`, gave output identical to main's.
 
+Since 27 Sep 2026 the voids are BRIDGED by default instead (`-dsa_void_bridge 0`
+is the mask above): a void cell stays in the diffusion operator with no
+absorption and the free-flight `D = L / 3`, `L = 4 V / S` the group's voids'
+mean chord (S: faces onto material or a vacuum boundary, not reflective ones),
+and at DG1 the faces touching a void take the harmonic-D weighted interior
+penalty (`DSAPrecon`'s header has the design and why). An all-void group, or
+one whose bridged operator would be pure Neumann, falls back to the mask. With
+no void the arithmetic is unchanged: all 63 no-void `-precon_dsa` recipes,
+pin-lifted with `-ksp_monitor`, identical to main's (bitwise residuals).
+
 The void files are the diffusive ones (ten mean free paths per cell, ratio 0.99,
-S4, all faces vacuum) with a `Sigma_t = 0` region painted in, run both ways:
+S4, all faces vacuum) with a `Sigma_t = 0` region painted in, run every way
+(opt; np=1 / np=2):
 
-| problem | void | no DSA np=1 | DSA np=1 / np=2 | physical-D DSA | void-free DSA |
-|---|---|---|---|---|---|
-| `slab_void_gap.json` (100) | x in [4, 6], splits the slab | 23 | 6 / 7 | 12 / 13 | 5 |
-| `box_void_channel.json` (50x50) | channel in from the left face | 26 | 8 / 8 | 12 / 12 | 5 |
-| `cube_void_duct.json` (10^3) | 2x2-cell duct in from the left face | 21 | 6 / 6 | 9 / 9 | 5 |
-| `plex_box_void_channel.json` (quads, DG0) | as the box | 25 (np=2 26; pinned 26, gnu_opt CI) | 8 / 8 | 12 / 12 | 5 |
-| `plex_box_void_channel_dg1.json` (quads, DG1) | as the box | 34 | 10 / 10 | 10 / 10 | 6 |
+| problem | void | no DSA np=1 | bridged DSA | masked DSA | bridged / masked, physical D | void-free DSA |
+|---|---|---|---|---|---|---|
+| `slab_void_gap.json` (100) | x in [4, 6], splits the slab | 23 | 6 / 6 | 6 / 7 | 10 / 10 vs 12 / 13 | 5 |
+| `box_void_channel.json` (50x50) | channel in from the left face | 26 | 6 / 6 | 8 / 8 | 11 / 11 vs 12 / 12 | 5 |
+| `cube_void_duct.json` (10^3) | 2x2-cell duct in from the left face | 21 | 5 / 5 | 6 / 6 | 8 / 9 vs 9 / 9 | 5 |
+| `plex_box_void_channel.json` (quads, DG0) | as the box | 25 (np=2 26; pinned 26, gnu_opt CI) | 6 / 6 | 8 / 8 | 11 / 11 vs 12 / 12 | 5 |
+| `plex_box_void_channel_dg1.json` (quads, DG1) | as the box | 34 | 10 / 10 | 10 / 10 | 10 / 10 vs 10 / 10 | 6 |
 
-"DSA" is the default consistent D, "physical-D DSA" `-dsa_consistent_d 0` (what
-the pins were before the consistent D merged, not pinned now); DG1 has no blend,
-so its two columns agree. Pinned at the local opt counts (np=2 of the no-DSA
-references not pinned). The void costs the consistent-D DSA 1-3 iterations at
-DG0 (four at DG1) against the same problem with no void. For scale: the channel
+"Bridged" is the default, "masked" `-dsa_void_bridge 0`, both under the default
+consistent D; "physical D" is `-dsa_consistent_d 0` (not pinned; DG1 has no
+blend, so its columns agree). Pinned at the local opt counts: the bridged
+serial and np=2, the masked serial (np=2 of the no-DSA references not pinned).
+Bridging takes the channel and the duct within one of the void-free count;
+at DG1 it ties the mask with the one GAMG V-cycle, and wins with a stronger
+inner solve (LU: 10 -> 7; two V-cycles 8, `-dsa_pc_gamg_threshold 0.05` 9,
+the mask 10 under all three). For scale: the channel
 with an unmasked tiny `Sigma_t` (1e-3, the old workaround) takes 7, and masking
 that one with `-dsa_void_sigma_t 1e-2` 8 (physical D: 12 both ways) - the
 workaround's thin-region coupling is worth one iteration here, which is what a
-void-bridging operator would have to beat.
-The correction does not couple the regions a void separates (the slab gap's two
-halves each see a Marshak face); that coupling is left to the transport stages.
+void-bridging operator had to beat - bridging takes 6. The mask does not couple
+the regions a void separates (the slab gap's two halves each see a Marshak
+face); that coupling is left to the transport stages.
+
+How the bridged D was chosen, from fixed `-dsa_void_d` sweeps (0.01 to 1e5,
+serial, rate = mean residual reduction per iteration): at DG0 the best D grows
+with the void's width - the channel wants ~0.2 at height 0.2 and ~1 at 0.6 and
+1.4, the duct ~0.3 - while the slab gap wants D large (in P1 a planar gap is a
+perfect conductor); every count is flat within a factor ~3 of `L / 3`
+(0.13 / 0.34 / 0.67 on those channels), and D -> infinity (the tiny-`Sigma_t`
+workaround) costs one on the channel. At DG1 plain MIP with the void in got
+worse (10 -> 13: its arithmetic penalty welds the material to the void); the
+weighted penalty fixed it. Neither masking the void's slope nodes nor its
+whole restriction / prolongation changed a count.
 
 A group void EVERYWHERE is now fully masked, so the correction is zero and the
 count is the no-DSA one: `slab_st0 -precon_dsa` is pinned at 1, and
@@ -1390,11 +1415,21 @@ count is the no-DSA one: `slab_st0 -precon_dsa` is pinned at 1, and
 
 `verify_plexk` check 12 holds the masking itself: the FD twin with its painted
 box made a void (Dirichlet-cell and ghost-flux with a reflective corner — the
-masked structured and plex operators agree to rounding), and at DG0 and DG1 a
+structured and plex operators agree to rounding, masked AND bridged, the chord
+included), and under `-dsa_void_bridge 0` at DG0 and DG1 a
 quad (and at DG1 a hex) box whose high-x cells are void against the box of only
 its low-x cells: every non-void row identical (so the face into the void IS the
 cut box's vacuum face), void rows V I, and `P D^-1 R` equal on the non-void
 nodes and exactly zero on the void ones, serial and -n 2/4.
+
+`verify_plexk` check 13 holds the bridging, at DG0 and DG1 on a 7x4 quad box
+and a 5x3x3 hex box split in two by a void slab (reflective faces included):
+bridged, the void counted, the chord exactly `4 V / S` of the slab, the
+diffusion matrix symmetric and positive definite (a dense Cholesky), a
+constant mapped to `V sigma_a` on every node off the vacuum boundary (zero in
+the void - it is a conductor, not a hole), and a residual on the cells left of
+the void corrected on the cells right of it (~1/3 of the peak), where the mask
+gives zero (to 1e-12: the inner GAMG's aggregates can straddle the void).
 
 ### Checks that are not recipes
 A recipe passes on exit 0, so the guard is checked BY HAND:

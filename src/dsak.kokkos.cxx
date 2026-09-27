@@ -20,9 +20,10 @@
 // Per (cell, basis) node: the cell at n_basis 1, and at DG1 every basis
 // function's moment, which is what the DG1 diffusion operator's rows test with
 //
-// A VOID cell's nodes restrict to zero: they are identity rows of the
+// A MASKED void cell's nodes restrict to zero: they are identity rows of the
 // diffusion operator, decoupled from everything, so a zero there keeps the
-// inner solution zero on them whatever the inner solve does
+// inner solution zero on them whatever the inner solve does. A bridged void
+// is an ordinary cell here (void_cell_d is 0 on it)
 static void RestrictKernel(PetscScalarConstKokkosView x_d, PetscScalarKokkosView rhs_d, \
    PetscScalar2DKokkosView w_d, PetscIntKokkosView is_bc_row_d, PetscIntKokkosView void_cell_d, \
    PetscInt n_angles, PetscInt n_basis, PetscInt n_nodes)
@@ -57,7 +58,8 @@ static void RestrictKernel(PetscScalarConstKokkosView x_d, PetscScalarKokkosView
 // which is what the BC contract owes them - the assembled operator already
 // holds the boundary condition on those rows and a correction there would
 // pollute it. node_d is the inner solution, one entry per (cell, basis) node.
-// A VOID cell's rows are zeroed too: no diffusion correction lives there
+// A MASKED void cell's rows are zeroed too: no diffusion correction lives
+// there (a bridged void is corrected like any cell)
 static void ProlongKernel(PetscScalarConstKokkosView node_d, PetscScalarKokkosView y_d, \
    PetscIntKokkosView is_bc_row_d, PetscIntKokkosView void_cell_d, PetscInt n_angles, PetscInt n_basis, \
    PetscScalar sum_weights, PetscInt local_rows)
@@ -479,6 +481,10 @@ PetscErrorCode DSAPrecon::create_ksp()
    // below it is masked out of the correction (see the header). 0 by default,
    // so only a true void is masked and a problem without one is untouched
    PetscCall(PetscOptionsGetReal(NULL, "dsa_", "-void_sigma_t", &void_sigma_t_, NULL));
+   // Bridge the voids rather than mask them (see the header), and a fixed
+   // free-flight D for them in place of the mean chord's L / 3
+   PetscCall(PetscOptionsGetBool(NULL, "dsa_", "-void_bridge", &void_bridge_, NULL));
+   PetscCall(PetscOptionsGetReal(NULL, "dsa_", "-void_d", &void_d_, NULL));
    // The per-group void mask, refilled by assemble()
    void_cell_d_ = PetscIntKokkosView("dsa_void_cell", local_cells_);
 
@@ -525,29 +531,64 @@ PetscErrorCode DSAPrecon::assemble()
    auto sigma_t_h = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), sigma_t_d_);
    auto sigma_s_h = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), sigma_s_d_);
 
-   // The void mask, per group (a material can be a void in some groups only).
-   // D = 1/(3 sigma_t) is not defined in a void, so rather than a fudged
-   // coefficient the void cells are masked out of the correction altogether
-   // (see the header)
+   // The void cells, per group (a material can be a void in some groups
+   // only). D = 1/(3 sigma_t) is not defined in a void, so a void cell either
+   // takes the free-flight D of the void it sits in (bridged) or is masked
+   // out of the correction altogether (see the header)
    auto void_h = Kokkos::create_mirror_view(void_cell_d_);
+   is_void_.assign(local_cells_, 0);
+   PetscReal max_sigma_a_real = 0.0;
    for (PetscInt c = 0; c < local_cells_; c++) {
       const PetscReal sigma_t = PetscRealPart(sigma_t_h(c));
-      void_h(c) = (sigma_t <= void_sigma_t_) ? 1 : 0;
-      if (void_h(c)) n_void++;
-      else max_sigma_a = PetscMax(max_sigma_a, sigma_t - PetscRealPart(sigma_s_h(c)));
+      const PetscReal sigma_a = sigma_t - PetscRealPart(sigma_s_h(c));
+      is_void_[c] = (sigma_t <= void_sigma_t_) ? 1 : 0;
+      if (is_void_[c]) n_void++;
+      else max_sigma_a_real = PetscMax(max_sigma_a_real, sigma_a);
+      max_sigma_a = PetscMax(max_sigma_a, sigma_a);
    }
-   Kokkos::deep_copy(void_cell_d_, void_h);
    PetscCallMPI(MPIU_Allreduce(MPI_IN_PLACE, &n_void, 1, MPIU_INT, MPI_SUM, comm_));
    PetscCallMPI(MPIU_Allreduce(MPI_IN_PLACE, &max_sigma_a, 1, MPIU_REAL, MPIU_MAX, comm_));
+   PetscCallMPI(MPIU_Allreduce(MPI_IN_PLACE, &max_sigma_a_real, 1, MPIU_REAL, MPIU_MAX, comm_));
    n_void_cells_ = n_void;
+
+   // Bridge the voids when asked, when there is a void and something that is
+   // not one, and when the bridged operator is nonsingular: with the voids IN
+   // the operator (and no absorption there) only a vacuum face or some
+   // absorption keeps it so. Otherwise the mask, which is always well posed
+   bridged_ = PETSC_FALSE;
+   void_chord_ = 0.0;
+   PetscInt n_cells_global = local_cells_;
+   PetscCallMPI(MPIU_Allreduce(MPI_IN_PLACE, &n_cells_global, 1, MPIU_INT, MPI_SUM, comm_));
+   if (void_bridge_ && n_void > 0 && n_void < n_cells_global && (any_vacuum_ || max_sigma_a > 0.0)) {
+      PetscCall(void_chord_length(is_void_.data(), &void_chord_));
+      bridged_ = (PetscBool)(void_chord_ > 0.0);
+   }
+
+   // D per cell: 1/(3 sigma_t) in a real cell; in a bridged void the
+   // free-flight D, 1/3 of the flight length 1/(sigma_t + 1/L) (Wigner's
+   // rational combination of the collision and the void's mean chord L, so
+   // exactly L/3 in a true void) unless -dsa_void_d fixes it; ZERO in a
+   // masked void, which is how a neighbour sees it
+   d_cell_.assign(local_cells_, 0.0);
+   for (PetscInt c = 0; c < local_cells_; c++) {
+      void_h(c) = (is_void_[c] && !bridged_) ? 1 : 0;
+      if (!is_void_[c]) d_cell_[c] = 1.0 / (3.0 * sigma_t_h(c));
+      else if (bridged_) {
+         d_cell_[c] = void_d_ > 0.0 ? (PetscScalar)void_d_ : \
+            (PetscScalar)(1.0 / (3.0 * (PetscMax(PetscRealPart(sigma_t_h(c)), 0.0) + 1.0 / void_chord_)));
+      }
+   }
+   Kokkos::deep_copy(void_cell_d_, void_h);
+   if (!bridged_) max_sigma_a = max_sigma_a_real;
 
    // The singularity guard: with every face reflective and no void the
    // diffusion operator is pure Neumann, so only the absorption keeps it
    // nonsingular. That is the same constraint the transport operator itself
    // carries (see docs/dev/testing.md) - all-reflect with a scattering ratio
    // of exactly 1 has the constants in its kernel. A face into a void is a
-   // Marshak face, so any void at all is as good as a vacuum face here (on a
-   // connected mesh every non-void region then touches one)
+   // Marshak face, so any MASKED void at all is as good as a vacuum face here
+   // (on a connected mesh every non-void region then touches one); bridging
+   // was only chosen above where a vacuum face or some absorption holds it
    PetscCheck(any_vacuum_ || n_void > 0 || max_sigma_a > 0.0, comm_, PETSC_ERR_ARG_WRONGSTATE, \
       "the DSA diffusion operator is singular: every face is reflective (pure Neumann), there " \
       "is no void, and Sigma_a = Sigma_t - Sigma_s is zero everywhere in this group. Leave one " \
@@ -555,6 +596,96 @@ PetscErrorCode DSAPrecon::assemble()
 
    if (plex_) PetscCall(assemble_plex(sigma_t_h.data(), sigma_s_h.data(), void_h.data()));
    else PetscCall(assemble_structured(sigma_t_h.data(), sigma_s_h.data(), void_h.data()));
+
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+// The voids' mean chord length, Cauchy's L = 4 V / S: V the void cells' total
+// volume, S the area of their faces that END a free flight - a face onto a
+// cell that is not void, or a vacuum boundary face. A reflective boundary
+// face does not end one (the flight carries on mirrored), so it is not in S.
+// One number for every void in the group, the aggregate chord of them all
+// (see the header). 0 when S is, which leaves the voids masked. The void
+// flags are staged through d_global_ and ghosted the way D is, so a void
+// face on a rank boundary is seen from both sides
+PetscErrorCode DSAPrecon::void_chord_length(const PetscInt *is_void, PetscReal *chord)
+{
+   PetscScalar *d_global_a = nullptr;
+   PetscReal vs[2] = {0.0, 0.0};
+
+   PetscFunctionBeginUser;
+
+   PetscCall(VecGetArrayWrite(d_global_, &d_global_a));
+   for (PetscInt c = 0; c < local_cells_; c++) d_global_a[c] = is_void[c] ? 1.0 : 0.0;
+   PetscCall(VecRestoreArrayWrite(d_global_, &d_global_a));
+
+   if (plex_) {
+
+      const PetscScalar *flag_nb = nullptr;
+      PetscCall(VecScatterBegin(nb_scatter_, d_global_, d_nb_, INSERT_VALUES, SCATTER_FORWARD));
+      PetscCall(VecScatterEnd(nb_scatter_, d_global_, d_nb_, INSERT_VALUES, SCATTER_FORWARD));
+      PetscCall(VecGetArrayRead(d_nb_, &flag_nb));
+      for (PetscInt c = 0; c < local_cells_; c++) {
+         if (!is_void[c]) continue;
+         vs[0] += volume_[c];
+         for (PetscInt k = cell_face_offset_[c]; k < cell_face_offset_[c + 1]; k++) {
+            if (face_nb_[k] >= 0 ? PetscRealPart(flag_nb[face_nb_[k]]) == 0.0 : face_vacuum_[k]) {
+               vs[1] += face_area_[k];
+            }
+         }
+      }
+      PetscCall(VecRestoreArrayRead(d_nb_, &flag_nb));
+   }
+   else {
+
+      PetscInt xs = 0, ys = 0, zs = 0, xm = 1, ym = 1, zm = 1;
+      PetscInt gxs = 0, gys = 0, gzs = 0, gxm = 1, gym = 1, gzm = 1;
+      const PetscScalar *flag_local = nullptr;
+      PetscCall(DMGlobalToLocal(da_, d_global_, INSERT_VALUES, d_local_));
+      PetscCall(DMDAGetCorners(da_, &xs, &ys, &zs, &xm, &ym, &zm));
+      PetscCall(DMDAGetGhostCorners(da_, &gxs, &gys, &gzs, &gxm, &gym, &gzm));
+      PetscCall(VecGetArrayRead(d_local_, &flag_local));
+
+      // The cell volume, and each axis' face area, over the dim_ axes only
+      PetscReal vol = 1.0, area[3] = {1.0, 1.0, 1.0};
+      for (PetscInt d = 0; d < dim_; d++) {
+         vol *= PetscRealPart(h_[d]);
+         for (PetscInt e = 0; e < dim_; e++) {
+            if (e != d) area[d] *= PetscRealPart(h_[e]);
+         }
+      }
+
+      for (PetscInt k = zs; k < zs + zm; k++) {
+         for (PetscInt j = ys; j < ys + ym; j++) {
+            for (PetscInt i = xs; i < xs + xm; i++) {
+               const PetscInt c = ((k - zs) * ym + (j - ys)) * xm + (i - xs);
+               if (!is_void[c]) continue;
+               vs[0] += vol;
+               const PetscInt ijk[3] = {i, j, k};
+               for (PetscInt d = 0; d < dim_; d++) {
+                  for (PetscInt side = -1; side <= 1; side += 2) {
+                     const PetscInt n = ijk[d] + side;
+                     PetscBool ends = PETSC_FALSE;
+                     if (n >= 0 && n < n_cells_[d]) {
+                        PetscInt nijk[3] = {i, j, k};
+                        nijk[d] = n;
+                        const PetscInt gn = ((nijk[2] - gzs) * gym + (nijk[1] - gys)) * gxm + (nijk[0] - gxs);
+                        ends = (PetscBool)(PetscRealPart(flag_local[gn]) == 0.0);
+                     }
+                     else ends = side < 0 ? vacuum_lo_[d] : vacuum_hi_[d];
+                     if (ends) vs[1] += area[d];
+                  }
+               }
+            }
+         }
+      }
+      PetscCall(VecRestoreArrayRead(d_local_, &flag_local));
+   }
+
+   PetscCallMPI(MPIU_Allreduce(MPI_IN_PLACE, vs, 2, MPIU_REAL, MPIU_SUM, comm_));
+   *chord = vs[1] > 0.0 ? 4.0 * vs[0] / vs[1] : 0.0;
 
    PetscFunctionReturn(PETSC_SUCCESS);
 }
@@ -576,7 +707,7 @@ PetscErrorCode DSAPrecon::assemble_structured(const PetscScalar *sigma_t_h, cons
    // can reach a neighbour rank's cell. A void cell's D is ZERO, which no
    // real cell's can be - that is how a neighbour rank's void is seen
    PetscCall(VecGetArray(d_global_, &d_global_a));
-   for (PetscInt c = 0; c < local_cells_; c++) d_global_a[c] = void_h[c] ? 0.0 : 1.0 / (3.0 * sigma_t_h[c]);
+   for (PetscInt c = 0; c < local_cells_; c++) d_global_a[c] = d_cell_[c];
    PetscCall(VecRestoreArray(d_global_, &d_global_a));
    PetscCall(DMGlobalToLocal(da_, d_global_, INSERT_VALUES, d_local_));
 
@@ -705,10 +836,12 @@ PetscErrorCode DSAPrecon::assemble_plex(const PetscScalar *sigma_t_h, const Pets
 
    PetscFunctionBeginUser;
 
-   // A void cell's D is ZERO, the flag its neighbours see it by (the
-   // structured path's convention)
+   // A masked void cell's D is ZERO, the flag its neighbours see it by (the
+   // structured path's convention). A BRIDGED void's is staged NEGATIVE, so
+   // a neighbour - on this rank or another - can tell it is one: DG1 weights
+   // the faces touching a void (see assemble_plex_dg1); DG0 reads |D|
    PetscCall(VecGetArrayWrite(d_global_, &d_global_a));
-   for (PetscInt c = 0; c < local_cells_; c++) d_global_a[c] = void_h[c] ? 0.0 : 1.0 / (3.0 * sigma_t_h[c]);
+   for (PetscInt c = 0; c < local_cells_; c++) d_global_a[c] = (bridged_ && is_void_[c]) ? -d_cell_[c] : d_cell_[c];
    PetscCall(VecRestoreArrayWrite(d_global_, &d_global_a));
    PetscCall(VecScatterBegin(nb_scatter_, d_global_, d_nb_, INSERT_VALUES, SCATTER_FORWARD));
    PetscCall(VecScatterEnd(nb_scatter_, d_global_, d_nb_, INSERT_VALUES, SCATTER_FORWARD));
@@ -731,13 +864,13 @@ PetscErrorCode DSAPrecon::assemble_plex(const PetscScalar *sigma_t_h, const Pets
          continue;
       }
 
-      const PetscScalar d_c = 1.0 / (3.0 * sigma_t_h[c]);
+      const PetscScalar d_c = d_cell_[c];
       PetscScalar diag = volume_[c] * (sigma_t_h[c] - sigma_s_h[c]);
 
       for (PetscInt k = cell_face_offset_[c]; k < cell_face_offset_[c + 1]; k++) {
 
          const PetscReal d_own = face_distance_[2 * k];
-         const PetscScalar d_n = face_nb_[k] >= 0 ? d_nb_a[face_nb_[k]] : (PetscScalar)0.0;
+         const PetscScalar d_n = face_nb_[k] >= 0 ? PetscAbsScalar(d_nb_a[face_nb_[k]]) : (PetscScalar)0.0;
          if (face_nb_[k] >= 0 && d_n == 0.0) {
 
             // A face into a void: no coupling (not even the consistent D's
@@ -828,7 +961,7 @@ PetscErrorCode DSAPrecon::assemble_plex_dg1(const PetscScalar *sigma_t_h, const 
          continue;
       }
 
-      const PetscScalar d_c = 1.0 / (3.0 * sigma_t_h[c]);
+      const PetscScalar d_c = d_cell_[c];
       const PetscScalar sigma_a = sigma_t_h[c] - sigma_s_h[c];
 
       for (PetscInt i = 0; i < nb; i++) {
@@ -843,11 +976,12 @@ PetscErrorCode DSAPrecon::assemble_plex_dg1(const PetscScalar *sigma_t_h, const 
 
       for (PetscInt k = cell_face_offset_[c]; k < cell_face_offset_[c + 1]; k++) {
 
-         // A face into a void (D = 0 flags one) keeps its COO slots, zeroed,
-         // and is treated as a vacuum face below - as if the mesh stopped
-         // there
+         // A face into a masked void (D = 0 flags one) keeps its COO slots,
+         // zeroed, and is treated as a vacuum face below - as if the mesh
+         // stopped there. A bridged void's D is staged negative
          const PetscBool has_nb = (PetscBool)(face_nb_[k] >= 0);
-         const PetscScalar d_n = has_nb ? d_nb_a[face_nb_[k]] : (PetscScalar)0.0;
+         const PetscScalar d_n_raw = has_nb ? d_nb_a[face_nb_[k]] : (PetscScalar)0.0;
+         const PetscScalar d_n = PetscAbsScalar(d_n_raw);
          const PetscBool interior = (PetscBool)(has_nb && d_n != 0.0);
          if (has_nb && !interior) {
             for (PetscInt i = 0; i < nb; i++) {
@@ -873,16 +1007,25 @@ PetscErrorCode DSAPrecon::assemble_plex_dg1(const PetscScalar *sigma_t_h, const 
          if (interior) {
 
             const PetscReal h_n = 2.0 * face_distance_[2 * k + 1];
-            const PetscReal kappa = PetscMax(0.5 * mip_penalty_ * PetscRealPart(d_c / h_c + d_n / h_n), 0.25);
+            // A face touching a bridged void takes the weighted interior
+            // penalty (see the header): both sides' D replaced by the face's
+            // harmonic D, in the averages and in kappa. Symmetric, as both
+            // cells compute the same D_h; plain MIP everywhere else
+            PetscScalar dc_f = d_c, dn_f = d_n;
+            if (bridged_ && (is_void_[c] || PetscRealPart(d_n_raw) < 0.0)) {
+               dc_f = 2.0 * d_c * d_n / (d_c + d_n);
+               dn_f = dc_f;
+            }
+            const PetscReal kappa = PetscMax(0.5 * mip_penalty_ * PetscRealPart(dc_f / h_c + dn_f / h_n), 0.25);
 
             for (PetscInt i = 0; i < nb; i++) {
                const PetscScalar m_i = scale * f_own[i * nb];
                PetscScalar *nbr = &coo_v_[cell_entry_offset_[c] + i * row_len + q * nb];
                for (PetscInt j = 0; j < nb; j++) {
-                  own[i][j] += kappa * scale * f_own[i * nb + j] - 0.5 * d_c * g[j] * m_i \
-                     - 0.5 * d_c * g[i] * scale * f_own[j];
-                  nbr[j] = -kappa * scale * f_up[i * nb + j] - 0.5 * d_n * gn[j] * m_i \
-                     + 0.5 * d_c * g[i] * scale * f_up[j];
+                  own[i][j] += kappa * scale * f_own[i * nb + j] - 0.5 * dc_f * g[j] * m_i \
+                     - 0.5 * dc_f * g[i] * scale * f_own[j];
+                  nbr[j] = -kappa * scale * f_up[i * nb + j] - 0.5 * dn_f * gn[j] * m_i \
+                     + 0.5 * dc_f * g[i] * scale * f_up[j];
                }
             }
             q++;
