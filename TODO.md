@@ -44,8 +44,8 @@ hex cube, triangles and tets go 34 / 32 / 40 / 43 -> 6 / 7 / 8 / 9 (DG0+DSA now 
 5 on all four meshes' DG0 twins, through the consistent D). Next up: 6b CG-SUPG (Phase
 6), or one of the open questions carried as checkboxes since 27 Sep 2026: per-group
 cached Mat/KSP for the DSA (in the Phase 4 postscript 5 DSA notes; void masking, the
-other, is done), and the follow-ups the 27 Sep 2026 round left (a stronger cheap
-DSA inner solve, the simplex +1; the list at the end of Phase 6 - the void-bridging
+other, is done), and the follow-ups the 27 Sep 2026 round left (the simplex +1 - a
+stronger cheap DSA inner solve was looked at and closed with no change; the list at the end of Phase 6 - the void-bridging
 DSA operator and `-precon_ref_shift` on partly-void groups from it are done). Both Phase 6a things to watch are
 closed (27 Sep 2026): simplex iteration counts creeping up with refinement is
 explained and gone under the current defaults - it was PCAIR's row-relative R drop on
@@ -681,11 +681,22 @@ now direct and tested (see that item).
     (the one-reference variant: 0.2, FAIL). All 35 pre-existing ref-shift recipes'
     residual histories are identical to main's. Counts and pins: docs/dev/testing.md,
     "Voids" under the reference-shifted pmat.
-  - [ ] GAMG on the DSA diffusion matrix is the remaining limit in the thick diffusion
+  - [x] GAMG on the DSA diffusion matrix is the remaining limit in the thick diffusion
     limit under the consistent D: with an exact inner solve eps 1e-4 takes 4, and two
     V-cycles (`-dsa_ksp_type richardson -dsa_ksp_max_it 2`) take 64^2 from 11 to 7, but
     double the DSA cost, so one V-cycle stays the default. A cheaper stronger inner
-    solve is the item (PR #17).
+    solve was the item (PR #17). CLOSED 27 Sep 2026, no change: a sweep of the repo's
+    serial `-precon_dsa` recipes found no cheap win. The GAMG knobs either cost as much
+    as a second V-cycle (no aggressive coarsening doubles the operator complexity) or
+    are mixed/neutral (threshold, W-cycle, pbjacobi). PFLARE GMRES-polynomial
+    smoothers (arnoldi/newton, `pflareinv`) fail on heterogeneous problems on the raw
+    matrix - the polynomial is built on unscaled A - and need a symmetric Jacobi
+    scaling of the DSA matrix (plus the near null space rescaled to match); scaled,
+    they beat Chebyshev by only ~5% at the same SpMV count, a margin that vanishes by
+    degree 4, and a second V-cycle does as well. On these small problems (3-4 GAMG
+    levels) the smoother is not where the gap to an exact solve is; if the DSA solve
+    matters at scale, the clean route is a Jacobi-preconditioned polynomial inside
+    PFLARE rather than scaling the matrix (GAMG is not exactly scaling-invariant).
   - [ ] A constant +1 iteration on simplices against quads/hexes at ratio 1 (not a
     creep): with an exact (LU) streaming inverse the counts match, so it is PCAIR's
     approximation. `-sub_1_pc_air_strong_threshold 0.25` or
