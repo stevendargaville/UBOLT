@@ -35,12 +35,17 @@ hex cube, triangles and tets go 34 / 32 / 40 / 43 -> 6 / 7 / 8 / 9 (DG0+DSA now 
 5 on all four meshes' DG0 twins, through the consistent D). Next up: 6b CG-SUPG (Phase
 6), or one of the open questions carried as checkboxes since 27 Sep 2026: per-group
 cached Mat/KSP for the DSA (in the Phase 4 postscript 5 DSA notes; void masking, the
-other, is done), and a Phase 6a thing to watch,
-triangle L-infinity below first order (to re-measure under ghost-flux first). The other
-one, simplex iteration counts creeping up with refinement, is explained and gone under
-the current defaults (27 Sep 2026): it was PCAIR's row-relative R drop on the old
-unscaled Dirichlet-cell pmat, which either ghost-flux or the element-block scaling
-removes; simplices now sit at most one over quads/hexes, flat in n; the
+other, is done), and the follow-ups the 27 Sep 2026 round left (a void-bridging DSA
+operator, `-precon_ref_shift` on partly-void groups, a stronger cheap DSA inner solve,
+the simplex +1; the list at the end of Phase 6). Both Phase 6a things to watch are
+closed (27 Sep 2026): simplex iteration counts creeping up with refinement is
+explained and gone under the current defaults - it was PCAIR's row-relative R drop on
+the old unscaled Dirichlet-cell pmat, which either ghost-flux or the element-block
+scaling removes; simplices now sit at most one over quads/hexes, flat in n - and
+triangle L-infinity below first order is not a defect: the code matches a Python
+model of upwind DG0 to 7 digits, and the deficit comes from PETSc's simplex box being
+a different, non-nested diagonal pattern at each n (nested refinement of one box gives
+first order). Details in the Phase 6a items. The
 half-quadrature transposed PC stays blocked on PFLARE's PCAIR `PCApplyTranspose`. The
 reflective-face re-pins were swept in the 64-bit CI image (one +1,
 `cube_10_inf_medium_ghost -matfree_removal` pinned 22); the block-scaled plex pins are
@@ -417,9 +422,11 @@ now direct and tested (see that item).
     (12% better per cell), tets 8% better per cell than hexes; the Dirichlet-cell
     boundary treatment costs nothing visible in L2 (1.5% at n = 8, 0.05% at n = 256).
     Two things to watch: (i) the triangle L-INFINITY error converges below first order
-    (0.72-0.91 between the finest levels), largest along the reflective walls —
-    unexplained (a guess that every square is split along the same diagonal is refuted:
-    PETSc's simplex box mixes the two diagonal directions); (ii) tets on the pure absorber at rtol 1e-12 take 6 -> 19 -> 22
+    (0.72-0.91 between the finest levels), largest along the reflective walls (a guess
+    that every square is split along the same diagonal is refuted: PETSc's simplex box
+    mixes the two diagonal directions) — EXPLAINED 27 Sep 2026, not a defect: the
+    scheme's pointwise sensitivity to the irregular diagonal pattern, see the item
+    below; (ii) tets on the pure absorber at rtol 1e-12 take 6 -> 19 -> 22
     iterations for n = 8 -> 32 where hexes take 5 -> 7 (at the default rtol the counts
     are normal, 5-6). Iteration counts on simplices creep up ~1 per 4x refinement (2D
     ratio 1: 6, 7, 7, 8 at n = 30..240; tets 6, 7, 8) where quads/hexes match the
@@ -432,12 +439,52 @@ now direct and tested (see that item).
     costs ~4% of a serial run in host-side create and 8-13% more peak memory than the
     DMDA on the same mesh; PCAIR setup is 85-95% of both. Debug-arch sweep: every count
     equals the opt pin at np 1 and 2, no leaks under -malloc_dump.
-  - [ ] Triangle L-infinity below first order (thing to watch (i) above, 0.72-0.91
-    between the finest levels, largest along the reflective walls; unexplained). That
-    study ran under Dirichlet-cell, whose reflective rows carry an O(h) error the
-    26 Sep 2026 ghost-flux reflective-face fix removed (see the DG0 mixed-corner item
-    under the ghost-flux postscript) - so re-run the triangle convergence study under
-    ghost-flux first; it may already be explained.
+  - [x] Triangle L-infinity below first order (thing to watch (i) above, 0.72-0.91
+    between the finest levels, largest along the reflective walls). That study ran
+    under Dirichlet-cell, whose reflective rows carry an O(h) error the 26 Sep 2026
+    ghost-flux reflective-face fix removed. CLOSED 27 Sep 2026 - NOT a defect, a
+    property of upwind DG0 on PETSc's simplex box family. Re-run of the same E1 study
+    (pure absorber, left inflow, reflective y, S4, exact SN cell averages, rtol 1e-12,
+    opt arch; scripts + logs beside the Phase 6a report,
+    `results/experiments_2026-09-27_tri_linf/`), ghost-flux default, orders between
+    successive n = 8..256:
+
+    | cell-average error | L1 | L2 | L-inf |
+    |---|---|---|---|
+    | quads (plex = FD to every digit) | 0.89 0.95 0.97 0.99 0.99 | 0.88 0.94 0.97 0.98 0.99 | 0.67 0.82 0.91 0.95 0.98 |
+    | triangles (PETSc box) | 0.91 0.95 0.97 0.98 0.97 | 0.88 0.94 0.95 0.98 0.97 | 0.69 0.94 0.89 0.85 0.81 |
+    | hexes S2, n = 8..32 | 0.93 0.96 | 0.91 0.96 | 0.76 0.88 |
+    | tets S2, n = 8..32 | 0.87 0.93 | 0.87 0.93 | 0.74 0.87 |
+
+    (triangles, n = 256: L1 3.99e-3, L2 6.07e-3, L-inf 2.78e-2; the Dirichlet-cell run
+    had L-inf 3.21e-2.) Findings: (1) the maximum is no longer on the reflective walls:
+    from n = 32 up it sits in a cell with NO boundary face, in the inflow boundary
+    layer (x = 0.02-0.06, the S4 decay length is mu/sigma = 0.35), at a y that jumps
+    between levels. (2) The code is not the cause: a 150-line Python model of textbook
+    upwind DG0 with ghost-flux walls (each +-eta pair solved directly) reproduces
+    UBOLT's triangle L1/L2/L-inf to all 7 printed digits at n = 16, 64 and 256.
+    (3) Splitting the error into its x-column mean (the smooth part; the exact
+    solution depends on x only) and the rest: the column mean is FIRST order on every
+    mesh (0.94, 0.96, 0.97 at n = 256, 512, 1024 on the PETSc box); the L-inf deficit is
+    all in the mesh-irregularity fluctuation. (4) PETSc's simplex box is Triangle's
+    Delaunay of a lattice whose squares are all cocircular, so each diagonal is an
+    arbitrary tie-break: ~70% one direction, in streaks along x, NOT nested, and its
+    statistics drift with n ('/' fraction 0.22 -> 0.31, row-to-row correlation +0.08
+    -> -0.25 from n = 16 to 1024) - successive levels are different mesh families.
+    The model, to n = 1024 (2M triangles), L-inf orders 256 -> 512 -> 1024: PETSc box
+    0.82, 0.81 (L2 0.97, 0.93); every square split the same way 0.96, 0.97; i.i.d.
+    random diagonals 0.86, 0.88 (rising; the fluctuation's RMS goes at 0.97/0.98, the
+    max of more cells is the extreme-value lag); NESTED regular refinement of PETSc's
+    own n = 16 box 0.95, 0.96, 0.97 (from n = 64: 0.83, 0.90, 0.92). So on any
+    consistent refinement family L-inf goes to first order; the PETSc-box sequence
+    stays at ~0.8 because it is not one. This is the known picture for upwind DG0:
+    only O(h^1/2) is guaranteed on general meshes (Johnson & Pitkaranta 1986, sharp by
+    Peterson 1991), first order needs mesh structure (Cockburn, Dong & Guzman 2008),
+    and the first order seen in L1/L2 is supraconvergence that is weakest pointwise.
+    Consequences: a simplex convergence study should refine one coarse mesh (nested),
+    not rebuild PETSc's box at each n; DG1 is second order on the same PETSc boxes (L2
+    1.93-2.01, 25 Sep 2026 study), so there is nothing to fix at DG0. No code change,
+    no regression test (no defect).
   - [x] Iteration counts creeping up on simplices (thing to watch (ii) above) -
     EXPLAINED and GONE under the current defaults (27 Sep 2026, opt arch). Re-measured
     (ghost-flux, element-block PCAIR scaling, block-Jacobi removal): the absorber at
@@ -586,6 +633,26 @@ now direct and tested (see that item).
   centroid); the infinite-medium closed form on triangles and tets through reflective
   faces; layout, geometry and error-path checks; pinned iterations on the plex twins of
   the structured recipes and on a Gmsh file with Cell Sets and Face Sets.
+- Open questions left by the 27 Sep 2026 round (PRs #14, #15, #17; the findings are in
+  their ticked items - the void-masking and consistent-D ones under the Phase 4
+  postscript 5 DSA notes, the simplex one in the Phase 6a item above):
+  - [ ] A void-bridging DSA diffusion operator: the void mask decouples void cells, so
+    the correction does not couple regions a void separates, and streaming across the
+    void is left to the removal and PCAIR stages (PR #14). The gap to beat is one
+    iteration: an unmasked tiny `Sigma_t` (1e-3) in the 2D channel takes 7 under the
+    consistent D against the mask's 8 (docs/dev/testing.md, "DSA with voids").
+  - [ ] `-precon_ref_shift` still refuses a group that is void in only some cells - a
+    check older than the DSA void mask, and separate from it (PR #14).
+  - [ ] GAMG on the DSA diffusion matrix is the remaining limit in the thick diffusion
+    limit under the consistent D: with an exact inner solve eps 1e-4 takes 4, and two
+    V-cycles (`-dsa_ksp_type richardson -dsa_ksp_max_it 2`) take 64^2 from 11 to 7, but
+    double the DSA cost, so one V-cycle stays the default. A cheaper stronger inner
+    solve is the item (PR #17).
+  - [ ] A constant +1 iteration on simplices against quads/hexes at ratio 1 (not a
+    creep): with an exact (LU) streaming inverse the counts match, so it is PCAIR's
+    approximation. `-sub_1_pc_air_strong_threshold 0.25` or
+    `-sub_1_pc_air_inverse_sparsity_order 2` remove it at small n but it returns at
+    larger n, so the defaults stay (PR #15).
 
 ## Phase 7 — deferred
 - [ ] CI: clone PFLARE's docker model + docs/dev/ci.md
