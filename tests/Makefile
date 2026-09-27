@@ -421,7 +421,7 @@ run_tests_short_serial:
 	@echo "Test 3D cube with a void duct with the void-masked DSA correction"
 	./transportk -problem problems/cube_void_duct.json -precon_dsa -ksp_max_it 9
 	@echo "Test 2D unstructured quad box with a void channel WITHOUT the DSA correction (the reference)"
-	./transportk -problem problems/plex_box_void_channel.json -ksp_max_it 25
+	./transportk -problem problems/plex_box_void_channel.json -ksp_max_it 26
 	@echo "Test 2D unstructured quad box with a void channel with the void-masked DSA correction"
 	./transportk -problem problems/plex_box_void_channel.json -precon_dsa -ksp_max_it 12
 	@echo "Test 2D unstructured quad box at DG1 with a void channel WITHOUT the DSA correction (the reference)"

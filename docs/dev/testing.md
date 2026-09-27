@@ -1315,7 +1315,7 @@ S4, all faces vacuum) with a `Sigma_t = 0` region painted in, run both ways:
 | `slab_void_gap.json` (100) | x in [4, 6], splits the slab | 23 | 12 / 13 | 11 |
 | `box_void_channel.json` (50x50) | channel in from the left face | 26 | 12 / 12 | 11 |
 | `cube_void_duct.json` (10^3) | 2x2-cell duct in from the left face | 21 | 9 / 9 | 8 |
-| `plex_box_void_channel.json` (quads, DG0) | as the box | 25 | 12 / 12 | 11 |
+| `plex_box_void_channel.json` (quads, DG0) | as the box | 25 (pinned 26, gnu_opt CI) | 12 / 12 | 11 |
 | `plex_box_void_channel_dg1.json` (quads, DG1) | as the box | 34 | 10 / 10 | 6 |
 
 Pinned at the local opt counts (np=2 of the no-DSA references not pinned). The
