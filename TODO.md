@@ -24,7 +24,12 @@ DMPlex, PR #2) and the ghost-flux vacuum treatment as the default (PR #4). DSA n
 works at both orders on the plex: at DG0 every quad/hex twin takes the structured DSA
 count and simplices go 35 -> 10 / 31 -> 9; at DG1 (27 Sep 2026) the diffusive quad box,
 hex cube, triangles and tets go 34 / 32 / 40 / 43 -> 6 / 7 / 8 / 9, each at or below
-the same mesh's DG0+DSA count. Next up: 6b CG-SUPG (Phase 6); the
+the same mesh's DG0+DSA count. Next up: 6b CG-SUPG (Phase 6), or one of the open
+questions carried as checkboxes since 27 Sep 2026: a discretisation-consistent DSA
+diffusion coefficient (the top one), void masking and per-group cached Mat/KSP for the
+DSA (all three in the Phase 4 postscript 5 DSA notes), and two Phase 6a things to watch,
+triangle L-infinity below first order and simplex iteration counts creeping up with
+refinement (both to re-measure under ghost-flux first); the
 half-quadrature transposed PC stays blocked on PFLARE's PCAIR `PCApplyTranspose`. The
 reflective-face re-pins were swept in the 64-bit CI image (one +1,
 `cube_10_inf_medium_ghost -matfree_removal` pinned 22); the block-scaled plex pins are
@@ -414,6 +419,17 @@ now direct and tested (see that item).
     costs ~4% of a serial run in host-side create and 8-13% more peak memory than the
     DMDA on the same mesh; PCAIR setup is 85-95% of both. Debug-arch sweep: every count
     equals the opt pin at np 1 and 2, no leaks under -malloc_dump.
+  - [ ] Triangle L-infinity below first order (thing to watch (i) above, 0.72-0.91
+    between the finest levels, largest along the reflective walls; unexplained). That
+    study ran under Dirichlet-cell, whose reflective rows carry an O(h) error the
+    26 Sep 2026 ghost-flux reflective-face fix removed (see the DG0 mixed-corner item
+    under the ghost-flux postscript) - so re-run the triangle convergence study under
+    ghost-flux first; it may already be explained.
+  - [ ] Iteration counts creeping up on simplices (thing to watch (ii) above: tets on
+    the pure absorber at rtol 1e-12 take 6 -> 19 -> 22 for n = 8 -> 32 where hexes take
+    5 -> 7, and simplex counts rise ~1 per 4x refinement where quads/hexes are flat).
+    Unexplained; re-measure under the ghost-flux default and the element-block PCAIR
+    scaling (both landed since) before digging.
   - Seen in the report figures (23 Sep 2026): a quarter box with reflective faces differs
     from the full box's quadrant by O(h) — max 0.080 / 0.037 / 0.018 at n = 25 / 50 / 100
     on a flux of order 10, unchanged by rtol — on the STRUCTURED and the unstructured
@@ -914,8 +930,10 @@ now direct and tested (see that item).
     composite's residual updates onto the amat (the fix in the bullet above) while PCAIR
     is still set up on a streaming-only pmat — unestablished. This matters because Phase 5
     is exactly the streaming-only-pmat direction, so the two land on each other.
-  - Also open: region masking for voids (`sigma_t <= 0` is a hard error today, as in the
-    paper's future work), and per-group cached Mat/KSP instead of one refilled pair.
+  - [ ] Region masking for voids in the DSA diffusion operator (`sigma_t <= 0` is a hard
+    error today, as in the paper's future work).
+  - [ ] Per-group cached DSA Mat/KSP instead of one refilled pair (a local change inside
+    `DSAPrecon`, see its header; only worth it if a sweep revisits groups).
   - **Literature benchmark study run (Aug 2026)** — six studies (crooked pipe per
     Southworth/Holec/Haut NSE 195, Warsa-style periodic horizontal interface, Brunner-style
     lattice, per-realization random media, Larsen diffusion-limit epsilon sweep, and the
@@ -930,8 +948,8 @@ now direct and tested (see that item).
     solvable; random media are a strength (2.5x flat reduction, seed-to-seed spread
     compressed from ~20% to <= 2 iterations). The additive composite lost every one of
     100+ paired comparisons — settled as non-viable here.
-  - **The discretisation-consistent D is now the top open item, with targets in three
-    regimes**: the epsilon sweep doubles per decade below 1e-2 (67 at eps 1e-4, 64^2)
+  - [ ] **A discretisation-consistent DSA diffusion coefficient - the top open item,
+    with targets in three regimes** (the "Open:" note above is the diagnosis): the epsilon sweep doubles per decade below 1e-2 (67 at eps 1e-4, 64^2)
     where Haut et al.'s O(eps) theory says flat; the crooked-pipe level is ~80 vs the
     paper's ~30; and the E4 exact-LU cross-check is a null result in the worst corner
     (222 -> 225 on set 5, sigma_a = 0), so the bottleneck is the correction's fidelity,
