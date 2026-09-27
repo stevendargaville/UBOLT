@@ -1,0 +1,34 @@
+{
+ "_comment": "Unstructured DG0 on tetrahedra: a 12x12x12 simplex box of side 0.5 (PETSc's box mesher, via CTetgen; the half-size box gives the cells the optical and streaming weight of a unit box at n = 24 without the cost), S2, a pure absorber (sigma_t 2, no scattering, no source), 4 pi inflow on the left face, vacuum right, reflective y and z faces, under the OPT-IN Dirichlet-cell vacuum treatment. The regression file for the old simplex iteration creep: without the element-block scaling of PCAIR's pmat (-precon_block_scale 0) PCAIR's relative R drop discards the couplings next to the identity rows and the count at rtol 1e-12 climbs with refinement (6 here with the scaling, 12 without); see docs/dev/testing.md, 'Unstructured iteration counts'.",
+ "dimension": 3,
+ "mesh": {
+  "type": "unstructured",
+  "simplex": true,
+  "n_cells": [12, 12, 12],
+  "lengths": [0.5, 0.5, 0.5]
+ },
+ "vacuum_treatment": "dirichlet_cell",
+ "sn_order": 2,
+ "materials": {
+  "n_groups": 1,
+  "materials": [
+   {
+    "id": 0,
+    "name": "absorber",
+    "Sigma_t": [2.0],
+    "Sigma_s": [
+     [0.0]
+    ],
+    "Source": [0.0]
+   }
+  ]
+ },
+ "boundary_conditions": {
+  "left": {"type": "vacuum", "inflow": 12.566370614359172},
+  "right": "vacuum",
+  "front": "reflect",
+  "back": "reflect",
+  "bottom": "reflect",
+  "top": "reflect"
+ }
+}

@@ -938,8 +938,27 @@ pipe, box_layers, cube_diffusive, a tau-1 absorber) it goes down; see TODO.md.
 | `plex_tri_30_inf_medium_ghost`, `-check_inf_medium -ksp_rtol 1e-12` (ghost-flux right + top, reflect left + bottom; re-measured 2026-09-26) | 12 (unscaled 11) | 12 | — | |
 | the same, `-matfree_removal` | 33 | — | — | |
 | `plex_tet_6_inf_medium_ghost`, `-check_inf_medium -ksp_rtol 1e-12` (ghost-flux right + back + top; measured 2026-09-25) | 11 | 11 | — | |
+| `plex_tet_12_absorber_dirichlet_cell`, `-ksp_rtol 1e-12` (a 0.5-side box of 10368 tets, pure absorber, Dirichlet-cell; added 2026-09-27) | 6 (unscaled 12) | 6 (unscaled 12, not a recipe) | — | guards the element-block scaling against the old simplex creep, see below |
 | `plex_decades4`, `-matfree_removal -precon_ref_shift -precon_ref_k 4` | 4, 6, 15, 28 (unscaled 29; 29 in the OpenMP CI image, pinned 29) | 4, 6, 15, 29 | `box_decades4`: 4, 6, 15, 29 both | Dirichlet-cell 4, 6, 15, 30 on both sides |
 | `plex_decades4`, `-matfree_removal -precon_ref_shift` (default k = 2) | 7, 8, 27, 51 | 7, 8, 27, 51 | `box_decades4`: 7, 8, 27, 51 both | Dirichlet-cell plex 7, 9, 24, 48 serial and 7, 8, 24, 48 otherwise |
+
+**The simplex iteration creep (explained 2026-09-27).** The Phase 6a study saw tets on a
+pure absorber at rtol 1e-12 take 6 / 19 / 22 at n = 8 / 16 / 32 (hexes 5 / 6 / 7) and
+simplex counts rise ~1 per 4x refinement. Those counts come back exactly with
+`"vacuum_treatment": "dirichlet_cell"` and `-precon_block_scale 0`; ghost-flux alone or
+the block scaling alone gives 6 / 7 / 7. The cause is PCAIR's R drop (`-pc_air_r_drop`,
+row-relative): R = -A_cf A_ff^{-1} carries each F row's 1/diagonal, so the drop is not
+invariant under a row scaling, and beside the Dirichlet identity rows (diagonal 1) the
+couplings through interior F points (diagonal ~1/h) are thrown away - `-sub_1_pc_air_r_drop
+0` restores 7 on the unscaled n = 16 tets, no other PCAIR knob does. It is not cycles in the
+upwind graph: PETSc's simplex boxes have none (per angle, reflective couplings aside).
+`plex_tet_12_absorber_dirichlet_cell` shrinks the box to 0.5 so the effect shows at a
+recipe-sized mesh. Under the defaults simplices sit at most one iteration over quads/hexes
+and are flat in n (tables in TODO.md, Phase 6); with an exact streaming inverse the two
+take the same count, so that +1 is PCAIR's approximation on simplices. A structured
+`dirichlet_cell` problem runs unscaled by default and meets a milder form of the same
+drop (the 128x128 S4 absorber at rtol 1e-12: 8 Dirichlet-cell, 7 with
+`-precon_block_scale`, 7 under ghost-flux).
 
 A multigroup row pins the max over its groups (29 - the OpenMP CI image's, local opt
 is 28 - and 51), as everywhere else. The OpenMP image was swept on every plex recipe
