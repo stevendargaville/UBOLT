@@ -63,9 +63,10 @@ without which DG1's multigrid hierarchy stops coarsening) — the choice when ac
 default ghost-flux vacuum treatment only. It carries more per-row bookkeeping (a face list per cell instead
 of a fixed stencil). `-precon_dsa` works at DG0 exactly as on the structured
 backends (a diffusive box takes the structured count; triangles and tets about the
-same), but at DG1 it corrects only the cell averages and pays far less (32 -> 25 on a
-diffusive hex cube, nothing on the quad box), so a diffusive problem that needs DG1
-accuracy will cost several times the DG0 iteration count for now. And reflective faces must be
+same), and at DG1 through an interior penalty diffusion operator in the DG1 space
+itself, which does even better (a diffusive quad box 34 -> 6, hexes 32 -> 7, against
+11 and 8 for DG0 with DSA; its penalty constant is `-dsa_mip_penalty`, 4, and rarely
+worth touching). And reflective faces must be
 axis-aligned: a mesh file can only reflect on the straight x/y/z parts of its
 boundary.
 

@@ -1,5 +1,5 @@
 {
- "_comment": "plex_tri_diffusive.json at DG1 (\"order\": 1): the cell-average DSA correction on triangles (needs triangle).",
+ "_comment": "plex_tri_diffusive.json at DG1 (\"order\": 1): the interior penalty (MIP) DSA on triangles (needs triangle).",
  "dimension": 2,
  "mesh": {
   "type": "unstructured",

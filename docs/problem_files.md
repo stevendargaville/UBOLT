@@ -201,7 +201,8 @@ group sweep, `-matfree_removal`, `-precon_stream`, `-precon_ref_shift`,
 `-diag_scale`, `-check_matfree`, `-check_inf_medium` - works unchanged. Only
 2D and 3D: a 1D unstructured mesh is an error (the structured slab IS the 1D
 backend). `-precon_dsa` builds a two-point-flux diffusion operator on the
-cells (at DG1 it corrects the cell averages only - see `docs/problem_setup.md`).
+cells at DG0, and an interior penalty one in the DG1 space at DG1 (see
+`docs/problem_setup.md`).
 One solver default differs: the
 streaming stage's PCAIR is built on the element-block-scaled pmat
 (`-precon_block_scale`, ON by default here at both orders and off on the

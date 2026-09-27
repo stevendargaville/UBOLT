@@ -41,8 +41,9 @@ Codebase map
   in `D^{-1} A`, invariance under a row scaling, `apply()` against the scaled matrix, and a
   reuse `scale()` bumping the matrix state a PC compares, which fails only at -n 2+); and
   the plex DSA — its diffusion matrix = the twin's structured one times the cell volume,
-  `P D^-1 R` to rounding with tight inner solves, and at DG1 the DG0 correction on basis 0
-  with exactly zero on the slopes. `tests/meshes/`: mesh files the problem
+  `P D^-1 R` to rounding with tight inner solves, and at DG1 the interior penalty matrix
+  symmetric, a linear field mapped to `V sigma_a u` on interior cells to rounding, and a
+  round trip through `apply()`. `tests/meshes/`: mesh files the problem
   files name (a hand-written Gmsh 2.2 `.msh` today).
   `tests/verify_quadraturek.kokkos.cxx`: the quadrature sets themselves, against the
   moment conditions that define them — needed because they are generated, not tabulated.
@@ -121,7 +122,7 @@ Codebase map
   face must be AXIS-ALIGNED (PETSC_ERR_SUP otherwise); materials by centroid
   `paint_boxes`, "Cell Sets" `paint_cell_sets`, or both layered via `paint_boxes_over`.
   DSA through `DSAPrecon`'s plex overload (a two-point-flux operator off the backend's
-  host face data, `face_*_host()`; at DG1 cell averages only, which pays little). DG1: a MODAL basis
+  host face data, `face_*_host()`; at DG1 an interior penalty operator in the DG1 space). DG1: a MODAL basis
   orthonormal on each cell (phi_0 = 1, the linear ones through the Cholesky factor of the
   cell's second moments from a fan of simplices, exact for planar faces), so the mass
   matrix is the identity and removal/scatter/source stay per node — the source lands on
@@ -145,9 +146,10 @@ Codebase map
   per-backend `create` overloads like the streaming term: a dof-1 DMDA twin + a star on
   the structured ones; on `UnstructuredDG` a two-point flux per face, assembled
   VOLUME-WEIGHTED (SPD where volumes vary, the restricted moment scaled by V to match),
-  which on a quad/hex box is exactly V times the structured matrix. At DG1 it restricts
-  basis 0's rows and corrects basis 0 only - NOT the DG1 thick diffusion limit, so it pays
-  little there; a DG1-consistent operator is the open item in TODO.md),
+  which on a quad/hex box is exactly V times the structured matrix. At DG1 the diffusion
+  unknown is DG1 too: the MIP interior penalty form (Wang & Ragusa) on the backend's
+  modal basis, one unknown per (cell, basis) node, block size n_basis for GAMG, every
+  node restricted and corrected; penalty constant `-dsa_mip_penalty`, 4 by default),
   `ElementBlockInverse` (the inverse of each (cell, angle) n_basis x n_basis element
   block of a MATAIJKOKKOS matrix, read straight off its device CSR — strided by
   n_angles under layout A, so not PETSc's contiguous-block inverse — plus `D^{-1} x` and

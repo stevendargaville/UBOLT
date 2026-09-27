@@ -229,6 +229,17 @@ public:
    const std::vector<PetscInt> &face_neighbour_row_host() const { return face_neighbour_row_h_; }
    const std::vector<PetscInt> &face_label_host() const { return face_label_h_; }
    const std::vector<PetscReal> &face_distance_host() const { return face_distance_h_; }
+   // DG1 only (empty at order 0), host copies of the device face matrices and
+   // gradients above in the same flat layouts, plus
+   //  face_neighbour_grad_host: n_cell_faces * nb * 3, ((k * nb + j) * 3 + d),
+   //                            grad phi_j of the NEIGHBOUR across interior face
+   //                            slot k (an overlap ghost's too), zero on a
+   //                            boundary face
+   // (what DSAPrecon's DG1 interior penalty operator is built from)
+   const std::vector<PetscScalar> &face_own_host() const { return face_own_h_; }
+   const std::vector<PetscScalar> &face_up_host() const { return face_up_h_; }
+   const std::vector<PetscScalar> &basis_grad_host() const { return basis_grad_h_; }
+   const std::vector<PetscScalar> &face_neighbour_grad_host() const { return face_nb_grad_h_; }
 
    // Local cell k is the k-th OWNED cell in DMPlex point order - the order
    // CheckPlexLayout asserts the global numbering follows. This is its point
@@ -305,6 +316,11 @@ private:
    std::vector<PetscInt> face_neighbour_row_h_;
    std::vector<PetscInt> face_label_h_;
    std::vector<PetscReal> face_distance_h_;
+   // DG1 only
+   std::vector<PetscScalar> face_own_h_;
+   std::vector<PetscScalar> face_up_h_;
+   std::vector<PetscScalar> basis_grad_h_;
+   std::vector<PetscScalar> face_nb_grad_h_;
 
    PetscScalarKokkosView omega_d_;
    PetscIntKokkosView cell_face_offset_d_;
