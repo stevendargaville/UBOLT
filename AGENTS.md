@@ -146,7 +146,12 @@ Codebase map
   per-backend `create` overloads like the streaming term: a dof-1 DMDA twin + a star on
   the structured ones; on `UnstructuredDG` a two-point flux per face, assembled
   VOLUME-WEIGHTED (SPD where volumes vary, the restricted moment scaled by V to match),
-  which on a quad/hex box is exactly V times the structured matrix. At DG1 the diffusion
+  which on a quad/hex box is exactly V times the structured matrix. D is
+  DISCRETISATION-CONSISTENT by default at DG0 and on the structured backends: each face
+  blends the upwind scheme's numerical diffusion `m h` (m = the quadrature's half-range
+  current, ~1/4) into the physical D as `(D^p + (m h)^p)^(1/p)`, p = 1.5
+  (`-dsa_consistent_d 0` / `-dsa_consistent_d_power`) — so the structured `create`s
+  need the concrete SN set, not just the `AngularQuadrature` base. At DG1 the diffusion
   unknown is DG1 too: the MIP interior penalty form (Wang & Ragusa) on the backend's
   modal basis, one unknown per (cell, basis) node, block size n_basis for GAMG, every
   node restricted and corrected; penalty constant `-dsa_mip_penalty`, 4 by default),
