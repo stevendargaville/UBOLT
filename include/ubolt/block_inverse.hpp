@@ -61,8 +61,9 @@ public:
    // backend, whose slot maps give a node's rows one pattern per (cell, angle)
    // - and it is checked, on the device, every call. MAT_INITIAL_MATRIX
    // duplicates A's pattern into *scaled; MAT_REUSE_MATRIX writes the values
-   // of an *scaled from an earlier call. Uses the blocks from the last setup(),
-   // which must have been off this same A
+   // of an *scaled from an earlier call, and bumps its state (the MPI wrapper's
+   // too, not only its seq parts) so a PC built on it sees the new values.
+   // Uses the blocks from the last setup(), which must have been off this same A
    PetscErrorCode scale(Mat A, MatReuse reuse, Mat *scaled) const;
 
    PetscInt block_size() const { return nb_; }

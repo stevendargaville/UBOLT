@@ -1303,7 +1303,10 @@ static PetscErrorCode CheckSlantedReflect(PetscBool ghost, PetscBool *ok)
 // block (read back on the host, through a plain AIJ copy), must be invariant
 // under a left row scaling of K (a pointwise row scaling is block-diagonal, so
 // it cancels in D^{-1} K - which also exercises the MAT_REUSE path on changed
-// values), and must agree with apply(): (D^{-1} K) x = D^{-1} (K x)
+// values), and must agree with apply(): (D^{-1} K) x = D^{-1} (K x). The
+// reuse must also change the scaled matrix's state - the WRAPPER's, which is
+// what a PC compares, at -n 2 as much as serially - and leave its
+// nonzerostate alone: otherwise a PC built on it silently keeps stale values
 static PetscErrorCode CheckBlockInverse(const char *where, const PhaseSpace &ps, Mat A, PetscBool *ok)
 {
    ElementBlockInverse blocks;
@@ -1329,8 +1332,13 @@ static PetscErrorCode CheckBlockInverse(const char *where, const PhaseSpace &ps,
    PetscCall(VecSetRandom(row_scale, rand));
    PetscCall(MatDiagonalScale(K, row_scale, NULL));
    PetscCall(blocks.setup(K));
+   MatState state_before, state_after;
+   PetscCall(MatGetState(Khat, &state_before));
    PetscCall(blocks.scale(K, MAT_REUSE_MATRIX, &Khat));
+   PetscCall(MatGetState(Khat, &state_after));
    PetscCall(MatConvert(Khat, MATAIJ, MAT_INITIAL_MATRIX, &H));
+   const PetscBool state_ok = (PetscBool)(state_after.state != state_before.state && \
+                                          state_after.nonzerostate == state_before.nonzerostate);
 
    PetscInt rstart, rend;
    PetscCall(MatGetOwnershipRange(H, &rstart, &rend));
@@ -1365,11 +1373,13 @@ static PetscErrorCode CheckBlockInverse(const char *where, const PhaseSpace &ps,
    PetscCall(VecNorm(y_scaled, NORM_INFINITY, &apply_diff));
    apply_diff /= norm_apply;
 
-   const PetscBool pass = (PetscBool)(block_err <= tol && invariance <= tol && apply_diff <= tol);
+   const PetscBool pass = (PetscBool)(block_err <= tol && invariance <= tol && apply_diff <= tol && state_ok);
    if (!pass) *ok = PETSC_FALSE;
    PetscCall(PetscPrintf(PETSC_COMM_WORLD, "  element-block inverse, %s (%" PetscInt_FMT " x %" PetscInt_FMT \
-      "): max |D^{-1}A block - I| %.3e, row-scaling invariance %.3e, |D^{-1}(Ax) - (D^{-1}A)x| %.3e (tol %.0e)%s\n", \
-      where, nb, nb, (double)block_err, (double)invariance, (double)apply_diff, (double)tol, pass ? "" : " FAILED"));
+      "): max |D^{-1}A block - I| %.3e, row-scaling invariance %.3e, |D^{-1}(Ax) - (D^{-1}A)x| %.3e (tol %.0e), " \
+      "reuse %s%s\n", where, nb, nb, (double)block_err, (double)invariance, (double)apply_diff, (double)tol, \
+      state_ok ? "bumps the state, not the pattern" : "DID NOT bump the state (or moved the pattern)", \
+      pass ? "" : " FAILED"));
 
    PetscCall(PetscRandomDestroy(&rand));
    PetscCall(VecDestroy(&x));

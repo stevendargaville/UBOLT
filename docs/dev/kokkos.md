@@ -210,8 +210,11 @@ rather than filling it through COO, the way PFLARE does:
   `PetscScalarMatConstKokkosView`: PETSc declares them without a memory space, which is a
   different C++ type from `PetscScalarKokkosView` even where the space is the same.
 - The MPI wrapper's own state is NOT bumped by writing its parts, and a PC compares the
-  wrapper's state, so a PC built on it would keep a stale setup. `PetscObjectStateIncrease`
-  is private; a `MAT_FINAL_ASSEMBLY` (nothing stashed, same pattern) is the public way.
+  wrapper's state, so a PC built on it would keep a stale setup. Bump it with
+  `PetscObjectStateIncrease` from `petsc/private/petscimpl.h` (as PFLARE does), included
+  in the src TU only, never from `include/ubolt/` - not a no-op `MAT_FINAL_ASSEMBLY`,
+  which runs host-side row checks and relies on PETSc internals to rebuild nothing.
+  `ElementBlockInverse::scale` does this, and `verify_plexk` pins it at -n 2.
 
 ## pflare / GPU dispatch
 - pflare dispatches on the matrix type at RUNTIME: PCAIR only takes its Kokkos/GPU paths
