@@ -114,6 +114,33 @@
 // rows are, which is what the cell-average operator this replaced lacked
 // (measured Sep 2026: that one took the quad box_diffusive twin 34 -> 34)
 //
+// VOIDS are masked out, on every backend and order. D = 1/(3 sigma_t) is not
+// defined where sigma_t = 0, and a diffusion correction has nothing to say
+// about a region with no collisions, so a cell whose group Sigma_t is at or
+// below -dsa_void_sigma_t (0 by default: only a true void) is taken out of
+// the correction altogether:
+// - its diffusion rows are the identity (times the cell volume on the plex,
+//   so the plex matrix is still V times the structured one), decoupled from
+//   every neighbour in both directions, so the matrix stays SPD;
+// - the restriction writes zero there and the prolongation corrects nothing
+//   there - the transport rows of a void cell are left entirely to the
+//   removal + PCAIR stages, which is where streaming is handled anyway;
+// - a face between a real cell and a void is a MARSHAK face for the real
+//   cell, exactly the vacuum boundary face (the MIP vacuum form at DG1): the
+//   correction treats what crosses into the void as leaked, the
+//   zero-incoming-current condition. Not zero Neumann: that would leave a
+//   non-absorbing island surrounded by void singular, where Marshak never is.
+//   Under the consistent D it is the BLENDED vacuum face, (D_c^p + (m h)^p)^(1/p)
+//   on the real cell's side, and the void's D = 0 flag is tested before any
+//   blend, so no m h coupling ever reaches a masked cell.
+// The mask is per GROUP (a material can be a void in some groups only), and
+// a void's D is stored as ZERO in the staged D vector - no real cell's D can
+// be - which is how a neighbour, on this rank or another, is seen to be void.
+// With no void cell the arithmetic is the unmasked operator's, bit for bit.
+// What this does NOT do is couple the regions a void separates: particles
+// streaming across it are the transport stages' business (a void-bridging
+// diffusion operator is the known refinement)
+//
 // Single Mat + single inner KSP, values-refilled per group by set_group().
 // Deliberately not folded into TransportSolver::refresh(): the solver has no
 // group context, so the driver calls set_group() where it points the terms at
@@ -162,6 +189,10 @@ public:
    // The inner diffusion solve, for a caller that wants to inspect it
    KSP ksp() const { return ksp_; }
 
+   // How many cells (global) the current group masks out as void - 0 until
+   // the first set_group()
+   PetscInt n_void_cells() const { return n_void_cells_; }
+
 private:
    // Everything that does not depend on the dimension: the dof-1 twin DMDA,
    // the diffusion matrix and its KSP, the work vectors and the cached
@@ -178,10 +209,12 @@ private:
    // Its per-backend halves, after the shared checks: the DMDA star through
    // MatSetValuesStencil, the plex faces through MatSetValuesCOO (the
    // two-point flux at DG0, the interior penalty form at DG1). Host copies of
-   // the group's per-cell xsections come in
-   PetscErrorCode assemble_structured(const PetscScalar *sigma_t_h, const PetscScalar *sigma_s_h);
-   PetscErrorCode assemble_plex(const PetscScalar *sigma_t_h, const PetscScalar *sigma_s_h);
-   PetscErrorCode assemble_plex_dg1(const PetscScalar *sigma_t_h, const PetscScalar *sigma_s_h);
+   // the group's per-cell xsections and of the void mask come in
+   PetscErrorCode assemble_structured(const PetscScalar *sigma_t_h, const PetscScalar *sigma_s_h, \
+      const PetscInt *void_h);
+   PetscErrorCode assemble_plex(const PetscScalar *sigma_t_h, const PetscScalar *sigma_s_h, const PetscInt *void_h);
+   PetscErrorCode assemble_plex_dg1(const PetscScalar *sigma_t_h, const PetscScalar *sigma_s_h, \
+      const PetscInt *void_h);
 
    MPI_Comm comm_ = MPI_COMM_NULL;
    PetscInt dim_ = 0;
@@ -264,6 +297,13 @@ private:
    // Not owned - the group's xsection slices, as handed over by set_group()
    PetscScalarKokkosView sigma_t_d_;
    PetscScalarKokkosView sigma_s_d_;
+
+   // The void mask (see the header): Sigma_t <= void_sigma_t_ is a void.
+   // One flag per local cell, refilled per group by assemble(), read by the
+   // restriction and prolongation kernels
+   PetscReal void_sigma_t_ = 0.0;
+   PetscIntKokkosView void_cell_d_;
+   PetscInt n_void_cells_ = 0;
 };
 
 #endif

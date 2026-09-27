@@ -1,0 +1,44 @@
+{
+ "_comment": "box_diffusive.json with a VOID channel: the same 50x50 box of ten mean free paths per cell at a scattering ratio of 0.99, with a Sigma_t = 0 channel six cells high (y in [2.2, 2.8]) running in from the left face to x = 3.5, so it neither cuts the box in two nor reaches the right face. The problem the DSA's void masking is pinned on: -precon_dsa used to refuse any Sigma_t <= 0 cell; now the void cells are masked out of the diffusion correction (identity rows, nothing restricted or corrected there) and a face into the void is a Marshak face for the diffusive cell beside it.",
+ "dimension": 2,
+ "mesh": {
+  "n_cells": [50, 50],
+  "lengths": [5.0, 5.0]
+ },
+ "sn_order": 4,
+ "materials": {
+  "n_groups": 1,
+  "materials": [
+   {
+    "id": 0,
+    "name": "diffusive",
+    "Sigma_t": [100.0],
+    "Sigma_s": [
+     [99.0]
+    ],
+    "Source": [1.0]
+   },
+   {
+    "id": 1,
+    "name": "void",
+    "Sigma_t": [0.0],
+    "Sigma_s": [
+     [0.0]
+    ],
+    "Source": [0.0]
+   }
+  ]
+ },
+ "regions": {
+  "background": "diffusive",
+  "paint": [
+   {"material": "void", "box": [0.0, 3.5, 2.2, 2.8]}
+  ]
+ },
+ "boundary_conditions": {
+  "left": {"type": "vacuum", "inflow": 12.566370614359172},
+  "right": {"type": "vacuum", "inflow": 12.566370614359172},
+  "bottom": {"type": "vacuum", "inflow": 12.566370614359172},
+  "top": {"type": "vacuum", "inflow": 12.566370614359172}
+ }
+}

@@ -1,0 +1,46 @@
+{
+ "_comment": "cube_diffusive.json with a VOID duct: the same 10^3 cube of ten mean free paths per cell at a scattering ratio of 0.99, with a Sigma_t = 0 duct two cells square (y, z in [0.4, 0.6]) running in from the left face to x = 0.7. The 3D pin of the DSA's void masking, the 3D twin of box_void_channel.json.",
+ "dimension": 3,
+ "mesh": {
+  "n_cells": [10, 10, 10],
+  "lengths": [1.0, 1.0, 1.0]
+ },
+ "sn_order": 4,
+ "materials": {
+  "n_groups": 1,
+  "materials": [
+   {
+    "id": 0,
+    "name": "diffusive",
+    "Sigma_t": [100.0],
+    "Sigma_s": [
+     [99.0]
+    ],
+    "Source": [1.0]
+   },
+   {
+    "id": 1,
+    "name": "void",
+    "Sigma_t": [0.0],
+    "Sigma_s": [
+     [0.0]
+    ],
+    "Source": [0.0]
+   }
+  ]
+ },
+ "regions": {
+  "background": "diffusive",
+  "paint": [
+   {"material": "void", "box": [0.0, 0.7, 0.4, 0.6, 0.4, 0.6]}
+  ]
+ },
+ "boundary_conditions": {
+  "left": {"type": "vacuum", "inflow": 12.566370614359172},
+  "right": {"type": "vacuum", "inflow": 12.566370614359172},
+  "front": {"type": "vacuum", "inflow": 12.566370614359172},
+  "back": {"type": "vacuum", "inflow": 12.566370614359172},
+  "bottom": {"type": "vacuum", "inflow": 12.566370614359172},
+  "top": {"type": "vacuum", "inflow": 12.566370614359172}
+ }
+}
