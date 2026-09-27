@@ -573,6 +573,14 @@ ifeq ($(PETSC_HAVE_TETMESHER),1)
 	@echo "Test 3D unstructured tetrahedra, ghost-flux vacuum + reflective faces against the infinite-medium solution"
 	./transportk -problem problems/plex_tet_6_inf_medium_ghost.json -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 11
 endif
+# The old simplex iteration creep: under Dirichlet-cell and WITHOUT the element-
+# block scaling (-precon_block_scale 0) this takes 12, because PCAIR's relative
+# R drop throws away the couplings beside the identity rows - see
+# ../docs/dev/testing.md, "Unstructured iteration counts"
+ifeq ($(PETSC_HAVE_TETMESHER),1)
+	@echo "Test 3D unstructured tetrahedra, Dirichlet-cell pure absorber at rtol 1e-12 (the block scaling keeps it mesh independent)"
+	./transportk -problem problems/plex_tet_12_absorber_dirichlet_cell.json -ksp_rtol 1e-12 -ksp_max_it 6
+endif
 	@echo "Test 2D unstructured reference-shifted pmat, one hierarchy per group (twin of box_decades4)"
 	./transportk -problem problems/plex_decades4.json -matfree_removal -precon_ref_shift -precon_ref_k 4 -ksp_max_it 29
 	@echo "Test 2D unstructured reference-shifted pmat, the default k"
