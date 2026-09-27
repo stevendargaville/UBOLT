@@ -1,0 +1,54 @@
+{
+ "_comment": "decades4.json plus two ways of being void, for -precon_ref_shift on voids. Materials 0 and 1 are decades4's (1 the 5x density-scaled copy of 0, so every group RATIO is the same in both). Material 2 is a void in EVERY group (Sigma_t = 0 throughout): it takes the same cells out of every group's support, so the groups still share one support and one reference, and the shifted pmat stays exact over the non-void cells and pure streaming over the void. Material 3 is transparent in the TOP group only (Sigma_t[0] = 0, and with it every scatter out of group 0 - a zero total admits none) and otherwise material 0: painting it gives group 0 a support the other three do not share, so RefShiftPmats puts group 0 in a class of its own, with its own reference, and never bins it with the rest. Shared by slab_decades4_void.json, box_decades4_void.json and plex_decades4_void.json.",
+ "n_groups": 4,
+ "materials": [
+  {
+   "id": 0,
+   "name": "decades",
+   "Sigma_t": [0.1, 1.0, 10.0, 100.0],
+   "Sigma_s": [
+    [0.05, 0.03, 0.0, 0.0],
+    [0.0, 0.6, 0.3, 0.0],
+    [0.0, 0.0, 9.0, 0.8],
+    [0.0, 0.0, 0.0, 99.0]
+   ],
+   "Source": [1.0, 1.0, 1.0, 1.0]
+  },
+  {
+   "id": 1,
+   "name": "decades_dense",
+   "Sigma_t": [0.5, 5.0, 50.0, 500.0],
+   "Sigma_s": [
+    [0.25, 0.15, 0.0, 0.0],
+    [0.0, 3.0, 1.5, 0.0],
+    [0.0, 0.0, 45.0, 4.0],
+    [0.0, 0.0, 0.0, 495.0]
+   ],
+   "Source": [1.0, 1.0, 1.0, 1.0]
+  },
+  {
+   "id": 2,
+   "name": "void",
+   "Sigma_t": [0.0, 0.0, 0.0, 0.0],
+   "Sigma_s": [
+    [0.0, 0.0, 0.0, 0.0],
+    [0.0, 0.0, 0.0, 0.0],
+    [0.0, 0.0, 0.0, 0.0],
+    [0.0, 0.0, 0.0, 0.0]
+   ],
+   "Source": [0.0, 0.0, 0.0, 0.0]
+  },
+  {
+   "id": 3,
+   "name": "decades_void0",
+   "Sigma_t": [0.0, 1.0, 10.0, 100.0],
+   "Sigma_s": [
+    [0.0, 0.0, 0.0, 0.0],
+    [0.0, 0.6, 0.3, 0.0],
+    [0.0, 0.0, 9.0, 0.8],
+    [0.0, 0.0, 0.0, 99.0]
+   ],
+   "Source": [1.0, 1.0, 1.0, 1.0]
+  }
+ ]
+}

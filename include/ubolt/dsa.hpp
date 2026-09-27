@@ -114,11 +114,48 @@
 // rows are, which is what the cell-average operator this replaced lacked
 // (measured Sep 2026: that one took the quad box_diffusive twin 34 -> 34)
 //
-// VOIDS are masked out, on every backend and order. D = 1/(3 sigma_t) is not
-// defined where sigma_t = 0, and a diffusion correction has nothing to say
-// about a region with no collisions, so a cell whose group Sigma_t is at or
-// below -dsa_void_sigma_t (0 by default: only a true void) is taken out of
-// the correction altogether:
+// VOIDS. D = 1/(3 sigma_t) is not defined where sigma_t = 0. A cell whose
+// group Sigma_t is at or below -dsa_void_sigma_t (0 by default: only a true
+// void) is a void, and the correction either BRIDGES the voids (the default,
+// -dsa_void_bridge, since Sep 2026) or MASKS them (-dsa_void_bridge 0).
+//
+// Bridging keeps the void cells in the diffusion operator as ordinary cells
+// with no absorption and a FREE-FLIGHT diffusion coefficient. D = 1/(3 sigma_t)
+// is the random walk's <mu^2> times the flight length 1/sigma_t; in a void the
+// flight is ended by the void's walls instead, and the mean flight through a
+// region is its mean chord, Cauchy's L = 4 V / S (the classical Behrens void
+// correction for streaming cavities in diffusion theory). So a void cell takes
+// D = 1 / (3 (sigma_t + 1 / L)) - Wigner's rational combination of the
+// collision and the wall, exactly L / 3 in a true void - with V the voids'
+// total volume and S the area of their faces that end a flight: faces onto a
+// non-void cell and vacuum boundary faces (a reflective face mirrors the
+// flight on, so it is not in S). -dsa_void_d fixes D instead. Everything else
+// is the unvoided operator's: harmonic face D, the consistent-D blend, the
+// restriction and prolongation over the void's nodes. So the correction
+// couples the regions a void separates, which the mask cannot: measured Sep
+// 2026, the void recipes 6 / 8 / 6 / 8 (slab gap, box channel, cube duct,
+// plex channel, masked) -> 6 / 6 / 5 / 6, the channel beating the old tiny-
+// Sigma_t workaround's 7, and the no-void count 5 on the duct. L is an
+// aggregate over every void in the group (not per connected void), which the
+// counts are forgiving of - a factor of ~3 either way of L / 3 costs at most
+// one iteration on the scans behind those numbers.
+// At DG1 the MIP form above takes, on every face touching a void, the
+// weighted interior penalty of Ern, Stephansen & Zunino (IMA J Numer Anal 29,
+// 2009): both averages weighted so that {{D grad u}} uses the face's HARMONIC
+// D, D_h = 2 D_c D_n / (D_c + D_n), and the penalty kappa computed off D_h.
+// With the void D ~100x the material's, the plain arithmetic MIP penalty
+// C / 2 (D_c / h_c + D_n / h_n) welds the material's surface to the void
+// (and took the channel 10 -> 13); D_h is the DG1 sibling of the harmonic
+// face D the DG0 operators already use, and it is still SPD. Measured: with
+// an exact inner solve the DG1 channel goes 10 (mask) -> 7, and with the
+// default single GAMG V-cycle it ties the mask at 10.
+// Bridging needs something to bridge and must stay nonsingular, so a group
+// that is void EVERYWHERE, or one with no vacuum face and no absorption
+// anywhere (the bridged operator is then pure Neumann), falls back to the
+// mask. The void flags cross ranks through the staged D (a negative D marks
+// a bridged void on the plex, where DG1 needs to see one).
+//
+// Masking takes the void cells out of the correction altogether:
 // - its diffusion rows are the identity (times the cell volume on the plex,
 //   so the plex matrix is still V times the structured one), decoupled from
 //   every neighbour in both directions, so the matrix stays SPD;
@@ -133,13 +170,13 @@
 //   Under the consistent D it is the BLENDED vacuum face, (D_c^p + (m h)^p)^(1/p)
 //   on the real cell's side, and the void's D = 0 flag is tested before any
 //   blend, so no m h coupling ever reaches a masked cell.
-// The mask is per GROUP (a material can be a void in some groups only), and
-// a void's D is stored as ZERO in the staged D vector - no real cell's D can
-// be - which is how a neighbour, on this rank or another, is seen to be void.
-// With no void cell the arithmetic is the unmasked operator's, bit for bit.
-// What this does NOT do is couple the regions a void separates: particles
-// streaming across it are the transport stages' business (a void-bridging
-// diffusion operator is the known refinement)
+// A masked void's D is stored as ZERO in the staged D vector - no real
+// cell's D can be - which is how a neighbour, on this rank or another, is
+// seen to be void. What the mask does NOT do is couple the regions a void
+// separates: particles streaming across it are left to the transport stages.
+//
+// Either way it is per GROUP (a material can be a void in some groups only),
+// and with no void cell the arithmetic is the plain operator's, bit for bit.
 //
 // Single Mat + single inner KSP, values-refilled per group by set_group().
 // Deliberately not folded into TransportSolver::refresh(): the solver has no
@@ -193,6 +230,12 @@ public:
    // the first set_group()
    PetscInt n_void_cells() const { return n_void_cells_; }
 
+   // Whether the current group's voids are bridged (PETSC_FALSE when they are
+   // masked, or there are none), and the mean chord length L = 4 V / S their
+   // free-flight D is L / 3 of (0 unless bridged) - see the header
+   PetscBool bridged() const { return bridged_; }
+   PetscReal void_chord() const { return void_chord_; }
+
 private:
    // Everything that does not depend on the dimension: the dof-1 twin DMDA,
    // the diffusion matrix and its KSP, the work vectors and the cached
@@ -212,6 +255,9 @@ private:
    // the group's per-cell xsections and of the void mask come in
    PetscErrorCode assemble_structured(const PetscScalar *sigma_t_h, const PetscScalar *sigma_s_h, \
       const PetscInt *void_h);
+   // The voids' mean chord 4 V / S for bridging (see the header), over every
+   // rank; 0 when no face ends a flight
+   PetscErrorCode void_chord_length(const PetscInt *is_void, PetscReal *chord);
    PetscErrorCode assemble_plex(const PetscScalar *sigma_t_h, const PetscScalar *sigma_s_h, const PetscInt *void_h);
    PetscErrorCode assemble_plex_dg1(const PetscScalar *sigma_t_h, const PetscScalar *sigma_s_h, \
       const PetscInt *void_h);
@@ -298,10 +344,20 @@ private:
    PetscScalarKokkosView sigma_t_d_;
    PetscScalarKokkosView sigma_s_d_;
 
-   // The void mask (see the header): Sigma_t <= void_sigma_t_ is a void.
-   // One flag per local cell, refilled per group by assemble(), read by the
-   // restriction and prolongation kernels
+   // The voids (see the header): Sigma_t <= void_sigma_t_ is a void. The
+   // mask is one flag per local cell, refilled per group by assemble(), read
+   // by the restriction and prolongation kernels - set only on a MASKED void
    PetscReal void_sigma_t_ = 0.0;
+   // -dsa_void_bridge and -dsa_void_d; whether this group's voids ARE
+   // bridged (void_bridge_ and a void to bridge and a nonsingular result),
+   // their mean chord L, and per local cell the void flag and the D staged
+   // for the assembly (0 on a masked void)
+   PetscBool void_bridge_ = PETSC_TRUE;
+   PetscReal void_d_ = 0.0;
+   PetscBool bridged_ = PETSC_FALSE;
+   PetscReal void_chord_ = 0.0;
+   std::vector<PetscInt> is_void_;
+   std::vector<PetscScalar> d_cell_;
    PetscIntKokkosView void_cell_d_;
    PetscInt n_void_cells_ = 0;
 };

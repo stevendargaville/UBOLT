@@ -1,0 +1,23 @@
+{
+ "_comment": "box_decades4.json with voids: the same 30x30 over 3x3, the same four decades groups and 5x dense block, plus a void channel (materials/decades4_void.json's material 2, void in every group) running in from the left face over y in [2.1, 2.4] to x = 1.5, and a block over [2.1, 2.7] x [0.3, 0.9] of material 3, transparent in the top group only. Pins -precon_ref_shift on voids of both kinds: groups 1-3 share one support (all but the channel) and one reference, while group 0 is also void in the block, so it gets a class, a reference and a bin of its own (the 'void patterns' line on stderr). With every group in its own bin the pmats are the full ones. Painted on cell boundaries.",
+ "dimension": 2,
+ "mesh": {
+  "n_cells": [30, 30],
+  "lengths": [3.0, 3.0]
+ },
+ "sn_order": 4,
+ "materials": "materials/decades4_void.json",
+ "regions": {
+  "paint": [
+   {"material": 1, "box": [1.2, 1.8, 1.2, 1.8]},
+   {"material": "void", "box": [0.0, 1.5, 2.1, 2.4]},
+   {"material": "decades_void0", "box": [2.1, 2.7, 0.3, 0.9]}
+  ]
+ },
+ "boundary_conditions": {
+  "left": {"type": "vacuum", "inflow": 12.566370614359172},
+  "right": {"type": "vacuum", "inflow": 12.566370614359172},
+  "bottom": {"type": "vacuum", "inflow": 12.566370614359172},
+  "top": {"type": "vacuum", "inflow": 12.566370614359172}
+ }
+}

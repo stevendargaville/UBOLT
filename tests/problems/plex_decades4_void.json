@@ -1,0 +1,24 @@
+{
+ "_comment": "The unstructured DG0 twin of box_decades4_void.json (quads, only \"type\": \"unstructured\" added, the regions painted by cell centroid): pins -precon_ref_shift on the plex backend on both kinds of void, the channel void in every group and the block transparent in the top group only, so group 0 is binned apart from groups 1-3.",
+ "dimension": 2,
+ "mesh": {
+  "type": "unstructured",
+  "n_cells": [30, 30],
+  "lengths": [3.0, 3.0]
+ },
+ "sn_order": 4,
+ "materials": "materials/decades4_void.json",
+ "regions": {
+  "paint": [
+   {"material": 1, "box": [1.2, 1.8, 1.2, 1.8]},
+   {"material": "void", "box": [0.0, 1.5, 2.1, 2.4]},
+   {"material": "decades_void0", "box": [2.1, 2.7, 0.3, 0.9]}
+  ]
+ },
+ "boundary_conditions": {
+  "left": {"type": "vacuum", "inflow": 12.566370614359172},
+  "right": {"type": "vacuum", "inflow": 12.566370614359172},
+  "bottom": {"type": "vacuum", "inflow": 12.566370614359172},
+  "top": {"type": "vacuum", "inflow": 12.566370614359172}
+ }
+}

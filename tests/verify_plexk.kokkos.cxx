@@ -72,6 +72,14 @@
 //     only the low-x cells - the non-void rows identical to rounding (a face
 //     into the void is the cut box's vacuum face), the void rows V times the
 //     identity, and P D^-1 R equal on the non-void nodes, zero on the void
+//     (all under -dsa_void_bridge 0; the void twin cases run both ways)
+// 13. The DSA's void BRIDGING (the default): at DG0 and DG1, 2D and 3D, a
+//     box split in two by a void slab - bridged, the void counted, its mean
+//     chord 4 V / S exactly the box's, the diffusion matrix symmetric
+//     positive definite (a dense Cholesky), a constant mapped to V sigma_a
+//     on every node off the vacuum boundary (zero in the void: the void is
+//     a conductor, not a hole), and a residual on one side only reaching
+//     the far side through the void - where the mask leaves zero
 //  Plus two DG1 error paths in 5: Dirichlet-cell vacuum, and the DG0
 //  streaming term on a DG1 backend
 //
@@ -113,6 +121,19 @@ static PetscErrorCode TwinMaterials(MaterialSpec &mats, PetscBool void_1 = PETSC
       PetscCall(mats.set_sigma_s(1, 0, 0, 0.3));
       PetscCall(mats.set_source(1, 0, 0.5));
    }
+
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+// The DSA bridges voids by default (check 13); PETSC_FALSE selects the mask
+// (-dsa_void_bridge 0) for every DSAPrecon created until it is switched back.
+// The option is read at create()
+static PetscErrorCode SetVoidBridge(PetscBool on)
+{
+   PetscFunctionBeginUser;
+
+   if (on) PetscCall(PetscOptionsClearValue(NULL, "-dsa_void_bridge"));
+   else PetscCall(PetscOptionsSetValue(NULL, "-dsa_void_bridge", "0"));
 
    PetscFunctionReturn(PETSC_SUCCESS);
 }
@@ -497,8 +518,10 @@ static PetscErrorCode CompareTwins(const char *desc, PetscInt n_cells, PetscInt 
 
    // The void cells both DSAs masked out - a void case that masked nothing
    // would pass the comparison vacuously
+   // - and the two agree on bridging them, down to the voids' mean chord
    const PetscBool void_ok = (PetscBool)(dsa_fd.n_void_cells() == expected_void && \
-      dsa_plex.n_void_cells() == expected_void);
+      dsa_plex.n_void_cells() == expected_void && dsa_fd.bridged() == dsa_plex.bridged() && \
+      PetscAbsReal(dsa_fd.void_chord() - dsa_plex.void_chord()) <= 1e-12 * dsa_fd.void_chord());
    const PetscBool pass = (PetscBool)(mat_diff <= mat_tol * norm_fd && flag_diff == 0.0 && \
       dirichlet_diff <= value_tol && rhs_diff <= value_tol && scatter_diff <= value_tol && diag_diff == 0.0 && \
       sol_diff <= sol_tol && conv_fd && conv_plex && dsa_mat_diff <= mat_tol * dsa_norm && \
@@ -519,8 +542,11 @@ static PetscErrorCode CompareTwins(const char *desc, PetscInt n_cells, PetscInt 
       (double)dsa_mat_diff, (double)mat_tol, (double)(mat_tol * dsa_norm), (double)dsa_apply_diff, (double)sol_tol, \
       (double)(sol_tol * dsa_apply_norm)));
    if (expected_void > 0 || !void_ok) {
-      PetscCall(PetscPrintf(PETSC_COMM_WORLD, "    DSA void cells masked: FD %" PetscInt_FMT ", plex %" PetscInt_FMT \
-         " (expected %" PetscInt_FMT ")\n", dsa_fd.n_void_cells(), dsa_plex.n_void_cells(), expected_void));
+      PetscCall(PetscPrintf(PETSC_COMM_WORLD, "    DSA void cells: FD %" PetscInt_FMT ", plex %" PetscInt_FMT \
+         " (expected %" PetscInt_FMT "), %s, chord FD %.6g plex %.6g\n", dsa_fd.n_void_cells(), dsa_plex.n_void_cells(), \
+         expected_void, dsa_fd.bridged() ? (dsa_plex.bridged() ? "bridged" : "FD bridged, plex masked") : \
+         (dsa_plex.bridged() ? "FD masked, plex bridged" : "masked"), (double)dsa_fd.void_chord(), \
+         (double)dsa_plex.void_chord()));
    }
 
    PetscCall(MatDestroy(&A_fd));
@@ -2551,9 +2577,12 @@ static PetscErrorCode CheckDSAVoid(const char *where, PetscInt dim, const PetscI
    PetscInt n_keep_box[3] = {n_keep, n_full[1], dim == 3 ? n_full[2] : 1};
    const PetscReal x_void = n_keep * h[0];
 
+   // The mask is what this checks; bridging (the default) is check 13
+   PetscCall(SetVoidBridge(PETSC_FALSE));
    PetscCall(VoidSide<Quad>(dim, n_full, n_full[0], h, x_void, order, sn_order, bcs, d_full, y_full, n_void_full, n_keys));
    PetscCall(VoidSide<Quad>(dim, n_keep_box, n_full[0], h, 2.0 * n_full[0] * h[0], order, sn_order, bcs, d_keep, y_keep, \
       n_void_keep, n_keys_keep));
+   PetscCall(SetVoidBridge(PETSC_TRUE));
 
    const PetscInt nb = order == 0 ? 1 : dim + 1;
    const PetscInt n_angles = (PetscInt)y_full.size() / n_keys;
@@ -2590,6 +2619,275 @@ static PetscErrorCode CheckDSAVoid(const char *where, PetscInt dim, const PetscI
       order, where, sn_order, n_void_full, expected_void, (double)row_diff, (double)tol, (double)(tol * row_norm), \
       (double)void_diff, (double)tol, (double)y_diff, (double)apply_tol, (double)(apply_tol * y_norm), (double)y_void, \
       pass ? "" : " FAILED"));
+
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+// The box face id of an axis' low (side 0) or high (side 1) face - PETSc's
+// box convention, which is NOT axis-ordered (see StructuredFD2D / 3D)
+static PetscInt BoxFaceId(PetscInt dim, PetscInt axis, PetscInt side)
+{
+   static const PetscInt ids2[2][2] = {{StructuredFD2D::FACE_LEFT, StructuredFD2D::FACE_RIGHT}, \
+      {StructuredFD2D::FACE_BOTTOM, StructuredFD2D::FACE_TOP}};
+   static const PetscInt ids3[3][2] = {{StructuredFD3D::FACE_LEFT, StructuredFD3D::FACE_RIGHT}, \
+      {StructuredFD3D::FACE_FRONT, StructuredFD3D::FACE_BACK}, {StructuredFD3D::FACE_BOTTOM, StructuredFD3D::FACE_TOP}};
+   return dim == 2 ? ids2[axis][side] : ids3[axis][side];
+}
+
+// One side of check 13: a plex box of n cells of spacing h, the cells with x
+// index in [i0, i1) painted void - a slab across the whole box - the DSA
+// built on it (bridged or masked), its diffusion matrix as a dense array
+// keyed by (lexicographic cell, basis) and apply() of a residual that lives
+// ONLY on the cells left of the void (x index < i0), inner solve tight
+template <class Quad>
+static PetscErrorCode BridgeSide(PetscInt dim, const PetscInt *n, const PetscReal *h, PetscInt i0, PetscInt i1, \
+   PetscInt order, PetscInt sn_order, const BCSpec &bcs, PetscBool bridge, std::vector<PetscScalar> &d_dense, \
+   std::vector<PetscScalar> &y_dense, PetscInt &n_void, PetscBool &bridged, PetscReal &chord, PetscInt &n_keys)
+{
+   Quad quad;
+   MaterialSpec mats;
+   PhaseSpace ps;
+   UnstructuredDG disc;
+   GroupXSections xs;
+   DSAPrecon dsa;
+   PetscIntKokkosView mat_id;
+   Mat D = NULL;
+   Vec x = NULL, y = NULL;
+
+   PetscFunctionBeginUser;
+
+   PetscCall(quad.create(sn_order));
+   PetscCall(TwinMaterials(mats, PETSC_TRUE));
+   const PetscInt n_angles = quad.n_angles();
+
+   PlexMeshSpec mesh;
+   mesh.dimension = dim;
+   for (PetscInt d = 0; d < dim; d++) {
+      mesh.n_cells[d] = n[d];
+      mesh.lengths[d] = n[d] * h[d];
+   }
+   PetscCall(disc.create_mesh(PETSC_COMM_WORLD, mesh));
+   PetscCall(ps.create(PETSC_COMM_WORLD, disc.n_global_cells(), n_angles));
+   PetscCall(disc.create(ps, quad, bcs, order));
+   const PetscReal big = 1e3;
+   if (dim == 2) {
+      std::vector<MaterialBox2D> boxes(1);
+      boxes[0].x0 = i0 * h[0];
+      boxes[0].x1 = i1 * h[0];
+      boxes[0].y0 = -big;
+      boxes[0].y1 = big;
+      boxes[0].material = 1;
+      PetscCall(disc.paint_boxes(0, boxes, mat_id));
+   }
+   else {
+      std::vector<MaterialBox3D> boxes(1);
+      boxes[0].x0 = i0 * h[0];
+      boxes[0].x1 = i1 * h[0];
+      boxes[0].y0 = -big;
+      boxes[0].y1 = big;
+      boxes[0].z0 = -big;
+      boxes[0].z1 = big;
+      boxes[0].material = 1;
+      PetscCall(disc.paint_boxes(0, boxes, mat_id));
+   }
+   PetscCall(xs.create(ps));
+   PetscCall(xs.set_from_materials(mats, mat_id));
+   PetscCall(SetVoidBridge(bridge));
+   PetscCall(dsa.create(PETSC_COMM_WORLD, ps, disc, quad, bcs));
+   PetscCall(SetVoidBridge(PETSC_TRUE));
+   PetscCall(dsa.set_group(xs.sigma_t(0), xs.sigma_s(0, 0)));
+   PetscCall(KSPSetType(dsa.ksp(), KSPCG));
+   PetscCall(KSPSetTolerances(dsa.ksp(), 1e-14, 1e-50, PETSC_CURRENT, 5000));
+   PetscCall(KSPGetOperators(dsa.ksp(), &D, NULL));
+   n_void = dsa.n_void_cells();
+   bridged = dsa.bridged();
+   chord = dsa.void_chord();
+
+   const PetscInt nb = ps.n_basis, local_cells = ps.local_cells;
+   n_keys = n[0] * n[1] * (dim == 3 ? n[2] : 1) * nb;
+   const std::vector<PetscReal> &cen = disc.centroid_host();
+   std::vector<PetscInt> node_key(local_cells * nb), cell_x(local_cells);
+   for (PetscInt c = 0; c < local_cells; c++) {
+      PetscInt idx[3] = {0, 0, 0};
+      for (PetscInt d = 0; d < dim; d++) {
+         idx[d] = PetscMin(PetscMax((PetscInt)PetscFloorReal(cen[3 * c + d] / h[d]), 0), n[d] - 1);
+      }
+      cell_x[c] = idx[0];
+      const PetscInt key = (idx[2] * n[1] + idx[1]) * n[0] + idx[0];
+      for (PetscInt i = 0; i < nb; i++) node_key[c * nb + i] = key * nb + i;
+   }
+   PetscCall(KeyedMatrix(D, node_key, n_keys, d_dense));
+
+   PetscCall(VecCreate(PETSC_COMM_WORLD, &x));
+   PetscCall(VecSetSizes(x, ps.local_rows(), PETSC_DETERMINE));
+   PetscCall(VecSetType(x, VECKOKKOS));
+   PetscCall(VecDuplicate(x, &y));
+   {
+      PetscScalar *xa = nullptr;
+      PetscCall(VecGetArrayWrite(x, &xa));
+      for (PetscInt node = 0; node < local_cells * nb; node++) {
+         for (PetscInt a = 0; a < n_angles; a++) {
+            xa[node * n_angles + a] = cell_x[node / nb] < i0 ? 1.0 + 0.5 * PetscSinReal(0.37 * node_key[node] + 1.3 * a) : 0.0;
+         }
+      }
+      PetscCall(VecRestoreArrayWrite(x, &xa));
+   }
+   PetscCall(dsa.apply(x, y));
+   y_dense.assign(n_keys * n_angles, 0.0);
+   {
+      const PetscScalar *ya = nullptr;
+      PetscCall(VecGetArrayRead(y, &ya));
+      for (PetscInt node = 0; node < local_cells * nb; node++) {
+         for (PetscInt a = 0; a < n_angles; a++) y_dense[node_key[node] * n_angles + a] = ya[node * n_angles + a];
+      }
+      PetscCall(VecRestoreArrayRead(y, &ya));
+   }
+   PetscCallMPI(MPIU_Allreduce(MPI_IN_PLACE, y_dense.data(), (PetscMPIInt)y_dense.size(), MPIU_SCALAR, MPIU_SUM, \
+      PETSC_COMM_WORLD));
+
+   PetscCall(VecDestroy(&x));
+   PetscCall(VecDestroy(&y));
+   PetscCall(dsa.destroy());
+   PetscCall(disc.destroy());
+
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+// Check 13: the DSA's void bridging, on a box split in two by a void slab
+// (x index in [i0, i1), every face vacuum except the reflective ones, none of
+// them an x face). What the mask cannot do and bridging must:
+//  (a) the group is bridged, the void cells counted, and the voids' mean
+//      chord is 4 V / S with S the slab's two faces onto the material plus
+//      its vacuum boundary faces (a reflective face does not end a flight);
+//  (b) the diffusion matrix is symmetric and positive definite (a dense
+//      Cholesky, every pivot positive);
+//  (c) a constant maps to V sigma_a on every node of a cell with no vacuum
+//      boundary face - basis 0, zero on the slopes at DG1 - so ZERO in the
+//      void: the void is part of the diffusion operator, a conductor, not
+//      a hole with a Marshak face round it;
+//  (d) with the inner solve tight, a residual on the cells left of the void
+//      only gives a correction on the cells right of it (it crosses the
+//      void); the mask, on the same residual, gives zero there (to
+//      rounding: the inner GAMG's aggregates may straddle the void)
+template <class Quad>
+static PetscErrorCode CheckDSABridge(const char *where, PetscInt dim, const PetscInt *n, PetscInt i0, PetscInt i1, \
+   PetscInt order, PetscInt sn_order, const std::vector<PetscInt> &reflect_ids, PetscBool *ok)
+{
+   BCSpec bcs;
+   std::vector<PetscScalar> d_b, y_b, d_m, y_m;
+   PetscInt n_void = 0, n_void_m = 0, n_keys = 0, n_keys_m = 0;
+   PetscBool bridged = PETSC_FALSE, bridged_m = PETSC_FALSE;
+   PetscReal chord = 0.0, chord_m = 0.0;
+   PetscReal d_norm = 0.0, sym_diff = 0.0, min_pivot = PETSC_MAX_REAL, const_diff = 0.0;
+   PetscReal y_norm = 0.0, y_far = 0.0, y_far_mask = 0.0;
+   const PetscReal h[3] = {0.25, 0.4, 0.3};
+   const PetscReal tol = 1e-12;
+   const PetscReal sigma_a = 1.5 - 0.7;
+
+   PetscFunctionBeginUser;
+
+   for (PetscInt f = 1; f <= 2 * dim; f++) bcs.set(f, BCType::VACUUM);
+   for (const PetscInt f : reflect_ids) bcs.set(f, BCType::REFLECT);
+
+   PetscCall(BridgeSide<Quad>(dim, n, h, i0, i1, order, sn_order, bcs, PETSC_TRUE, d_b, y_b, n_void, bridged, chord, \
+      n_keys));
+   PetscCall(BridgeSide<Quad>(dim, n, h, i0, i1, order, sn_order, bcs, PETSC_FALSE, d_m, y_m, n_void_m, bridged_m, \
+      chord_m, n_keys_m));
+
+   const PetscInt nb = order == 0 ? 1 : dim + 1;
+   const PetscInt n_cells = n_keys / nb;
+   const PetscInt n_angles = (PetscInt)y_b.size() / n_keys;
+   const PetscInt ny = n[1], nz = dim == 3 ? n[2] : 1;
+   PetscReal vol = 1.0;
+   for (PetscInt d = 0; d < dim; d++) vol *= h[d];
+
+   // (a) the expected chord: V the slab's volume; S its two x faces (the
+   // whole cross-section each) plus each vacuum y / z boundary face of it
+   const PetscInt expected_void = (i1 - i0) * ny * nz;
+   PetscReal expected_chord = 0.0;
+   {
+      const PetscReal ext[3] = {(i1 - i0) * h[0], n[1] * h[1], dim == 3 ? n[2] * h[2] : 1.0};
+      PetscReal area = 2.0 * ext[1] * ext[2];
+      for (PetscInt d = 1; d < dim; d++) {
+         PetscReal face = 1.0;
+         for (PetscInt e = 0; e < dim; e++) {
+            if (e != d) face *= ext[e];
+         }
+         for (PetscInt side = 0; side < 2; side++) {
+            if (bcs.type(BoxFaceId(dim, d, side)) == BCType::VACUUM) area += face;
+         }
+      }
+      expected_chord = 4.0 * expected_void * vol / area;
+   }
+
+   // (b) symmetry, then a dense Cholesky of the (small) matrix
+   for (PetscInt i = 0; i < n_keys; i++) {
+      for (PetscInt j = 0; j < n_keys; j++) {
+         d_norm = PetscMax(d_norm, PetscAbsScalar(d_b[i * n_keys + j]));
+         sym_diff = PetscMax(sym_diff, PetscAbsScalar(d_b[i * n_keys + j] - d_b[j * n_keys + i]));
+      }
+   }
+   {
+      std::vector<PetscReal> l(n_keys * n_keys, 0.0);
+      for (PetscInt j = 0; j < n_keys; j++) {
+         PetscReal diag = PetscRealPart(d_b[j * n_keys + j]);
+         for (PetscInt k = 0; k < j; k++) diag -= l[j * n_keys + k] * l[j * n_keys + k];
+         min_pivot = PetscMin(min_pivot, diag);
+         if (diag <= 0.0) break;
+         l[j * n_keys + j] = PetscSqrtReal(diag);
+         for (PetscInt i = j + 1; i < n_keys; i++) {
+            PetscReal v = PetscRealPart(d_b[i * n_keys + j]);
+            for (PetscInt k = 0; k < j; k++) v -= l[i * n_keys + k] * l[j * n_keys + k];
+            l[i * n_keys + j] = v / l[j * n_keys + j];
+         }
+      }
+   }
+
+   // (c) D times a constant (basis 0 = 1 on every cell, the slopes 0), on the
+   // cells with no vacuum boundary face. The cell of key c is (ix, iy, iz)
+   // lexicographic; on a box its faces are the six axis ones
+   for (PetscInt c = 0; c < n_cells; c++) {
+      const PetscInt idx[3] = {c % n[0], (c / n[0]) % ny, c / (n[0] * ny)};
+      PetscBool on_vacuum = PETSC_FALSE;
+      for (PetscInt d = 0; d < dim; d++) {
+         if (idx[d] == 0 && bcs.type(BoxFaceId(dim, d, 0)) == BCType::VACUUM) on_vacuum = PETSC_TRUE;
+         if (idx[d] == n[d] - 1 && bcs.type(BoxFaceId(dim, d, 1)) == BCType::VACUUM) on_vacuum = PETSC_TRUE;
+      }
+      if (on_vacuum) continue;
+      const PetscBool is_void = (PetscBool)(idx[0] >= i0 && idx[0] < i1);
+      for (PetscInt i = 0; i < nb; i++) {
+         PetscScalar r = 0.0;
+         for (PetscInt k = 0; k < n_cells; k++) r += d_b[(c * nb + i) * n_keys + k * nb];
+         const PetscScalar expected = (i == 0 && !is_void) ? vol * sigma_a : 0.0;
+         const_diff = PetscMax(const_diff, PetscAbsScalar(r - expected));
+      }
+   }
+
+   // (d) the correction beyond the void, bridged and masked
+   for (PetscInt k = 0; k < n_keys; k++) {
+      const PetscBool far = (PetscBool)((k / nb) % n[0] >= i1);
+      for (PetscInt a = 0; a < n_angles; a++) {
+         y_norm = PetscMax(y_norm, PetscAbsScalar(y_b[k * n_angles + a]));
+         if (far) {
+            y_far = PetscMax(y_far, PetscAbsScalar(y_b[k * n_angles + a]));
+            y_far_mask = PetscMax(y_far_mask, PetscAbsScalar(y_m[k * n_angles + a]));
+         }
+      }
+   }
+
+   // The sizes are chosen so the far-side correction is a few percent of the
+   // near one; 1e-4 of it is far above rounding and far below that
+   const PetscBool pass = (PetscBool)(bridged && !bridged_m && n_void == expected_void && n_void_m == expected_void && \
+      PetscAbsReal(chord - expected_chord) <= tol * expected_chord && chord_m == 0.0 && sym_diff <= tol * d_norm && \
+      min_pivot > 0.0 && const_diff <= tol * d_norm && y_far >= 1e-4 * y_norm && y_far_mask <= tol * y_norm);
+   if (!pass) *ok = PETSC_FALSE;
+   PetscCall(PetscPrintf(PETSC_COMM_WORLD, "  DSA void bridging at DG%" PetscInt_FMT ", %s, S%" PetscInt_FMT \
+      ": %s, %" PetscInt_FMT " void cells (expected %" PetscInt_FMT "), chord %.6g (expected %.6g), symmetry %.1e " \
+      "(tol %.0e x |D|), min Cholesky pivot %.3e (> 0), constant vs V sigma_a %.1e (tol %.0e x |D| = %.1e), correction " \
+      "beyond the void %.3e of |y| (>= 1e-4; masked %.1e, <= 1e-12 - rounding through the inner GAMG)%s\n", order, where, sn_order, \
+      bridged ? "bridged" : "NOT bridged", n_void, expected_void, (double)chord, (double)expected_chord, \
+      (double)sym_diff, (double)tol, (double)min_pivot, (double)const_diff, (double)tol, (double)(tol * d_norm), \
+      (double)(y_norm > 0.0 ? y_far / y_norm : 0.0), (double)(y_norm > 0.0 ? y_far_mask / y_norm : 0.0), pass ? "" : " FAILED"));
 
    PetscFunctionReturn(PETSC_SUCCESS);
 }
@@ -2670,14 +2968,22 @@ int main(int argc, char **args) {
          "inflow 1.0 on left in y [0.5, 1.5], 0.3 on bottom, ghost-flux", &ok));
       PetscCall(CheckTwin2D(4, 3, 4, GhostFlux(vacuum), boxes, PETSC_FALSE, "vacuum, painted box, ghost-flux", &ok));
 
-      // 12. The painted box as a VOID (two cells), so (g) compares the two
-      // masked DSA operators, under both vacuum treatments and with the
-      // reflective corner in
+      // 12/13. The painted box as a VOID (two cells), so (g) compares the
+      // two DSA operators with a void in them, under both vacuum treatments
+      // and with the reflective corner in: bridged (the default, 13), then
+      // masked (12)
       BCSpec vacuum_dc = vacuum;
       vacuum_dc.set_vacuum_treatment(VacuumTreatment::DIRICHLET_CELL);
-      PetscCall(CheckTwin2D(4, 3, 4, vacuum_dc, boxes, PETSC_FALSE, "vacuum, painted VOID box, Dirichlet-cell", &ok, 2));
+      PetscCall(CheckTwin2D(4, 3, 4, vacuum_dc, boxes, PETSC_FALSE, "vacuum, painted VOID box (bridged), Dirichlet-cell", \
+         &ok, 2));
       PetscCall(CheckTwin2D(4, 3, 4, GhostFlux(reflect_lb), boxes, PETSC_FALSE, \
-         "reflect left + bottom, painted VOID box, ghost-flux", &ok, 2));
+         "reflect left + bottom, painted VOID box (bridged), ghost-flux", &ok, 2));
+      PetscCall(SetVoidBridge(PETSC_FALSE));
+      PetscCall(CheckTwin2D(4, 3, 4, vacuum_dc, boxes, PETSC_FALSE, "vacuum, painted VOID box (masked), Dirichlet-cell", \
+         &ok, 2));
+      PetscCall(CheckTwin2D(4, 3, 4, GhostFlux(reflect_lb), boxes, PETSC_FALSE, \
+         "reflect left + bottom, painted VOID box (masked), ghost-flux", &ok, 2));
+      PetscCall(SetVoidBridge(PETSC_TRUE));
    }
 
    // ~~~~~~~~~~
@@ -2805,6 +3111,21 @@ int main(int argc, char **args) {
       PetscCall(CheckDSAVoid<SNQuadrature2D>("2D quads 6x4, cells 3.. void, reflect bottom", 2, n2, 3, 1, 4, \
          {StructuredFD2D::FACE_BOTTOM}, &ok));
       PetscCall(CheckDSAVoid<SNQuadrature3D>("3D hexes 4x3x3, cells 2.. void, reflect front + bottom", 3, n3, 2, 1, 2, \
+         {StructuredFD3D::FACE_FRONT, StructuredFD3D::FACE_BOTTOM}, &ok));
+   }
+
+   // ~~~~~~~~~~
+   // 13. DSA void bridging: a void slab splitting the box in two
+   // ~~~~~~~~~~
+   {
+      const PetscInt n2[2] = {7, 4}, n3[3] = {5, 3, 3};
+      PetscCall(CheckDSABridge<SNQuadrature2D>("2D quads 7x4, cells 3..4 void, reflect bottom", 2, n2, 3, 5, 0, 4, \
+         {StructuredFD2D::FACE_BOTTOM}, &ok));
+      PetscCall(CheckDSABridge<SNQuadrature2D>("2D quads 7x4, cells 3..4 void, reflect bottom", 2, n2, 3, 5, 1, 4, \
+         {StructuredFD2D::FACE_BOTTOM}, &ok));
+      PetscCall(CheckDSABridge<SNQuadrature3D>("3D hexes 5x3x3, cell 2 void, reflect front + bottom", 3, n3, 2, 3, 0, 2, \
+         {StructuredFD3D::FACE_FRONT, StructuredFD3D::FACE_BOTTOM}, &ok));
+      PetscCall(CheckDSABridge<SNQuadrature3D>("3D hexes 5x3x3, cell 2 void, reflect front + bottom", 3, n3, 2, 3, 1, 2, \
          {StructuredFD3D::FACE_FRONT, StructuredFD3D::FACE_BOTTOM}, &ok));
    }
 

@@ -14,11 +14,15 @@
 // solve takes the -dsa_ prefix, as do -dsa_mip_penalty, the interior penalty
 // constant of the DG1 operator, -dsa_consistent_d / -dsa_consistent_d_power,
 // the upwind numerical diffusion blended into D - on by default, 0 for the
-// physical D alone - and -dsa_void_sigma_t, the Sigma_t at or below which a
-// cell is a void masked out of the correction, 0 by default), -precon_block_scale (build PCAIR on the
+// physical D alone - -dsa_void_sigma_t, the Sigma_t at or below which a cell
+// is a void, 0 by default, -dsa_void_bridge, on by default, which keeps the
+// voids in the diffusion operator with the free-flight D = L / 3 (0 masks them
+// out of the correction), and -dsa_void_d, a fixed D for them in place of
+// L / 3), -precon_block_scale (build PCAIR on the
 // element-block-scaled pmat - the default on the DG backend, both orders, and
 // off on the structured ones), -diag_scale, and the verification ones,
-// -check_inf_medium, -check_matfree and the -flux_vtk output override
+// -check_inf_medium, -check_matfree, -check_ref_shift and the -flux_vtk output
+// override
 //
 // Group Gauss-Seidel with downscatter only: groups are ordered high energy to
 // low, the within-group scatter stays on the lhs (matrix-free) and everything
@@ -44,10 +48,12 @@
 // -precon_ref_shift is what makes that mode usable when the removal is strong.
 // A bare streaming pmat has no removal in it at all, and PCAIR set up on one
 // diverges from roughly a mean free path per cell; the flag preconditions each
-// group with L + alpha_g * D_ref instead, D_ref being the reference group's
-// per-cell Sigma_t (the first with removal in every cell) and alpha_g that
-// group's ratio to it, in k = -precon_ref_k shared copies (default: the fewest
-// that keep every group close to the one it uses - see RefShiftPmats). A
+// group with L + alpha_g * D_ref instead, D_ref being a reference group's
+// per-cell Sigma_t (the first group with the same void cells, if any) and
+// alpha_g that group's ratio to it over its non-void cells, in k =
+// -precon_ref_k shared copies (default: the fewest that keep every group close
+// to the one it uses - see RefShiftPmats). A void cell is left unshifted, so
+// its pmat row is the bare streaming row the operator has there, and a
 // streaming-only group - Sigma_t identically zero - is exact for free: its
 // operator IS the streaming matrix, so all such groups share one unshifted bin
 // holding that matrix itself. It NEEDS -matfree_removal, which is the only mode whose
@@ -205,6 +211,62 @@ static PetscErrorCode CheckMatfreeEquivalence(MPI_Comm comm, const PhaseSpace &p
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
+// -check_ref_shift: is every group's reference-shifted pmat its FULL operator?
+//
+// Per group, the pmat of its bin against streaming + removal assembled for
+// that group into a matrix of its own, max_{ij} |P - A| / max_c Sigma_t(g).
+// That is the exact-coverage identity (see RefShiftPmats) at the matrix level,
+// and it holds exactly when two things do: every group has a bin of its own
+// alpha (the driver's "worst mismatch 1"), and the materials are
+// density-scaled copies of one another OUTSIDE THE VOIDS. Voids included -
+// which is what makes it the check of the void handling: a class reference
+// that were nonzero in a group's void, or two supports sharing a bin, would put
+// a removal into rows whose operator has none, an O(Sigma_t) difference. A
+// problem that is not density-scaled fails it by design (the alphas are then a
+// fit), so it is run on the files that are
+//
+// Rounding only: alpha_g is an exp of a log-mean, so alpha_g * Sigma_t(ref)
+// differs from Sigma_t(g) in the last bits
+static PetscErrorCode CheckRefShiftExact(const PhaseSpace &ps, const Discretisation &disc, \
+   const TransportOperator &op, const OperatorTerm *streaming, const GroupXSections &xs, \
+   const RefShiftPmats &ref_shift, PetscInt n_groups, PetscReal *max_rel_diff)
+{
+   PetscFunctionBeginUser;
+
+   RemovalTerm removal;
+   PetscCall(removal.create(ps, disc, xs.sigma_t(0)));
+   const OperatorTerm *full_terms[] = {streaming, &removal};
+
+   *max_rel_diff = 0.0;
+   for (PetscInt g = 0; g < n_groups; g++) {
+
+      Mat full;
+      PetscReal diff = 0.0, sigma_max = 0.0;
+
+      removal.set_sigma_t(xs.sigma_t(g));
+      PetscCall(op.assemble_subset(2, full_terms, &full));
+      // Same pattern: both come off the discretisation's create_matrix
+      PetscCall(MatAXPY(full, -1.0, ref_shift.pmat(ref_shift.bin_of_group(g)), SAME_NONZERO_PATTERN));
+      PetscCall(MatNorm(full, NORM_MAX, &diff));
+      PetscCall(MatDestroy(&full));
+
+      auto sigma_t_h = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), xs.sigma_t(g));
+      for (PetscInt c = 0; c < ps.local_cells; c++) {
+         sigma_max = PetscMax(sigma_max, PetscAbsScalar(sigma_t_h(c)));
+      }
+      PetscCallMPI(MPIU_Allreduce(MPI_IN_PLACE, &sigma_max, 1, MPIU_REAL, MPIU_MAX, \
+         PETSC_COMM_WORLD));
+
+      // A streaming-only group's pmat is the streaming matrix itself, so the
+      // difference is absolute there and exactly zero if the bin is right
+      *max_rel_diff = PetscMax(*max_rel_diff, sigma_max > 0.0 ? diff / sigma_max : diff);
+   }
+
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
 int main(int argc, char **args) {
 
    PetscFunctionBeginUser;
@@ -285,6 +347,13 @@ int main(int argc, char **args) {
    // thing about whichever mode this run is solving in
    PetscBool check_matfree = PETSC_FALSE;
    PetscCall(PetscOptionsGetBool(NULL, NULL, "-check_matfree", &check_matfree, NULL));
+   // Check every reference-shifted pmat against its group's full operator
+   // (see CheckRefShiftExact above) - the exact-coverage identity, voids
+   // included, on a density-scaled problem with a bin per distinct alpha
+   PetscBool check_ref_shift = PETSC_FALSE;
+   PetscCall(PetscOptionsGetBool(NULL, NULL, "-check_ref_shift", &check_ref_shift, NULL));
+   PetscCheck(!check_ref_shift || precon_ref_shift, PETSC_COMM_WORLD, PETSC_ERR_ARG_INCOMP, \
+      "-check_ref_shift checks the pmats -precon_ref_shift builds: it needs -precon_ref_shift");
    // Write the scalar flux of the solution for inspection - overrides the
    // problem file's output.flux_vtk. A single-group problem writes the
    // filename as given, multigroup writes one file per group: -flux_vtk
@@ -298,6 +367,7 @@ int main(int argc, char **args) {
    KSPConvergedReason reason = KSP_CONVERGED_ITERATING;
    PetscReal inf_medium_err = 0.0;
    PetscReal matfree_err = 0.0, matfree_diag_err = 0.0;
+   PetscReal ref_shift_err = 0.0;
 
    // Device memory has to be gone before PetscFinalize takes Kokkos down
    {
@@ -558,6 +628,15 @@ int main(int argc, char **args) {
             "reference-shifted pmat: %" PetscInt_FMT " hierarchies over %" PetscInt_FMT \
             " groups, worst mismatch %g\n", ref_shift.n_bins(), n_groups, \
             (double)ref_shift.worst_mismatch()));
+         // Only when there is something to say: groups void in different
+         // cells are binned apart, one reference per set of void cells
+         if (ref_shift.n_classes() > 1) {
+            PetscCall(PetscFPrintf(PETSC_COMM_WORLD, stderr, \
+               "reference-shifted pmat: %" PetscInt_FMT " void patterns, binned apart\n", \
+               ref_shift.n_classes()));
+         }
+         if (check_ref_shift) PetscCall(CheckRefShiftExact(ps, *disc, op, streaming, xs, \
+            ref_shift, n_groups, &ref_shift_err));
       }
 
       // ~~~~~~~~~~~~~
@@ -746,6 +825,12 @@ int main(int argc, char **args) {
       "max diagonal difference %g against 0 - %s\n", \
       (double)matfree_err, (double)matfree_diag_err, matfree_ok ? "pass" : "FAIL"));
 
+   // And the reference-shift identity: rounding against 1e-12
+   const PetscBool ref_shift_ok = (PetscBool)(!check_ref_shift || ref_shift_err < 1e-12);
+   if (check_ref_shift) PetscCall(PetscFPrintf(PETSC_COMM_WORLD, stderr, \
+      "reference-shift check: max relative difference from the full operator %g against " \
+      "tolerance 1e-12 - %s\n", (double)ref_shift_err, ref_shift_ok ? "pass" : "FAIL"));
+
    PetscCall(PetscFinalize());
-   return (reason > 0 && inf_medium_ok && matfree_ok) ? 0 : 1;
+   return (reason > 0 && inf_medium_ok && matfree_ok && ref_shift_ok) ? 0 : 1;
 }

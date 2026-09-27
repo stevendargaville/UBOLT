@@ -355,28 +355,39 @@ Per material:
 |---|---|
 | `id` | required; ids must be DENSE `0..n-1` - they are the `MaterialSpec` indices, because the tables reach device kernels |
 | `name` | optional string; lets regions reference the material by name |
-| `Sigma_t` | required, `[n_groups]`: the total xsection, including scattering. `0` is a VOID (give it a zero `Sigma_s` row too): the transport handles it as pure streaming, and `-precon_dsa` masks void cells out of its diffusion correction (see below) |
+| `Sigma_t` | required, `[n_groups]`: the total xsection, including scattering. `0` is a VOID (give it a zero `Sigma_s` row too): the transport handles it as pure streaming, and `-precon_dsa` gives void cells a free-flight diffusion coefficient (or masks them out of its correction; see below) |
 | `Sigma_s` | required, `[n_groups][n_groups]` indexed `[from][to]`: row `g` is everything scattering OUT of group `g`; the diagonal is the within-group scatter that stays on the lhs. Groups are ordered high energy (0) to low. The driver's forward sweep consumes the upper triangle only - upscatter entries (below the diagonal) are silently unused until an outer iteration arrives |
 | `Source` | optional, `[n_groups]`: UBOLT's one extension - the external source as an isotropic, angle-integrated strength, shared over the ordinates as `Source / sum_weights` by `UboltFillSource`. Absent = zero (void) |
 | `Sigma_f`, `Nu`, `Chi` | accepted, ignored - UBOLT is a fixed-source solver today; these come back with a fission phase |
 
 **Voids and the DSA.** A material whose group `Sigma_t` is zero is a void in
 that group, and a void is fine everywhere except where a diffusion coefficient
-`D = 1/(3 Sigma_t)` is wanted. `-precon_dsa` masks those cells out of its
-correction, per group, on every backend and order: no diffusion unknown does
+`D = 1/(3 Sigma_t)` is wanted. By default `-precon_dsa` BRIDGES the voids, per
+group, on every backend and order: a void cell stays in the diffusion operator
+as an ordinary cell with no absorption and the free-flight coefficient
+`D = L / 3`, `L = 4 V / S` the voids' mean chord (V their volume, S the area
+of their faces onto material or a vacuum boundary - a reflective face does not
+end a flight), so the correction couples the regions a void separates
+(`box_void_channel.json` and its siblings in `tests/problems/`: 26 -> 6 on
+the 2D channel, against 5 for the problem with no void at all). At DG1 the
+faces touching a void take the harmonic-D weighted interior penalty. A group
+that is void everywhere, or whose bridged operator would be singular (no
+vacuum face and no absorption), is masked instead.
+
+`-dsa_void_bridge 0` MASKS the voids instead: no diffusion unknown does
 anything there (identity rows), nothing is restricted from or corrected on
-them, and a face between a real cell and a void is a Marshak (vacuum) face for
-the real cell - the correction treats what streams into the void as leaked. So
-a void region costs the DSA nothing and the rest of the problem keeps its
-acceleration (`box_void_channel.json` and its siblings in `tests/problems/`:
-26 -> 8 on the 2D channel, against 5 for the problem with no void at all). A
-face into a void takes the same (consistent-D) Marshak face a vacuum boundary
-does. What the correction does NOT do is couple the regions a void
-separates; streaming across it is left to the transport stages. The threshold
-is `-dsa_void_sigma_t` (default 0, only a true void): raising it masks
-near-voids too, for a thin region where `D` would be huge. The reference-shift
-pmat (`-precon_ref_shift`) still refuses a group that is zero in some cells
-only - a single ratio cannot represent it.
+them, and a face between a real cell and a void is a Marshak (vacuum) face
+for the real cell - the correction treats what streams into the void as
+leaked, and streaming across it is left to the transport stages (26 -> 8 on
+the channel). `-dsa_void_d <D>` fixes the bridged voids' D in place of `L / 3`.
+The threshold is `-dsa_void_sigma_t` (default 0, only a true void): raising
+it treats near-voids as voids too, for a thin region where `D` would be huge
+(a bridged near-void takes `D = 1 / (3 (Sigma_t + 1 / L))`). The
+reference-shift pmat (`-precon_ref_shift`) takes voids too: it leaves a void
+cell's rows unshifted (pure streaming, which is exactly the operator there),
+and a group void in different cells from the others - a material transparent
+in some groups only - gets a reference and hierarchies of its own
+(`{slab,box,plex}_decades4_void.json`).
 
 The interoperability asymmetry, documented so nobody trips on it: UBOLT is
 unitless and ignores `length_unit` (the mesh lengths are in whatever unit the
