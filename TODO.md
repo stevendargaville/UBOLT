@@ -27,9 +27,12 @@ hex cube, triangles and tets go 34 / 32 / 40 / 43 -> 6 / 7 / 8 / 9, each at or b
 the same mesh's DG0+DSA count. Next up: 6b CG-SUPG (Phase 6), or one of the open
 questions carried as checkboxes since 27 Sep 2026: a discretisation-consistent DSA
 diffusion coefficient (the top one), void masking and per-group cached Mat/KSP for the
-DSA (all three in the Phase 4 postscript 5 DSA notes), and two Phase 6a things to watch,
-triangle L-infinity below first order and simplex iteration counts creeping up with
-refinement (both to re-measure under ghost-flux first); the
+DSA (all three in the Phase 4 postscript 5 DSA notes), and a Phase 6a thing to watch,
+triangle L-infinity below first order (to re-measure under ghost-flux first). The other
+one, simplex iteration counts creeping up with refinement, is explained and gone under
+the current defaults (27 Sep 2026): it was PCAIR's row-relative R drop on the old
+unscaled Dirichlet-cell pmat, which either ghost-flux or the element-block scaling
+removes; simplices now sit at most one over quads/hexes, flat in n; the
 half-quadrature transposed PC stays blocked on PFLARE's PCAIR `PCApplyTranspose`. The
 reflective-face re-pins were swept in the 64-bit CI image (one +1,
 `cube_10_inf_medium_ghost -matfree_removal` pinned 22); the block-scaled plex pins are
@@ -412,7 +415,9 @@ now direct and tested (see that item).
     iterations for n = 8 -> 32 where hexes take 5 -> 7 (at the default rtol the counts
     are normal, 5-6). Iteration counts on simplices creep up ~1 per 4x refinement (2D
     ratio 1: 6, 7, 7, 8 at n = 30..240; tets 6, 7, 8) where quads/hexes match the
-    structured backend exactly and are flat. Without DSA a diffusive problem costs
+    structured backend exactly and are flat. (ii) is explained and gone under the
+    current defaults (27 Sep 2026): PCAIR's relative R drop on an unscaled
+    Dirichlet-cell pmat - see the item below. Without DSA a diffusive problem costs
     simplices 3.3-3.5x the structured+DSA count (36 against 11 on box_diffusive),
     quads/hexes 2.6x (29) — the size of the DSA gap this cut leaves open (closed at DG0
     on 27 Sep 2026, see the DSA item below). The plex path
@@ -425,11 +430,45 @@ now direct and tested (see that item).
     26 Sep 2026 ghost-flux reflective-face fix removed (see the DG0 mixed-corner item
     under the ghost-flux postscript) - so re-run the triangle convergence study under
     ghost-flux first; it may already be explained.
-  - [ ] Iteration counts creeping up on simplices (thing to watch (ii) above: tets on
-    the pure absorber at rtol 1e-12 take 6 -> 19 -> 22 for n = 8 -> 32 where hexes take
-    5 -> 7, and simplex counts rise ~1 per 4x refinement where quads/hexes are flat).
-    Unexplained; re-measure under the ghost-flux default and the element-block PCAIR
-    scaling (both landed since) before digging.
+  - [x] Iteration counts creeping up on simplices (thing to watch (ii) above) -
+    EXPLAINED and GONE under the current defaults (27 Sep 2026, opt arch). Re-measured
+    (ghost-flux, element-block PCAIR scaling, block-Jacobi removal): the absorber at
+    rtol 1e-12 takes tets 6 / 7 / 7 at n = 8 / 16 / 32 against hexes 5 / 6 / 7
+    (was 6 / 19 / 22), triangles 4 / 5 / 6 / 6 / 7 against quads 8 / 8 / 6 / 6 / 7 at
+    n = 8..128; at the default rtol, ratio 1, triangles 7 / 7 / 7 / 7 (n = 30..240,
+    quads 6 / 6 / 7 / 7) and tets 6 / 7 / 7 (n = 6..24, hexes 5 / 6 / 6), ratio 0.5
+    flat at 5 on both 2D meshes. DG1 (block-scaled, default threshold): absorber
+    triangles 6 / 8 / 9 against quads 6 / 6 / 8 at n = 8..32, ratio 1 triangles
+    7 / 8 / 8 against quads 7 / 7 / 7 at n = 30..120, tets 7 / 7 against hexes 6 / 7.
+    CAUSE: the old study ran Dirichlet-cell with an unscaled pmat, and the old counts
+    come back exactly with `"vacuum_treatment": "dirichlet_cell"` and
+    `-precon_block_scale 0` (tets 6 / 19 / 22); EITHER ghost-flux OR the block scaling
+    alone gives 6 / 7 / 7. The unscaled history is a steady 0.32 contraction per
+    iteration against 0.012 scaled - not a tail. The culprit is PCAIR's R drop
+    (`-pc_air_r_drop`, 1e-2 relative to the row): R = -A_cf A_ff^{-1} carries each F
+    row's 1/diagonal, so it is NOT invariant under a row scaling, and next to the
+    identity rows (diagonal 1) the transport couplings through interior F points
+    (diagonal up to 84 on the n = 16 tets, and growing as 1/h) fall below the drop
+    tolerance - hence the growth with n. Evidence: `-sub_1_pc_air_r_drop 0` (or 1e-4)
+    restores 7 on the unscaled Dirichlet-cell n = 16 tets while `-pc_air_a_drop 0`,
+    diagonally scaled polynomials, a Jacobi F inverse and sparsity order 2 all stay
+    at 19; raising `r_drop` to 0.05 breaks the unscaled n = 8 tets (6 -> 16) and does
+    nothing to a block-scaled run (7). The hierarchies with and without the scaling
+    are the same size (19 levels, operator complexity 5.1 / 5.2), so it is not the
+    coarsening. NOT cycles in the upwind graph: with the reflective same-cell
+    couplings removed, the per-angle upwind graph of every PETSc simplex box measured
+    (triangles n = 32, 128; tets n = 8, 16) has NO strongly connected component - it is
+    exactly triangularisable, like the quad/hex ones; the reflective couplings close
+    angle loops on quads/hexes just as on simplices. What remains is a constant +1
+    on simplices at ratio 1 (not a creep): with an exact (LU) streaming inverse
+    triangles/quads and tets/hexes all take 6, so it is PCAIR's approximation;
+    `-sub_1_pc_air_strong_threshold 0.25` or `-sub_1_pc_air_inverse_sparsity_order 2`
+    remove it at small n but it returns by n = 120 (triangles) / 24 (tets), and the
+    counts sit on the rtol edge (both 2D meshes end iteration 6 at 1.7-1.8e-5), so
+    no default was changed. Pinned by `plex_tet_12_absorber_dirichlet_cell`
+    (Dirichlet-cell absorber at rtol 1e-12, 6; 12 unscaled). Side note: PCAIR's
+    operator complexity grows with n on every mesh, most on hexes (12 / 20 / 27 on the
+    absorber at n = 8 / 16 / 32, tets 4.2 / 5.5 / 6.6), with flat counts.
   - Seen in the report figures (23 Sep 2026): a quarter box with reflective faces differs
     from the full box's quadrant by O(h) — max 0.080 / 0.037 / 0.018 at n = 25 / 50 / 100
     on a flux of order 10, unchanged by rtol — on the STRUCTURED and the unstructured
