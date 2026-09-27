@@ -201,8 +201,10 @@ group sweep, `-matfree_removal`, `-precon_stream`, `-precon_ref_shift`,
 `-diag_scale`, `-check_matfree`, `-check_inf_medium` - works unchanged. Only
 2D and 3D: a 1D unstructured mesh is an error (the structured slab IS the 1D
 backend). `-precon_dsa` builds a two-point-flux diffusion operator on the
-cells at DG0, and an interior penalty one in the DG1 space at DG1 (see
-`docs/problem_setup.md`).
+cells at DG0 (with the same discretisation-consistent D as the structured
+backends, the upwind scheme's numerical diffusion blended in per face -
+`-dsa_consistent_d`, on by default), and an interior penalty one in the DG1
+space at DG1 (see `docs/problem_setup.md`).
 One solver default differs: the
 streaming stage's PCAIR is built on the element-block-scaled pmat
 (`-precon_block_scale`, ON by default here at both orders and off on the
@@ -367,8 +369,9 @@ them, and a face between a real cell and a void is a Marshak (vacuum) face for
 the real cell - the correction treats what streams into the void as leaked. So
 a void region costs the DSA nothing and the rest of the problem keeps its
 acceleration (`box_void_channel.json` and its siblings in `tests/problems/`:
-26 -> 12 on the 2D channel, the same count as the problem with no void at
-all within 1). What the correction does NOT do is couple the regions a void
+26 -> 8 on the 2D channel, against 5 for the problem with no void at all). A
+face into a void takes the same (consistent-D) Marshak face a vacuum boundary
+does. What the correction does NOT do is couple the regions a void
 separates; streaming across it is left to the transport stages. The threshold
 is `-dsa_void_sigma_t` (default 0, only a true void): raising it masks
 near-voids too, for a thin region where `D` would be huge. The reference-shift

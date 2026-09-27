@@ -38,6 +38,28 @@
 //   cell's centre instead, and the same face serves both (measured Sep 2026:
 //   scaling its coefficient anywhere in 0.25-1.0 moves no count by more than 1
 //   on the diffusive recipes under ghost-flux).
+// - D is DISCRETISATION-CONSISTENT by default (-dsa_consistent_d, since Sep
+//   2026): the first-order upwind streaming adds a numerical diffusion to the
+//   transport, and in thick cells it dwarfs the physical 1/(3 sigma_t). For a
+//   linear flux in an infinite pure scatterer the upwind face current is
+//   exactly -(D + m h) grad phi, with m = sum_{Omega.n > 0} w (Omega . n) /
+//   sum_weights the quadrature's half-range current (1/4 in the continuum)
+//   and h the cell width across the face - the upwind jump term m [[phi]]
+//   written as a diffusion. So every face coefficient, the Marshak faces'
+//   included, blends that in:
+//      D_face = (D^p + (m h)^p)^(1/p),   p = -dsa_consistent_d_power, 1.5
+//   p = 1 is the exact sum, which is right in both limits but over-diffuses
+//   intermediate cells (tau = sigma_t h ~ 0.3-2): a 1D Fourier analysis of
+//   step-differenced source iteration + this DSA puts the optimal D below
+//   D + m h there, and p = 1.5 tracks that optimum to within a few hundredths
+//   of spectral radius at every tau and scattering ratio. On the plex (DG0) m
+//   is per face, off the backend's own ordinates and the face normal, and h
+//   is the two centroids' distance through the face; DG1 ignores the option,
+//   its interior penalty already floors at the same 1/4.
+//   -dsa_consistent_d 0 is the physical D the correction had before. The
+//   measured effect is in TODO.md (the Phase 4 DSA notes): the diffusive
+//   recipes 11 -> 5, the crooked pipe 28 -> 8 and the literature crooked-pipe
+//   sets 51-106 -> 17-21, and the eps sweep flat at 10-11 down to eps 1e-4.
 // - P_angle broadcasts the scalar correction back isotropically,
 //   delta_psi(c, a) = delta_phi(c) / sum_weights, writing zero on the BC rows.
 //   That scaling is what makes the two operators consistent: A applied to an
@@ -65,7 +87,9 @@
 // the per-unit-volume row the structured backends write - which keeps it SPD,
 // and the restricted moment is scaled by V before the inner solve to match
 // (on a box that is a constant factor, so the plex twin reproduces the
-// structured correction to rounding with an exact inner solve).
+// structured correction to rounding with an exact inner solve). The
+// consistent-D blend above is applied to the face's harmonic D over the
+// centroid-to-centroid distance, so on a box it is the structured one too.
 //
 // At DG1 the diffusion unknown lives in the DG1 space itself: D_diff is the
 // modified interior penalty (MIP) form of Wang & Ragusa (NSE 166, 2010) on the
@@ -106,6 +130,9 @@
 //   correction treats what crosses into the void as leaked, the
 //   zero-incoming-current condition. Not zero Neumann: that would leave a
 //   non-absorbing island surrounded by void singular, where Marshak never is.
+//   Under the consistent D it is the BLENDED vacuum face, (D_c^p + (m h)^p)^(1/p)
+//   on the real cell's side, and the void's D = 0 flag is tested before any
+//   blend, so no m h coupling ever reaches a masked cell.
 // The mask is per GROUP (a material can be a void in some groups only), and
 // a void's D is stored as ZERO in the staged D vector - no real cell's D can
 // be - which is how a neighbour, on this rank or another, is seen to be void.
@@ -122,7 +149,10 @@
 class PETSC_VISIBILITY_PUBLIC DSAPrecon {
 public:
    // 1D. quad supplies the weights and their sum, bcs the per-face families
-   // (the backend does not keep the BCSpec, so it comes in again here)
+   // (the backend does not keep the BCSpec, so it comes in again here). On
+   // the structured backends quad must BE the dimension's SN set
+   // (SNQuadrature here, SNQuadrature2D/3D below) - its cosines give the
+   // consistent D's half-range current - or create() errors
    //
    // ps must already carry the decomposition - the discretisation's create()
    // decides it, so build this after the discretisation
@@ -214,6 +244,15 @@ private:
    // faces are zero Neumann, which is no contribution at all
    PetscBool vacuum_lo_[3] = {PETSC_FALSE, PETSC_FALSE, PETSC_FALSE};
    PetscBool vacuum_hi_[3] = {PETSC_FALSE, PETSC_FALSE, PETSC_FALSE};
+
+   // -dsa_consistent_d: blend the upwind scheme's numerical diffusion into D
+   // (see the header comment), with -dsa_consistent_d_power. half_range_ is
+   // the quadrature's half-range current per axis on the structured backends,
+   // face_half_range_ per face slot on the plex (DG0 only)
+   PetscBool consistent_d_ = PETSC_TRUE;
+   PetscReal consistent_power_ = 1.5;
+   PetscReal half_range_[3] = {0.0, 0.0, 0.0};
+   std::vector<PetscReal> face_half_range_;
 
    // Is there a vacuum (Marshak) face anywhere? Without one the operator is
    // pure Neumann and only absorption keeps it nonsingular
