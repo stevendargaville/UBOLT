@@ -729,7 +729,8 @@ before the 2026-08-02 resize, and have not been re-measured at 10^3.
 
 ## Unstructured DG verification
 The unstructured backend (`UnstructuredDG` + `StreamingTermDG0`, Phase 6a; at order 1
-`StreamingTermDG1`, checks 8 and 9) has no
+`StreamingTermDG1`, checks 8 and 9; `ElementBlockInverse`, check 10; the plex
+`DSAPrecon`, check 11) has no
 baselines either, for the 2D/3D reason: `tests/verify_plexk` compares the operator
 itself. It runs serially in `run_check` and at `-n 2` and `-n 4` in
 `run_tests_short_parallel`, and every comparison in it is parallel-safe — nothing assumes
@@ -745,7 +746,8 @@ rank 0 owns anything, or that either backend numbers its rows naturally.
    to 1e-14; (d) the matrix-free scatter on the same permuted random vector, 1e-14;
    (e) the composed `TransportOperator::diagonal()` against the plex's own
    `MatGetDiagonal`, **bitwise** (0.0); (f) a full solve at rtol 1e-13, the permuted
-   solutions to 1e-9 (two different Krylov histories, so no tighter). Cases: 4x3 S2 and
+   solutions to 1e-9 (two different Krylov histories, so no tighter); (g) the DSA
+   correction (check 11). Cases: 4x3 S2 and
    S4 vacuum, 5x4 S2 reflect left + bottom, 5x4 S4 mixed (reflect left + top, vacuum
    right + bottom), 6x4 S2 with inflow 1.0 on the left windowed to y in [0.5, 1.5] and
    0.3 on the bottom (the corner winning-face rule and the window), and a painted 4x3 S4
@@ -848,6 +850,22 @@ rank 0 owns anything, or that either backend numbers its rows naturally.
    removal operator's: EXACTLY equal (0, not a tolerance: the composed diagonal is
    bitwise the assembled one and the off-diagonals are the same numbers), and genuinely
    different from the bare streaming-only blocks, so a dropped diagonal would show.
+11. **DSA on the plex** (`DSAPrecon::create` on an `UnstructuredDG`). In every FD twin
+   case of 1, 2 and 7, as their (g): the plex's two-point-flux diffusion matrix against
+   the structured star times the (constant) cell volume, permuted by a cell-level twin
+   of the same centroid join, to `1e-12 ||D||_inf` (measured 1e-16 to 2e-15); and the
+   whole correction `P D^-1 R` on the permuted random vector of (d), both inner solves
+   switched to CG at rtol 1e-14, to `1e-9 ||y||_inf` (measured ~1e-16 to 3e-15 absolute
+   on a norm of ~0.3). The volume factor is the plex's deliberate volume weighting (it
+   keeps the matrix SPD where volumes vary); the twin catches the harmonic face D, the
+   Marshak faces, the zero-Neumann reflective faces, and the Dirichlet-cell mask in the
+   restriction and prolongation. At DG1, with no twin: the same mesh at both orders (the
+   same partition), a random DG0 vector on basis 0 of a DG1 one whose slope nodes hold
+   unrelated random values, tight inner solves - the DG1 correction must be the DG0 one
+   on basis 0 to `1e-9 ||y||` (measured 0 and 2e-16) and EXACTLY zero on the slopes, on
+   `square_irregular_tri.msh` S4 (reflect left + bottom) and 4^3 hexes S2 (reflect
+   left). That pins "the restriction reads basis 0 only, the prolongation writes basis 0
+   only".
 
 **Why the twin comparison is to rounding and not bitwise.** The two backends reach the
 same coefficient through different arithmetic — the FD stencil writes `|mu| / dx`, DG0
@@ -956,6 +974,31 @@ the table above, for scale.
 The infinite-medium DG1 solves land at ~1e-13 against the 1e-9 tolerance, the slopes
 included (the check wants the constant on basis 0 and zero on the rest).
 
+**DSA** (`-precon_dsa` on the plex, 2026-09-27, opt arch, pinned on that count). On a
+quad/hex box the plex diffusion operator is the structured one times the cell volume
+(verify_plexk check 11), and every twin takes EXACTLY its structured count, serial and
+np 2. The `*_diffusive` files are `box_diffusive` / `cube_diffusive` (ten mean free
+paths per cell, ratio 0.99) with `"type": "unstructured"`, and `"simplex": true` or
+`"order": 1` where named. At DG1 the correction acts on the cell averages only, which is
+not the DG1 thick diffusion limit, so it pays much less (see TODO.md).
+
+| recipe | plex np=1 | plex np=2 | structured twin np=1 | no DSA np=1 |
+|---|---|---|---|---|
+| `plex_box_diffusive`, `-precon_dsa` | 11 | 11 | 11 | 29 (structured 29) |
+| the same, `-matfree_removal -precon_ref_shift -precon_dsa` | 11 | 11 | 11 | - |
+| the same, `-precon_dsa -pc_composite_type additive` | 14 | - | 14 | - |
+| `plex_box_50_st2_dirichlet_cell`, `-precon_dsa` | 5 | - | 5 | 6 |
+| `plex_box_50_st2`, `-precon_dsa` (not a recipe) | 5 | - | 5 | 7 |
+| `plex_cube_diffusive`, `-precon_dsa` | 8 | 8 | 8 | 18 (structured 18) |
+| `plex_tri_diffusive` (5000 triangles), `-precon_dsa` | 10 | 10 | - | 35 |
+| `plex_tet_diffusive` (6000 tets), `-precon_dsa` | 9 | 9 | - | 31 (not a recipe) |
+| `plex_tri_30_inf_medium_ghost`, `-precon_dsa -check_inf_medium -ksp_rtol 1e-12` | 9 | - | - | 12 |
+| `plex_tet_6_inf_medium_ghost`, the same (not a recipe) | 9 | - | - | 11 |
+| DG1 `plex_cube_diffusive_dg1`, `-precon_dsa` | 25 | 25 | - | 32 |
+| DG1 `plex_tri_diffusive_dg1`, `-precon_dsa` | 26 | - | - | 40 (not a recipe) |
+| DG1 `plex_box_30_inf_medium_dg1`, `-precon_dsa -check_inf_medium -ksp_rtol 1e-12` | 9 | - | - | 12 |
+| DG1 quad `box_diffusive` twin at order 1, `-precon_dsa` (not a recipe, no file) | 34 | - | - | 34 |
+
 **The twin difference is a finding, not a bug.** On a uniform quad/hex box the plex matrix
 IS the structured one to ~1e-15 (verify_plexk, above), but its rows are in a different
 order — plex point order under the simple partitioner, not DMDA order — and PCAIR is not
@@ -1006,8 +1049,8 @@ included; `plex_box_50_st2` and `plex_tri_30_st2` with `-ubolt_coo_two_call` —
 `-ksp_monitor` history is byte-identical to the one-call run at both rank counts; every
 plex problem with `-flux_vtk x.vtu` at np 1, 2, 4 — the file's `NumberOfCells` totals the
 global cell count (2500, 1800, 1000, 1296, 8, 900) and it carries `scalar_flux`,
-`sigma_t`, `source`; and `-precon_dsa` on a plex file fails with PETSC_ERR_SUP (the DSA
-correction is a DMDA diffusion operator).
+`sigma_t`, `source`. (`-precon_dsa` on a plex file failed with PETSC_ERR_SUP then; it
+has a plex operator since 2026-09-27, see "Unstructured iteration counts".)
 
 ## Matrix-free removal (`-matfree_removal`)
 
@@ -1088,6 +1131,11 @@ solve around it runs in — and it is in `make check`, on the 1D multigroup file
 diffusion operator on the same grid, restricted from and prolonged back onto the
 ordinates (`include/ubolt/dsa.hpp`). It is off by default, so every recipe,
 count and baseline above is untouched — the DSA recipes below are NEW pins.
+This section is the structured backends; the plex operator (2026-09-27, a
+volume-weighted two-point flux, the structured matrix times V on a box) is
+verified in "Unstructured DG verification", check 11, and its counts - the
+`plex_*_diffusive` twins take exactly the structured ones below - are in
+"Unstructured iteration counts", **DSA**.
 
 The regime it exists for is the one nothing else in the preconditioner
 addresses, and which no test problem demonstrated until now. The diffusive
@@ -1566,7 +1614,7 @@ again, the next lever is `OMP_NUM_THREADS=1`, which trades the threading coverag
    converged count.
    `mesh.type` picks the backend: `"structured"` (the default) is the DMDA finite
    difference ones, `"unstructured"` the DG plex one (2D/3D, a box or a mesh file,
-   no `-precon_dsa`; `mesh.order` 1 for DG1); an unstructured quad/hex box is the
+   `mesh.order` 1 for DG1); an unstructured quad/hex box is the
    natural twin of a structured file, and its count goes next to the structured one in
    "Unstructured iteration counts" (a DG1 file goes in that section's DG1 table, next to
    its DG0 twin).

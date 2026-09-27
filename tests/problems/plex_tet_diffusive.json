@@ -1,0 +1,33 @@
+{
+ "_comment": "cube_diffusive.json on tetrahedra: the same unit cube in the diffusive regime, 6000 tets from PETSc's simplex box (needs (c)tetgen). No structured twin - the 3D sibling of plex_tri_diffusive.json.",
+ "dimension": 3,
+ "mesh": {
+  "type": "unstructured",
+  "simplex": true,
+  "n_cells": [10, 10, 10],
+  "lengths": [1.0, 1.0, 1.0]
+ },
+ "sn_order": 4,
+ "materials": {
+  "n_groups": 1,
+  "materials": [
+   {
+    "id": 0,
+    "name": "diffusive",
+    "Sigma_t": [100.0],
+    "Sigma_s": [
+     [99.0]
+    ],
+    "Source": [1.0]
+   }
+  ]
+ },
+ "boundary_conditions": {
+  "left": {"type": "vacuum", "inflow": 12.566370614359172},
+  "right": {"type": "vacuum", "inflow": 12.566370614359172},
+  "front": {"type": "vacuum", "inflow": 12.566370614359172},
+  "back": {"type": "vacuum", "inflow": 12.566370614359172},
+  "bottom": {"type": "vacuum", "inflow": 12.566370614359172},
+  "top": {"type": "vacuum", "inflow": 12.566370614359172}
+ }
+}

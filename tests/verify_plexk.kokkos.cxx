@@ -58,6 +58,12 @@
 //     scaling, and apply() against the scaled matrix; and the blocks the
 //     removal stage takes under -matfree_removal (streaming-only matrix +
 //     the composed diagonal) against the assembled operator's, bitwise
+// 11. The DSA correction on the plex: in every FD twin case of 1, 2 and 7 the
+//     two-point-flux diffusion matrix is the structured one times the cell
+//     volume and P D^-1 R agrees to rounding (inner solves driven tight);
+//     and at DG1, on the irregular triangle file and hexes, the correction is
+//     the DG0 one on basis 0 and exactly zero on the slopes, whatever the
+//     slope residuals were
 //  Plus two DG1 error paths in 5: Dirichlet-cell vacuum, and the DG0
 //  streaming term on a DG1 backend
 //
@@ -340,15 +346,17 @@ static PetscErrorCode CompareTwins(const char *desc, PetscInt n_cells, PetscInt 
    const PetscIntKokkosView &mat_id_fd, const std::vector<PetscInt> &key_fd, \
    const PhaseSpace &ps_plex, const Discretisation &disc_plex, const OperatorTerm &streaming_plex, \
    const PetscIntKokkosView &mat_id_plex, const std::vector<PetscInt> &key_plex, \
-   const AngularQuadrature &quad, const MaterialSpec &mats, PetscBool *ok)
+   const AngularQuadrature &quad, const MaterialSpec &mats, DSAPrecon &dsa_fd, DSAPrecon &dsa_plex, \
+   PetscReal cell_volume, PetscBool *ok)
 {
    Solve fd, plex;
-   TwinPerm perm;
+   TwinPerm perm, perm_cell;
    Mat A_fd = NULL, A_plex = NULL, A_fd_perm = NULL;
    Vec x_fd = NULL, y_fd = NULL, x_plex = NULL, y_plex = NULL, d_composed = NULL, d_mat = NULL;
    PetscInt rstart_fd = 0, rstart_plex = 0;
    PetscReal norm_fd = 0.0, mat_diff = 0.0, flag_diff = 0.0, dirichlet_diff = 0.0, rhs_diff = 0.0;
    PetscReal scatter_diff = 0.0, diag_diff = 0.0, sol_diff = 0.0;
+   PetscReal dsa_norm = 0.0, dsa_mat_diff = 0.0, dsa_apply_norm = 0.0, dsa_apply_diff = 0.0;
    PetscBool conv_fd = PETSC_FALSE, conv_plex = PETSC_FALSE;
    const PetscReal mat_tol = 1e-12, value_tol = 1e-14, sol_tol = 1e-9;
 
@@ -420,6 +428,51 @@ static PetscErrorCode CompareTwins(const char *desc, PetscInt n_cells, PetscInt 
       PetscCall(PermutedDiff(perm, y_fd, y_plex, &scatter_diff));
    }
 
+   // (g) the DSA correction. On a uniform box the plex's two-point-flux
+   // operator is the structured star times the (constant) cell volume, and
+   // with the inner solves driven tight the whole correction P D^-1 R agrees
+   // to rounding - x_fd / x_plex still hold the same random vector from (d)
+   {
+      Mat D_fd = NULL, D_plex = NULL, D_fd_aij = NULL, D_plex_aij = NULL, D_fd_perm = NULL;
+      Vec c_fd = NULL, c_plex = NULL;
+      PetscInt dstart_fd = 0, dstart_plex = 0;
+
+      PetscCall(dsa_fd.set_group(fd.xs.sigma_t(0), fd.xs.sigma_s(0, 0)));
+      PetscCall(dsa_plex.set_group(plex.xs.sigma_t(0), plex.xs.sigma_s(0, 0)));
+      PetscCall(KSPGetOperators(dsa_fd.ksp(), &D_fd, NULL));
+      PetscCall(KSPGetOperators(dsa_plex.ksp(), &D_plex, NULL));
+      PetscCall(MatCreateVecs(D_fd, &c_fd, NULL));
+      PetscCall(MatCreateVecs(D_plex, &c_plex, NULL));
+      PetscCall(MatGetOwnershipRange(D_fd, &dstart_fd, NULL));
+      PetscCall(MatGetOwnershipRange(D_plex, &dstart_plex, NULL));
+      PetscCall(BuildTwinPerm(n_cells, 1, key_fd, dstart_fd, key_plex, dstart_plex, c_fd, c_plex, perm_cell, ok));
+
+      PetscCall(MatConvert(D_fd, MATAIJ, MAT_INITIAL_MATRIX, &D_fd_aij));
+      PetscCall(MatConvert(D_plex, MATAIJ, MAT_INITIAL_MATRIX, &D_plex_aij));
+      PetscCall(MatPtAP(D_fd_aij, perm_cell.P, MAT_INITIAL_MATRIX, PETSC_DETERMINE, &D_fd_perm));
+      PetscCall(MatScale(D_fd_perm, cell_volume));
+      PetscCall(MatNorm(D_fd_perm, NORM_INFINITY, &dsa_norm));
+      PetscCall(MatAXPY(D_fd_perm, -1.0, D_plex_aij, DIFFERENT_NONZERO_PATTERN));
+      PetscCall(MatNorm(D_fd_perm, NORM_INFINITY, &dsa_mat_diff));
+
+      const KSP inner[2] = {dsa_fd.ksp(), dsa_plex.ksp()};
+      for (const KSP k : inner) {
+         PetscCall(KSPSetType(k, KSPCG));
+         PetscCall(KSPSetTolerances(k, 1e-14, 1e-50, PETSC_CURRENT, 2000));
+      }
+      PetscCall(dsa_fd.apply(x_fd, y_fd));
+      PetscCall(dsa_plex.apply(x_plex, y_plex));
+      PetscCall(VecNorm(y_fd, NORM_INFINITY, &dsa_apply_norm));
+      PetscCall(PermutedDiff(perm, y_fd, y_plex, &dsa_apply_diff));
+
+      PetscCall(MatDestroy(&D_fd_aij));
+      PetscCall(MatDestroy(&D_plex_aij));
+      PetscCall(MatDestroy(&D_fd_perm));
+      PetscCall(VecDestroy(&c_fd));
+      PetscCall(VecDestroy(&c_plex));
+      PetscCall(DestroyTwinPerm(perm_cell));
+   }
+
    // (e) the composed diagonal against the plex's own assembled one - the
    // StreamingTermDG0::add_diagonal contract, which must hold BITWISE
    PetscCall(VecDuplicate(x_plex, &d_composed));
@@ -431,7 +484,8 @@ static PetscErrorCode CompareTwins(const char *desc, PetscInt n_cells, PetscInt 
 
    const PetscBool pass = (PetscBool)(mat_diff <= mat_tol * norm_fd && flag_diff == 0.0 && \
       dirichlet_diff <= value_tol && rhs_diff <= value_tol && scatter_diff <= value_tol && diag_diff == 0.0 && \
-      sol_diff <= sol_tol && conv_fd && conv_plex);
+      sol_diff <= sol_tol && conv_fd && conv_plex && dsa_mat_diff <= mat_tol * dsa_norm && \
+      dsa_apply_diff <= sol_tol * dsa_apply_norm);
    if (!pass) *ok = PETSC_FALSE;
 
    PetscCall(PetscPrintf(PETSC_COMM_WORLD, "  FD twin, %s:%s\n", desc, pass ? "" : " FAILED"));
@@ -443,6 +497,10 @@ static PetscErrorCode CompareTwins(const char *desc, PetscInt n_cells, PetscInt 
       "    rhs %.3e (tol %.0e), scatter %.3e (tol %.0e), composed diagonal %.1e (exact), solution %.3e (tol %.0e)%s\n", \
       (double)rhs_diff, (double)value_tol, (double)scatter_diff, (double)value_tol, (double)diag_diff, \
       (double)sol_diff, (double)sol_tol, (conv_fd && conv_plex) ? "" : " - a solve did NOT converge"));
+   PetscCall(PetscPrintf(PETSC_COMM_WORLD, \
+      "    DSA diffusion matrix vs V x FD %.3e (tol %.0e x |D| = %.3e), DSA apply %.3e (tol %.0e x |y| = %.3e)\n", \
+      (double)dsa_mat_diff, (double)mat_tol, (double)(mat_tol * dsa_norm), (double)dsa_apply_diff, (double)sol_tol, \
+      (double)(sol_tol * dsa_apply_norm)));
 
    PetscCall(MatDestroy(&A_fd));
    PetscCall(MatDestroy(&A_plex));
@@ -548,6 +606,7 @@ static PetscErrorCode CheckTwin2D(PetscInt nx, PetscInt ny, PetscInt sn_order, c
    UnstructuredDG plex;
    StreamingTerm2D streaming_fd;
    StreamingTermDG0 streaming_plex;
+   DSAPrecon dsa_fd, dsa_plex;
    PetscIntKokkosView mat_id_fd, mat_id_plex;
    std::vector<PetscInt> key_fd, key_plex;
    char desc[256];
@@ -604,9 +663,13 @@ static PetscErrorCode CheckTwin2D(PetscInt nx, PetscInt ny, PetscInt sn_order, c
    PetscCall(PetscSNPrintf(desc, sizeof(desc), "2D quads %" PetscInt_FMT " x %" PetscInt_FMT ", S%" PetscInt_FMT \
       " (%" PetscInt_FMT " angles), %s", nx, ny, sn_order, n_angles, bc_desc));
    PetscCall(CheckGeometry(desc, plex, lx * ly, nx * ny, ok));
+   PetscCall(dsa_fd.create(PETSC_COMM_WORLD, ps_fd, fd, quad, bcs));
+   PetscCall(dsa_plex.create(PETSC_COMM_WORLD, ps_plex, plex, quad, bcs));
    PetscCall(CompareTwins(desc, nx * ny, n_angles, ps_fd, fd, streaming_fd, mat_id_fd, key_fd, \
-      ps_plex, plex, streaming_plex, mat_id_plex, key_plex, quad, mats, ok));
+      ps_plex, plex, streaming_plex, mat_id_plex, key_plex, quad, mats, dsa_fd, dsa_plex, h[0] * h[1], ok));
 
+   PetscCall(dsa_fd.destroy());
+   PetscCall(dsa_plex.destroy());
    PetscCall(fd.destroy());
    PetscCall(plex.destroy());
 
@@ -627,6 +690,7 @@ static PetscErrorCode CheckTwin3D(PetscInt nx, PetscInt ny, PetscInt nz, PetscIn
    UnstructuredDG plex;
    StreamingTerm3D streaming_fd;
    StreamingTermDG0 streaming_plex;
+   DSAPrecon dsa_fd, dsa_plex;
    PetscIntKokkosView mat_id_fd, mat_id_plex;
    std::vector<PetscInt> key_fd, key_plex;
    const std::vector<MaterialBox3D> no_boxes;
@@ -672,9 +736,13 @@ static PetscErrorCode CheckTwin3D(PetscInt nx, PetscInt ny, PetscInt nz, PetscIn
    PetscCall(PetscSNPrintf(desc, sizeof(desc), "3D hexes %" PetscInt_FMT " x %" PetscInt_FMT " x %" PetscInt_FMT \
       ", S%" PetscInt_FMT " (%" PetscInt_FMT " angles), %s", nx, ny, nz, sn_order, n_angles, bc_desc));
    PetscCall(CheckGeometry(desc, plex, lx * ly * lz, nx * ny * nz, ok));
+   PetscCall(dsa_fd.create(PETSC_COMM_WORLD, ps_fd, fd, quad, bcs));
+   PetscCall(dsa_plex.create(PETSC_COMM_WORLD, ps_plex, plex, quad, bcs));
    PetscCall(CompareTwins(desc, nx * ny * nz, n_angles, ps_fd, fd, streaming_fd, mat_id_fd, key_fd, \
-      ps_plex, plex, streaming_plex, mat_id_plex, key_plex, quad, mats, ok));
+      ps_plex, plex, streaming_plex, mat_id_plex, key_plex, quad, mats, dsa_fd, dsa_plex, h[0] * h[1] * h[2], ok));
 
+   PetscCall(dsa_fd.destroy());
+   PetscCall(dsa_plex.destroy());
    PetscCall(fd.destroy());
    PetscCall(plex.destroy());
 
@@ -2074,6 +2142,117 @@ static PetscErrorCode CheckDG1Order(const char *where, PetscBool simplex, PetscI
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
+// Check 11 (DG1 half; the DG0 half is (g) of the FD twin): the DSA correction
+// at DG1 is the DG0 one on the cell averages. The same mesh is built at both
+// orders (the same partition, so the same local cells), a random DG0 vector is
+// copied onto basis 0 of a DG1 one whose slope nodes get unrelated random
+// values, and with the inner solves driven tight the DG1 correction must be
+// the DG0 one on basis 0 - the restriction reads basis 0 only - and exactly
+// zero on the slopes
+template <class Quad>
+static PetscErrorCode CheckDSADG1(const char *where, const PlexMeshSpec &mesh, const std::vector<PetscInt> &reflect_ids, \
+   const std::vector<PetscInt> &vacuum_ids, PetscInt sn_order, PetscBool *ok)
+{
+   Quad quad;
+   MaterialSpec mats;
+   BCSpec bcs;
+   PhaseSpace ps[2];
+   UnstructuredDG disc[2];
+   GroupXSections xs[2];
+   DSAPrecon dsa[2];
+   PetscIntKokkosView mat_id[2];
+   Vec x[2] = {NULL, NULL}, y[2] = {NULL, NULL};
+   PetscReal y_norm = 0.0, basis0_diff = 0.0, slope_max = 0.0;
+   const PetscReal tol = 1e-9;
+
+   PetscFunctionBeginUser;
+
+   for (const PetscInt f : reflect_ids) bcs.set(f, BCType::REFLECT);
+   for (const PetscInt f : vacuum_ids) bcs.set(f, BCType::VACUUM);
+   PetscCall(quad.create(sn_order));
+   PetscCall(TwinMaterials(mats));
+   const PetscInt n_angles = quad.n_angles();
+
+   for (PetscInt o = 0; o < 2; o++) {
+      PetscCall(disc[o].create_mesh(PETSC_COMM_WORLD, mesh));
+      PetscCall(ps[o].create(PETSC_COMM_WORLD, disc[o].n_global_cells(), n_angles));
+      PetscCall(disc[o].create(ps[o], quad, bcs, o));
+      PetscCall(disc[o].paint_cell_sets(0, {}, mat_id[o]));
+      PetscCall(xs[o].create(ps[o]));
+      PetscCall(xs[o].set_from_materials(mats, mat_id[o]));
+      PetscCall(dsa[o].create(PETSC_COMM_WORLD, ps[o], disc[o], quad, bcs));
+      PetscCall(dsa[o].set_group(xs[o].sigma_t(0), xs[o].sigma_s(0, 0)));
+      PetscCall(KSPSetType(dsa[o].ksp(), KSPCG));
+      PetscCall(KSPSetTolerances(dsa[o].ksp(), 1e-14, 1e-50, PETSC_CURRENT, 2000));
+      PetscCall(VecCreate(PETSC_COMM_WORLD, &x[o]));
+      PetscCall(VecSetSizes(x[o], ps[o].local_rows(), PETSC_DETERMINE));
+      PetscCall(VecSetType(x[o], VECKOKKOS));
+      PetscCall(VecDuplicate(x[o], &y[o]));
+   }
+   PetscCheck(ps[0].local_cells == ps[1].local_cells, PETSC_COMM_SELF, PETSC_ERR_PLIB, \
+      "the two orders distributed the mesh differently");
+   const PetscInt nb = ps[1].n_basis, local_cells = ps[0].local_cells;
+
+   {
+      PetscRandom rand;
+      PetscCall(PetscRandomCreate(PETSC_COMM_WORLD, &rand));
+      PetscCall(PetscRandomSetSeed(rand, 0xd5a));
+      PetscCall(PetscRandomSeed(rand));
+      PetscCall(VecSetRandom(x[0], rand));
+      PetscCall(VecSetRandom(x[1], rand));
+      PetscCall(PetscRandomDestroy(&rand));
+   }
+   {
+      const PetscScalar *x0 = nullptr;
+      PetscScalar *x1 = nullptr;
+      PetscCall(VecGetArrayRead(x[0], &x0));
+      PetscCall(VecGetArray(x[1], &x1));
+      for (PetscInt c = 0; c < local_cells; c++)
+         for (PetscInt a = 0; a < n_angles; a++) x1[c * nb * n_angles + a] = x0[c * n_angles + a];
+      PetscCall(VecRestoreArray(x[1], &x1));
+      PetscCall(VecRestoreArrayRead(x[0], &x0));
+   }
+   for (PetscInt o = 0; o < 2; o++) PetscCall(dsa[o].apply(x[o], y[o]));
+
+   PetscCall(VecNorm(y[0], NORM_INFINITY, &y_norm));
+   {
+      const PetscScalar *y0 = nullptr, *y1 = nullptr;
+      PetscCall(VecGetArrayRead(y[0], &y0));
+      PetscCall(VecGetArrayRead(y[1], &y1));
+      for (PetscInt c = 0; c < local_cells; c++) {
+         for (PetscInt i = 0; i < nb; i++) {
+            for (PetscInt a = 0; a < n_angles; a++) {
+               const PetscReal v = PetscAbsScalar(y1[(c * nb + i) * n_angles + a] - \
+                  (i == 0 ? y0[c * n_angles + a] : (PetscScalar)0.0));
+               if (i == 0) basis0_diff = PetscMax(basis0_diff, v);
+               else slope_max = PetscMax(slope_max, v);
+            }
+         }
+      }
+      PetscCall(VecRestoreArrayRead(y[1], &y1));
+      PetscCall(VecRestoreArrayRead(y[0], &y0));
+   }
+   PetscCallMPI(MPIU_Allreduce(MPI_IN_PLACE, &basis0_diff, 1, MPIU_REAL, MPIU_MAX, PETSC_COMM_WORLD));
+   PetscCallMPI(MPIU_Allreduce(MPI_IN_PLACE, &slope_max, 1, MPIU_REAL, MPIU_MAX, PETSC_COMM_WORLD));
+
+   const PetscBool pass = (PetscBool)(basis0_diff <= tol * y_norm && slope_max == 0.0);
+   if (!pass) *ok = PETSC_FALSE;
+   PetscCall(PetscPrintf(PETSC_COMM_WORLD, "  DSA at DG1, %s, S%" PetscInt_FMT ": basis 0 vs DG0 %.3e (tol %.0e x |y| = " \
+      "%.3e), slopes %.1e (exact zero)%s\n", where, sn_order, (double)basis0_diff, (double)tol, (double)(tol * y_norm), \
+      (double)slope_max, pass ? "" : " FAILED"));
+
+   for (PetscInt o = 0; o < 2; o++) {
+      PetscCall(VecDestroy(&x[o]));
+      PetscCall(VecDestroy(&y[o]));
+      PetscCall(dsa[o].destroy());
+      PetscCall(disc[o].destroy());
+   }
+
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
 int main(int argc, char **args) {
 
    PetscBool ok = PETSC_TRUE;
@@ -2243,6 +2422,11 @@ int main(int argc, char **args) {
          StructuredFD3D::FACE_BOTTOM}, {StructuredFD3D::FACE_RIGHT, StructuredFD3D::FACE_BACK, StructuredFD3D::FACE_TOP}, \
          2, &ok));
       PetscCall(CheckDG1Order<SNQuadrature2D>("2D quads", PETSC_FALSE, 4, &ok));
+      // 11, the DG1 half
+      PetscCall(CheckDSADG1<SNQuadrature2D>("meshes/square_irregular_tri.msh", irregular, {10, 13}, {11, 12}, 4, &ok));
+      PetscCall(CheckDSADG1<SNQuadrature3D>("3D hexes 4^3", hexes, {StructuredFD3D::FACE_LEFT}, \
+         {StructuredFD3D::FACE_RIGHT, StructuredFD3D::FACE_FRONT, StructuredFD3D::FACE_BACK, StructuredFD3D::FACE_BOTTOM, \
+         StructuredFD3D::FACE_TOP}, 2, &ok));
 #if defined(PETSC_HAVE_TRIANGLE)
       PlexMeshSpec triangles = quads;
       triangles.simplex = PETSC_TRUE;
