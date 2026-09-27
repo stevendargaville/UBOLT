@@ -5,8 +5,10 @@ Each phase is a reviewable unit with its own verification. Do not start a phase 
 previous one's verification has passed and been reviewed.
 
 ## Current state (updated 2026-09-27)
-Last landed: **DSA on the plex backend** (`DSAPrecon`'s `UnstructuredDG` overload, a
-volume-weighted two-point-flux diffusion operator; see the Phase 6 item); before it,
+Last landed: **DG1-consistent DSA** (at DG1 `DSAPrecon`'s plex overload builds the MIP
+interior penalty diffusion operator in the DG1 space itself, every basis node restricted
+and corrected; see the Phase 6 item); before it, **DSA on the plex backend** (a
+volume-weighted two-point-flux diffusion operator, PR #12); before that,
 **`ElementBlockInverse::scale` bumps its state directly** (the MPI wrapper's,
 through `PetscObjectStateIncrease`, pinned in `verify_plexk` via `MatGetState` - which
 needs PETSc main from 3 Sep 2026); before it, **the block-Jacobi removal stage** (composite index 0 inverts the
@@ -18,10 +20,11 @@ orders, PR #9), which lets PCAIR coarsen DG1 at its default strong threshold; be
 reflective face is a face coupling to the mirrored angle in the same cell, in every
 backend, so there are no BC rows and a reflect/vacuum corner takes both faces' ghost
 values, PR #8), on top of linear DG (DG1) on the plex backend (PR #7), Phase 6a (DG0 on
-DMPlex, PR #2) and the ghost-flux vacuum treatment as the default (PR #4). Now in: DSA
-on the plex backend (27 Sep 2026: every quad/hex twin takes the structured DSA count,
-simplices 35 -> 10 / 31 -> 9; at DG1 it corrects the cell averages only and pays
-little). Next up: a DG1-consistent DSA or 6b CG-SUPG (Phase 6); the
+DMPlex, PR #2) and the ghost-flux vacuum treatment as the default (PR #4). DSA now
+works at both orders on the plex: at DG0 every quad/hex twin takes the structured DSA
+count and simplices go 35 -> 10 / 31 -> 9; at DG1 (27 Sep 2026) the diffusive quad box,
+hex cube, triangles and tets go 34 / 32 / 40 / 43 -> 6 / 7 / 8 / 9, each at or below
+the same mesh's DG0+DSA count. Next up: 6b CG-SUPG (Phase 6); the
 half-quadrature transposed PC stays blocked on PFLARE's PCAIR `PCApplyTranspose`. The
 reflective-face re-pins were swept in the 64-bit CI image (one +1,
 `cube_10_inf_medium_ghost -matfree_removal` pinned 22); the block-scaled plex pins are
@@ -452,7 +455,8 @@ now direct and tested (see that item).
     (box_diffusive 29 -> 11, ref-shift + DSA 11, additive 14, cube_diffusive 18 -> 8,
     box_50_st2_dirichlet_cell 5). Simplices close the 3.3-3.5x gap entirely: 5000
     triangles 35 -> 10, 6000 tets 31 -> 9 - at or below the structured+DSA count.
-  - DG1 does NOT get the same: the restriction sums basis 0's ordinates (the cell
+  - DG1 did NOT get the same (superseded the same day by the interior penalty
+    operator, the next item): the restriction sums basis 0's ordinates (the cell
     balance rows) and the prolongation corrects basis 0 only, which is an INCONSISTENT
     DSA for DG1 - its thick diffusion limit is a continuous linear discretisation, not
     this cell-centred one (the Warsa-Wareing-Morel result for DG in multi-D). Measured on
@@ -461,11 +465,35 @@ now direct and tested (see that item).
     (Green-Gauss onto the modal coefficients, Marshak face values on vacuum faces) was
     tried in the prolongation and made it WORSE on quads/hexes (34 -> 37, 25 -> 33) and
     barely better on simplices (26 -> 24, 21 -> 20), so it was dropped.
-- [ ] DG1-consistent DSA: a diffusion operator in the DG1 space itself (a MIP-style
-      symmetric interior penalty discretisation, Wang & Ragusa), restricted from and
-      prolonged onto every basis node, or a continuous P1 vertex operator on simplices.
-      This is what the DG1 rows above are missing; until then a diffusive DG1 problem
-      costs roughly 2-3x its DG0+DSA count.
+- [x] DG1-consistent DSA (27 Sep 2026): at DG1 `DSAPrecon`'s plex overload now builds
+      the MIP (modified interior penalty) diffusion form of Wang & Ragusa (NSE 166, 2010)
+      in the DG1 space itself, on the backend's orthonormal modal basis: one unknown per
+      (cell, basis) node, every node restricted (V times its weighted ordinate sum -
+      row (c, i) of the transport is the balance tested with phi_i) and every node
+      corrected, the slopes included. kappa = max(C/2 (D_c/h_c + D_n/h_n), 1/4) on
+      interior faces, max(C D_c/h_c, 1/4) on vacuum faces with MIP's 1/2 boundary
+      terms (Marshak again), nothing on reflective ones; h = twice the centroid-to-face
+      distance; C = `-dsa_mip_penalty`, 4. The face terms read the backend's exact face
+      matrices and both cells' basis gradients (new host accessors: `face_own_host`,
+      `face_up_host`, `basis_grad_host`, `face_neighbour_grad_host`, the last one
+      covering overlap ghosts). The matrix carries block size n_basis, which lets GAMG
+      aggregate a cell's nodes together.
+  - Verified (verify_plexk check 11, DG1 half, replacing the "basis 0 = the DG0
+    correction" check): symmetric (exactly), linear exactness on interior cells to
+    ~1e-15 (catches a 10% error in one face coefficient), and a round trip through
+    `apply()`, on the irregular triangle file and hexes, serial, -n 2 and -n 4.
+  - Measured (opt arch, one GAMG V-cycle, no DSA -> old cell-average -> MIP): quad box
+    34 -> 34 -> 6, hex cube 32 -> 25 -> 7, triangles 40 -> 26 -> 8, tets 43 -> 21 -> 9;
+    np 2 and 4 within 1. Every one is now at or below the same mesh's DG0+DSA count
+    (11 / 8 / 10 / 9). With the inner solve exact every case is 5, so what remains is
+    GAMG on the IP matrix: the block size took tets 16 -> 9 and triangles 11 -> 8, two
+    V-cycles or 4 smoothing steps each take another 1-3 off at more cost per apply, and
+    the GAMG threshold or no smoothed aggregation do nothing. The penalty barely moves
+    anything (the 1/4 floor dominates in the thick limit); below C ~ 2 the form loses
+    coercivity (NaNs on simplices at C = 1), and C = 2 buys 1 iteration on thin
+    problems only, so 4 stays. The thin, c = 0.5 infinite-medium quad box went 9 -> 11
+    (12 without DSA) - DSA has little to do there and the IP operator's thin-cell
+    penalty is not the transport's; not pursued.
 - [ ] 6b CGSUPG: PetscFE/PetscDS host-only for quadrature/tabulations copied to device
       once; volume kernels; Dirichlet via identity-row mechanism
 - BCs: consume the existing `BCSpec` with real "Face Sets" label values (the structured

@@ -65,15 +65,30 @@
 // the per-unit-volume row the structured backends write - which keeps it SPD,
 // and the restricted moment is scaled by V before the inner solve to match
 // (on a box that is a constant factor, so the plex twin reproduces the
-// structured correction to rounding with an exact inner solve). At DG1 the
-// diffusion unknown is the cell average: the restriction sums basis 0's
-// ordinates only (basis 0's row is the cell balance) and the prolongation
-// corrects basis 0 only, leaving the slopes alone. That is NOT the DG1 thick
-// diffusion limit (a continuous linear one), so at DG1 this is an
-// inconsistent DSA and it pays much less than at DG0: measured Sep 2026, 34
-// -> 34 on the quad box_diffusive twin, 40 -> 26 on triangles, 43 -> 21 on
-// tets, where DG0 goes 29 -> 11 / 35 -> 10 / 31 -> 9. A DG1-consistent
-// (MIP-style) diffusion operator is the follow-up, see TODO.md
+// structured correction to rounding with an exact inner solve).
+//
+// At DG1 the diffusion unknown lives in the DG1 space itself: D_diff is the
+// modified interior penalty (MIP) form of Wang & Ragusa (NSE 166, 2010) on the
+// backend's orthonormal modal basis, one unknown per (cell, basis) node,
+//    a(u, v) = sum_c int_c D grad u . grad v + sigma_a u v
+//            + sum_{interior f} int_f kappa [[u]][[v]] - {{D du/dn}}[[v]] - [[u]]{{D dv/dn}}
+//            + sum_{vacuum f} int_f kappa u v - 1/2 D (du/dn) v - 1/2 u D (dv/dn)
+// with kappa = max(C / 2 (D_c / h_c + D_n / h_n), 1/4) on an interior face and
+// max(C D_c / h_c, 1/4) on a vacuum one, h = twice the centroid's distance to
+// the face (the cell width on a box, a fraction of the height on a simplex,
+// which only errs towards more penalty) and C = -dsa_mip_penalty, 4 by
+// default. The 1/4 is the upwind jump penalty of an isotropic angular flux, so
+// the thick limit is the transport's, and on a vacuum face it is Marshak's
+// phi / 2 again. Reflective faces are natural (zero Neumann), nothing. The
+// face terms read the backend's exact face matrices (int_f phi_i phi_j, both
+// cells' bases) and each side's constant basis gradients. The rows are the
+// weak form tested with phi_i - volume-weighted, like the DG0 plex rows, and
+// symmetric - so the restriction sums EVERY node's ordinates (row (c, i) of
+// the transport is (1 / V) int_c phi_i times the balance) and scales by V, and
+// the prolongation corrects every node, the slopes included. The restricted
+// residual and the correction are then the same weak moments the transport
+// rows are, which is what the cell-average operator this replaced lacked
+// (measured Sep 2026: that one took the quad box_diffusive twin 34 -> 34)
 //
 // Single Mat + single inner KSP, values-refilled per group by set_group().
 // Deliberately not folded into TransportSolver::refresh(): the solver has no
@@ -134,18 +149,18 @@ private:
    // Refill diff_mat_ from the current group's xsections. Called by set_group()
    PetscErrorCode assemble();
    // Its per-backend halves, after the shared checks: the DMDA star through
-   // MatSetValuesStencil, the plex faces through MatSetValuesCOO. Host copies
-   // of the group's per-cell xsections come in
+   // MatSetValuesStencil, the plex faces through MatSetValuesCOO (the
+   // two-point flux at DG0, the interior penalty form at DG1). Host copies of
+   // the group's per-cell xsections come in
    PetscErrorCode assemble_structured(const PetscScalar *sigma_t_h, const PetscScalar *sigma_s_h);
    PetscErrorCode assemble_plex(const PetscScalar *sigma_t_h, const PetscScalar *sigma_s_h);
-   // DG1: fill node_d_ from the inner solution
-   PetscErrorCode build_node_correction();
+   PetscErrorCode assemble_plex_dg1(const PetscScalar *sigma_t_h, const PetscScalar *sigma_s_h);
 
    MPI_Comm comm_ = MPI_COMM_NULL;
    PetscInt dim_ = 0;
    PetscInt n_angles_ = 0;
-   // Spatial dofs per cell: 1 except DG1, where only basis 0 is restricted
-   // and corrected
+   // Spatial dofs per cell: 1 except DG1, whose diffusion unknown has one per
+   // (cell, basis) node too
    PetscInt n_basis_ = 1;
    PetscInt local_cells_ = 0;
    PetscScalar sum_weights_ = 0.0;
@@ -178,7 +193,8 @@ private:
    PetscBool plex_ = PETSC_FALSE;
    // Per owned cell, the COO entries run [cell_entry_offset_[c],
    // cell_entry_offset_[c + 1]): one per interior face in cone order, then
-   // the diagonal. face_nb_[e] indexes d_nb_ for that face's neighbour
+   // the diagonal. At DG1 each of the cell's n_basis rows in turn, and n_basis
+   // entries (the column cell's basis j) where DG0 has one
    std::vector<PetscInt> cell_entry_offset_;
    // Per (cell, face) slot, the backend's CSR: the neighbour's slot in d_nb_
    // (-1 on a boundary face), A_f, the two normal distances, and whether a
@@ -190,17 +206,23 @@ private:
    std::vector<PetscBool> face_vacuum_;
    std::vector<PetscReal> volume_;
    std::vector<PetscScalar> coo_v_;
-   // Cell volumes as a Vec, to weight the restricted moment
+   // Cell volumes as a Vec, one per (cell, basis) node, to weight the
+   // restricted moment
    Vec volume_vec_ = NULL;
+   // DG1 only, the backend's host geometry (see UnstructuredDG): the face
+   // matrices int_f phi_i^c phi_j^{c | n} / (V_c A_f), the unit outward
+   // normal per face slot, and the basis gradients of this cell and of the
+   // neighbour across each interior face slot. And the penalty constant C
+   std::vector<PetscScalar> face_own_;
+   std::vector<PetscScalar> face_up_;
+   std::vector<PetscReal> face_normal_;
+   std::vector<PetscScalar> basis_grad_;
+   std::vector<PetscScalar> face_nb_grad_;
+   PetscReal mip_penalty_ = 4.0;
    // The neighbours' D: d_global_ scattered onto one seq entry per interior
    // face slot (owned neighbours included - one path for both)
    VecScatter nb_scatter_ = NULL;
    Vec d_nb_ = NULL;
-   // DG1: the per-node correction handed to the prolongation, the cell
-   // average on basis 0 and zero on the slopes (at n_basis 1 the prolongation
-   // reads the inner solution directly)
-   PetscScalarKokkosView node_d_;
-
    PetscScalar2DKokkosView w_d_;
    PetscIntKokkosView is_bc_row_d_;
    // Not owned - the group's xsection slices, as handed over by set_group()

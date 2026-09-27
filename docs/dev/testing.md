@@ -859,13 +859,17 @@ rank 0 owns anything, or that either backend numbers its rows naturally.
    on a norm of ~0.3). The volume factor is the plex's deliberate volume weighting (it
    keeps the matrix SPD where volumes vary); the twin catches the harmonic face D, the
    Marshak faces, the zero-Neumann reflective faces, and the Dirichlet-cell mask in the
-   restriction and prolongation. At DG1, with no twin: the same mesh at both orders (the
-   same partition), a random DG0 vector on basis 0 of a DG1 one whose slope nodes hold
-   unrelated random values, tight inner solves - the DG1 correction must be the DG0 one
-   on basis 0 to `1e-9 ||y||` (measured 0 and 2e-16) and EXACTLY zero on the slopes, on
-   `square_irregular_tri.msh` S4 (reflect left + bottom) and 4^3 hexes S2 (reflect
-   left). That pins "the restriction reads basis 0 only, the prolongation writes basis 0
-   only".
+   restriction and prolongation. At DG1, with no twin, on `square_irregular_tri.msh` S4
+   (reflect left + bottom) and 4^3 hexes S2 (reflect left), one material: the interior
+   penalty matrix is symmetric to `1e-12 ||D||_inf` (measured exactly 0); a LINEAR field
+   written in each cell's modal basis maps to `V sigma_a u` on every row of every cell
+   with no boundary face, to `1e-12 ||Du||_inf` (measured 2e-16 and 2e-15) - no jumps
+   and a constant flux, so the face terms cancel the volume diffusion term by the
+   divergence theorem, which exercises the face matrices, both cells' gradients and the
+   normals at once (a 10% error in one face coefficient measures ~1e-2); and the round
+   trip through `apply()` with a CG inner solve at rtol 1e-14 - an x whose ordinates at
+   node (c, i) are `(Du)(c, i) / (V_c sum_w)` must come back as `u / sum_w` on every
+   ordinate, to `1e-9 ||u / sum_w||` (measured ~1e-15).
 
 **Why the twin comparison is to rounding and not bitwise.** The two backends reach the
 same coefficient through different arithmetic — the FD stencil writes `|mu| / dx`, DG0
@@ -979,8 +983,10 @@ quad/hex box the plex diffusion operator is the structured one times the cell vo
 (verify_plexk check 11), and every twin takes EXACTLY its structured count, serial and
 np 2. The `*_diffusive` files are `box_diffusive` / `cube_diffusive` (ten mean free
 paths per cell, ratio 0.99) with `"type": "unstructured"`, and `"simplex": true` or
-`"order": 1` where named. At DG1 the correction acts on the cell averages only, which is
-not the DG1 thick diffusion limit, so it pays much less (see TODO.md).
+`"order": 1` where named. At DG1 the diffusion operator is the MIP interior penalty form
+in the DG1 space (27 Sep 2026; the rows below replaced the cell-average correction's 25 /
+26 / 9 / 34, see TODO.md); it takes every diffusive problem further than DSA does at
+DG0. The thin (c = 0.5) infinite-medium box barely needs DSA and went 9 -> 11.
 
 | recipe | plex np=1 | plex np=2 | structured twin np=1 | no DSA np=1 |
 |---|---|---|---|---|
@@ -994,10 +1000,11 @@ not the DG1 thick diffusion limit, so it pays much less (see TODO.md).
 | `plex_tet_diffusive` (6000 tets), `-precon_dsa` | 9 | 9 | - | 31 (not a recipe) |
 | `plex_tri_30_inf_medium_ghost`, `-precon_dsa -check_inf_medium -ksp_rtol 1e-12` | 9 | - | - | 12 |
 | `plex_tet_6_inf_medium_ghost`, the same (not a recipe) | 9 | - | - | 11 |
-| DG1 `plex_cube_diffusive_dg1`, `-precon_dsa` | 25 | 25 | - | 32 |
-| DG1 `plex_tri_diffusive_dg1`, `-precon_dsa` | 26 | - | - | 40 (not a recipe) |
-| DG1 `plex_box_30_inf_medium_dg1`, `-precon_dsa -check_inf_medium -ksp_rtol 1e-12` | 9 | - | - | 12 |
-| DG1 quad `box_diffusive` twin at order 1, `-precon_dsa` (not a recipe, no file) | 34 | - | - | 34 |
+| DG1 `plex_box_diffusive_dg1`, `-precon_dsa` | 6 | 7 | - | 34 |
+| DG1 `plex_cube_diffusive_dg1`, `-precon_dsa` | 7 | 7 | - | 32 |
+| DG1 `plex_tri_diffusive_dg1`, `-precon_dsa` | 8 | 8 (not a recipe) | - | 40 (not a recipe) |
+| DG1 `plex_tet_diffusive_dg1`, `-precon_dsa` | 9 | 9 (not a recipe) | - | 43 (not a recipe) |
+| DG1 `plex_box_30_inf_medium_dg1`, `-precon_dsa -check_inf_medium -ksp_rtol 1e-12` | 11 | - | - | 12 |
 
 **The twin difference is a finding, not a bug.** On a uniform quad/hex box the plex matrix
 IS the structured one to ~1e-15 (verify_plexk, above), but its rows are in a different

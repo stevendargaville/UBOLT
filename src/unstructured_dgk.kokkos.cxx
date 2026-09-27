@@ -856,6 +856,9 @@ PetscErrorCode UnstructuredDG::create_common(PhaseSpace &ps, PetscInt quad_dim, 
       Kokkos::deep_copy(face_own_d_, face_own_h);
       Kokkos::deep_copy(face_up_d_, face_up_h);
       Kokkos::deep_copy(basis_grad_d_, basis_grad_h);
+      face_own_h_ = std::move(face_own);
+      face_up_h_ = std::move(face_up);
+      basis_grad_h_ = std::move(basis_grad);
 
    } else {
 
@@ -1091,6 +1094,7 @@ PetscErrorCode UnstructuredDG::build_dg1_geometry(std::vector<PetscScalar> &face
    face_up.assign(n_cell_faces * nb * nb, 0.0);
    face_basis_value.assign(n_cell_faces * nb, 0.0);
    basis_grad.assign(local_cells * nb * 3, 0.0);
+   face_nb_grad_h_.assign(n_cell_faces * nb * 3, 0.0);
 
    for (PetscInt k = 0; k < local_cells; k++) {
 
@@ -1124,7 +1128,12 @@ PetscErrorCode UnstructuredDG::build_dg1_geometry(std::vector<PetscScalar> &face
          PetscInt n_support = 0;
          PetscCall(DMPlexGetSupportSize(dm_, f, &n_support));
          PetscCall(DMPlexGetSupport(dm_, f, &support));
-         if (n_support == 2) up = ((support[0] == c) ? support[1] : support[0]) - c_start_;
+         if (n_support == 2) {
+            up = ((support[0] == c) ? support[1] : support[0]) - c_start_;
+            for (PetscInt j = 0; j < nb; j++) {
+               for (PetscInt d = 0; d < 3; d++) face_nb_grad_h_[(kf * nb + j) * 3 + d] = grad(up, j, d);
+            }
+         }
          else if (bcs.type(face_label_h_[kf]) == BCType::REFLECT) up = m;
 
          const PetscReal scale = 1.0 / (vol[m] * area);

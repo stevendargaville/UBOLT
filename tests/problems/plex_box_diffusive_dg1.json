@@ -1,10 +1,10 @@
 {
- "_comment": "plex_cube_diffusive.json at DG1 (\"order\": 1): the interior penalty (MIP) DSA on hexes.",
- "dimension": 3,
+ "_comment": "plex_box_diffusive.json at DG1 (\"order\": 1): the interior penalty (MIP) DSA on quads, where the old cell-average correction paid nothing at all (34 -> 34). Runs on every CI image.",
+ "dimension": 2,
  "mesh": {
   "type": "unstructured",
-  "n_cells": [10, 10, 10],
-  "lengths": [1.0, 1.0, 1.0],
+  "n_cells": [50, 50],
+  "lengths": [5.0, 5.0],
   "order": 1
  },
  "sn_order": 4,
@@ -25,8 +25,6 @@
  "boundary_conditions": {
   "left": {"type": "vacuum", "inflow": 12.566370614359172},
   "right": {"type": "vacuum", "inflow": 12.566370614359172},
-  "front": {"type": "vacuum", "inflow": 12.566370614359172},
-  "back": {"type": "vacuum", "inflow": 12.566370614359172},
   "bottom": {"type": "vacuum", "inflow": 12.566370614359172},
   "top": {"type": "vacuum", "inflow": 12.566370614359172}
  }

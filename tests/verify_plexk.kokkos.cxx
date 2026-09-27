@@ -61,9 +61,10 @@
 // 11. The DSA correction on the plex: in every FD twin case of 1, 2 and 7 the
 //     two-point-flux diffusion matrix is the structured one times the cell
 //     volume and P D^-1 R agrees to rounding (inner solves driven tight);
-//     and at DG1, on the irregular triangle file and hexes, the correction is
-//     the DG0 one on basis 0 and exactly zero on the slopes, whatever the
-//     slope residuals were
+//     and at DG1, on the irregular triangle file and hexes, the interior
+//     penalty diffusion matrix is symmetric, maps a linear field u to
+//     V sigma_a u on every cell with no boundary face (to rounding), and
+//     P D^-1 R hands back u / sum_w from the x that restricts to D u
 //  Plus two DG1 error paths in 5: Dirichlet-cell vacuum, and the DG0
 //  streaming term on a DG1 backend
 //
@@ -2142,13 +2143,21 @@ static PetscErrorCode CheckDG1Order(const char *where, PetscBool simplex, PetscI
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-// Check 11 (DG1 half; the DG0 half is (g) of the FD twin): the DSA correction
-// at DG1 is the DG0 one on the cell averages. The same mesh is built at both
-// orders (the same partition, so the same local cells), a random DG0 vector is
-// copied onto basis 0 of a DG1 one whose slope nodes get unrelated random
-// values, and with the inner solves driven tight the DG1 correction must be
-// the DG0 one on basis 0 - the restriction reads basis 0 only - and exactly
-// zero on the slopes
+// Check 11 (DG1 half; the DG0 half is (g) of the FD twin): the DSA operator at
+// DG1 is the interior penalty (MIP) diffusion form in the DG1 space. On one
+// material (D and sigma_a uniform):
+//  (a) the matrix is symmetric, to rounding;
+//  (b) linear exactness: a LINEAR field u = a + b . x, written in each cell's
+//      modal basis (u(x_c) on basis 0, the slope coefficients solving
+//      sum_k u_k grad phi_k = b), has no jumps and a constant D grad u, so
+//      the face terms of a cell with no boundary face cancel its volume
+//      diffusion term exactly (the divergence theorem on the cell) and
+//      A u = V sigma_a u on every one of its rows - which exercises the
+//      face matrices, both cells' gradients and the normals together;
+//  (c) the round trip through apply(): with the inner solve driven tight, an
+//      x whose every ordinate at node (c, i) is (A u)(c, i) / (V_c sum_w)
+//      restricts to A u (the restriction sums the weights and scales by V)
+//      and must come back as u / sum_w on every ordinate of every node
 template <class Quad>
 static PetscErrorCode CheckDSADG1(const char *where, const PlexMeshSpec &mesh, const std::vector<PetscInt> &reflect_ids, \
    const std::vector<PetscInt> &vacuum_ids, PetscInt sn_order, PetscBool *ok)
@@ -2156,14 +2165,16 @@ static PetscErrorCode CheckDSADG1(const char *where, const PlexMeshSpec &mesh, c
    Quad quad;
    MaterialSpec mats;
    BCSpec bcs;
-   PhaseSpace ps[2];
-   UnstructuredDG disc[2];
-   GroupXSections xs[2];
-   DSAPrecon dsa[2];
-   PetscIntKokkosView mat_id[2];
-   Vec x[2] = {NULL, NULL}, y[2] = {NULL, NULL};
-   PetscReal y_norm = 0.0, basis0_diff = 0.0, slope_max = 0.0;
-   const PetscReal tol = 1e-9;
+   PhaseSpace ps;
+   UnstructuredDG disc;
+   GroupXSections xs;
+   DSAPrecon dsa;
+   PetscIntKokkosView mat_id;
+   Mat D = NULL, Dt = NULL;
+   Vec u = NULL, Au = NULL, x = NULL, y = NULL;
+   PetscReal d_norm = 0.0, sym_diff = 0.0, au_norm = 0.0, lin_diff = 0.0, u_norm = 0.0, trip_diff = 0.0;
+   PetscInt n_interior = 0;
+   const PetscReal tol = 1e-12, trip_tol = 1e-9;
 
    PetscFunctionBeginUser;
 
@@ -2173,80 +2184,139 @@ static PetscErrorCode CheckDSADG1(const char *where, const PlexMeshSpec &mesh, c
    PetscCall(TwinMaterials(mats));
    const PetscInt n_angles = quad.n_angles();
 
-   for (PetscInt o = 0; o < 2; o++) {
-      PetscCall(disc[o].create_mesh(PETSC_COMM_WORLD, mesh));
-      PetscCall(ps[o].create(PETSC_COMM_WORLD, disc[o].n_global_cells(), n_angles));
-      PetscCall(disc[o].create(ps[o], quad, bcs, o));
-      PetscCall(disc[o].paint_cell_sets(0, {}, mat_id[o]));
-      PetscCall(xs[o].create(ps[o]));
-      PetscCall(xs[o].set_from_materials(mats, mat_id[o]));
-      PetscCall(dsa[o].create(PETSC_COMM_WORLD, ps[o], disc[o], quad, bcs));
-      PetscCall(dsa[o].set_group(xs[o].sigma_t(0), xs[o].sigma_s(0, 0)));
-      PetscCall(KSPSetType(dsa[o].ksp(), KSPCG));
-      PetscCall(KSPSetTolerances(dsa[o].ksp(), 1e-14, 1e-50, PETSC_CURRENT, 2000));
-      PetscCall(VecCreate(PETSC_COMM_WORLD, &x[o]));
-      PetscCall(VecSetSizes(x[o], ps[o].local_rows(), PETSC_DETERMINE));
-      PetscCall(VecSetType(x[o], VECKOKKOS));
-      PetscCall(VecDuplicate(x[o], &y[o]));
-   }
-   PetscCheck(ps[0].local_cells == ps[1].local_cells, PETSC_COMM_SELF, PETSC_ERR_PLIB, \
-      "the two orders distributed the mesh differently");
-   const PetscInt nb = ps[1].n_basis, local_cells = ps[0].local_cells;
+   PetscCall(disc.create_mesh(PETSC_COMM_WORLD, mesh));
+   PetscCall(ps.create(PETSC_COMM_WORLD, disc.n_global_cells(), n_angles));
+   PetscCall(disc.create(ps, quad, bcs, 1));
+   // Material 0 everywhere
+   PetscCall(disc.paint_cell_sets(0, {}, mat_id));
+   PetscCall(xs.create(ps));
+   PetscCall(xs.set_from_materials(mats, mat_id));
+   PetscCall(dsa.create(PETSC_COMM_WORLD, ps, disc, quad, bcs));
+   PetscCall(dsa.set_group(xs.sigma_t(0), xs.sigma_s(0, 0)));
+   PetscCall(KSPSetType(dsa.ksp(), KSPCG));
+   PetscCall(KSPSetTolerances(dsa.ksp(), 1e-14, 1e-50, PETSC_CURRENT, 5000));
+   PetscCall(KSPGetOperators(dsa.ksp(), &D, NULL));
 
-   {
-      PetscRandom rand;
-      PetscCall(PetscRandomCreate(PETSC_COMM_WORLD, &rand));
-      PetscCall(PetscRandomSetSeed(rand, 0xd5a));
-      PetscCall(PetscRandomSeed(rand));
-      PetscCall(VecSetRandom(x[0], rand));
-      PetscCall(VecSetRandom(x[1], rand));
-      PetscCall(PetscRandomDestroy(&rand));
-   }
-   {
-      const PetscScalar *x0 = nullptr;
-      PetscScalar *x1 = nullptr;
-      PetscCall(VecGetArrayRead(x[0], &x0));
-      PetscCall(VecGetArray(x[1], &x1));
-      for (PetscInt c = 0; c < local_cells; c++)
-         for (PetscInt a = 0; a < n_angles; a++) x1[c * nb * n_angles + a] = x0[c * n_angles + a];
-      PetscCall(VecRestoreArray(x[1], &x1));
-      PetscCall(VecRestoreArrayRead(x[0], &x0));
-   }
-   for (PetscInt o = 0; o < 2; o++) PetscCall(dsa[o].apply(x[o], y[o]));
+   const PetscInt nb = ps.n_basis, dim = disc.dimension(), local_cells = ps.local_cells;
+   const PetscReal sigma_a = 1.5 - 0.7;
+   const PetscScalar sum_w = quad.sum_weights();
+   const std::vector<PetscReal> &centroid = disc.centroid_host();
+   const std::vector<PetscReal> &volume = disc.volume_host();
+   const std::vector<PetscScalar> &grad = disc.basis_grad_host();
+   const std::vector<PetscInt> &offset = disc.cell_face_offset_host();
+   const std::vector<PetscInt> &nb_row = disc.face_neighbour_row_host();
 
-   PetscCall(VecNorm(y[0], NORM_INFINITY, &y_norm));
+   // (a)
+   PetscCall(MatTranspose(D, MAT_INITIAL_MATRIX, &Dt));
+   PetscCall(MatNorm(D, NORM_INFINITY, &d_norm));
+   PetscCall(MatAXPY(Dt, -1.0, D, UNKNOWN_NONZERO_PATTERN));
+   PetscCall(MatNorm(Dt, NORM_INFINITY, &sym_diff));
+
+   // (b): the linear field in the modal basis. The slope coefficients solve
+   // G u_s = b with G's columns grad phi_1..dim - by Gaussian elimination
+   // with partial pivoting on the dim x dim system
+   const PetscReal a0 = 0.3, b[3] = {1.7, -0.9, 0.6};
+   PetscCall(MatCreateVecs(D, &u, &Au));
    {
-      const PetscScalar *y0 = nullptr, *y1 = nullptr;
-      PetscCall(VecGetArrayRead(y[0], &y0));
-      PetscCall(VecGetArrayRead(y[1], &y1));
+      PetscScalar *ua = nullptr;
+      PetscCall(VecGetArrayWrite(u, &ua));
       for (PetscInt c = 0; c < local_cells; c++) {
-         for (PetscInt i = 0; i < nb; i++) {
-            for (PetscInt a = 0; a < n_angles; a++) {
-               const PetscReal v = PetscAbsScalar(y1[(c * nb + i) * n_angles + a] - \
-                  (i == 0 ? y0[c * n_angles + a] : (PetscScalar)0.0));
-               if (i == 0) basis0_diff = PetscMax(basis0_diff, v);
-               else slope_max = PetscMax(slope_max, v);
+         PetscReal value = a0;
+         for (PetscInt d = 0; d < dim; d++) value += b[d] * centroid[3 * c + d];
+         ua[c * nb] = value;
+         PetscReal G[3][4];
+         for (PetscInt d = 0; d < dim; d++) {
+            for (PetscInt k = 0; k < dim; k++) G[d][k] = PetscRealPart(grad[(c * nb + k + 1) * 3 + d]);
+            G[d][dim] = b[d];
+         }
+         for (PetscInt p = 0; p < dim; p++) {
+            PetscInt piv = p;
+            for (PetscInt r = p + 1; r < dim; r++) if (PetscAbsReal(G[r][p]) > PetscAbsReal(G[piv][p])) piv = r;
+            for (PetscInt k = 0; k <= dim; k++) { const PetscReal t = G[p][k]; G[p][k] = G[piv][k]; G[piv][k] = t; }
+            for (PetscInt r = p + 1; r < dim; r++) {
+               const PetscReal f = G[r][p] / G[p][p];
+               for (PetscInt k = p; k <= dim; k++) G[r][k] -= f * G[p][k];
             }
          }
+         for (PetscInt p = dim - 1; p >= 0; p--) {
+            PetscReal s = G[p][dim];
+            for (PetscInt k = p + 1; k < dim; k++) s -= G[p][k] * PetscRealPart(ua[c * nb + k + 1]);
+            ua[c * nb + p + 1] = s / G[p][p];
+         }
       }
-      PetscCall(VecRestoreArrayRead(y[1], &y1));
-      PetscCall(VecRestoreArrayRead(y[0], &y0));
+      PetscCall(VecRestoreArrayWrite(u, &ua));
    }
-   PetscCallMPI(MPIU_Allreduce(MPI_IN_PLACE, &basis0_diff, 1, MPIU_REAL, MPIU_MAX, PETSC_COMM_WORLD));
-   PetscCallMPI(MPIU_Allreduce(MPI_IN_PLACE, &slope_max, 1, MPIU_REAL, MPIU_MAX, PETSC_COMM_WORLD));
+   PetscCall(MatMult(D, u, Au));
+   PetscCall(VecNorm(Au, NORM_INFINITY, &au_norm));
+   {
+      const PetscScalar *ua = nullptr, *aua = nullptr;
+      PetscCall(VecGetArrayRead(u, &ua));
+      PetscCall(VecGetArrayRead(Au, &aua));
+      for (PetscInt c = 0; c < local_cells; c++) {
+         PetscBool interior = PETSC_TRUE;
+         for (PetscInt k = offset[c]; k < offset[c + 1]; k++) if (nb_row[k] < 0) interior = PETSC_FALSE;
+         if (!interior) continue;
+         n_interior++;
+         for (PetscInt i = 0; i < nb; i++) {
+            lin_diff = PetscMax(lin_diff, PetscAbsScalar(aua[c * nb + i] - volume[c] * sigma_a * ua[c * nb + i]));
+         }
+      }
+      PetscCall(VecRestoreArrayRead(Au, &aua));
+      PetscCall(VecRestoreArrayRead(u, &ua));
+   }
 
-   const PetscBool pass = (PetscBool)(basis0_diff <= tol * y_norm && slope_max == 0.0);
+   // (c)
+   PetscCall(VecCreate(PETSC_COMM_WORLD, &x));
+   PetscCall(VecSetSizes(x, ps.local_rows(), PETSC_DETERMINE));
+   PetscCall(VecSetType(x, VECKOKKOS));
+   PetscCall(VecDuplicate(x, &y));
+   {
+      const PetscScalar *aua = nullptr;
+      PetscScalar *xa = nullptr;
+      PetscCall(VecGetArrayRead(Au, &aua));
+      PetscCall(VecGetArrayWrite(x, &xa));
+      for (PetscInt node = 0; node < local_cells * nb; node++) {
+         for (PetscInt a = 0; a < n_angles; a++) xa[node * n_angles + a] = aua[node] / (volume[node / nb] * sum_w);
+      }
+      PetscCall(VecRestoreArrayWrite(x, &xa));
+      PetscCall(VecRestoreArrayRead(Au, &aua));
+   }
+   PetscCall(dsa.apply(x, y));
+   PetscCall(VecNorm(u, NORM_INFINITY, &u_norm));
+   {
+      const PetscScalar *ua = nullptr, *ya = nullptr;
+      PetscCall(VecGetArrayRead(u, &ua));
+      PetscCall(VecGetArrayRead(y, &ya));
+      for (PetscInt node = 0; node < local_cells * nb; node++) {
+         for (PetscInt a = 0; a < n_angles; a++) {
+            trip_diff = PetscMax(trip_diff, PetscAbsScalar(ya[node * n_angles + a] - ua[node] / sum_w));
+         }
+      }
+      PetscCall(VecRestoreArrayRead(y, &ya));
+      PetscCall(VecRestoreArrayRead(u, &ua));
+   }
+   u_norm /= PetscRealPart(sum_w);
+
+   PetscCallMPI(MPIU_Allreduce(MPI_IN_PLACE, &lin_diff, 1, MPIU_REAL, MPIU_MAX, PETSC_COMM_WORLD));
+   PetscCallMPI(MPIU_Allreduce(MPI_IN_PLACE, &trip_diff, 1, MPIU_REAL, MPIU_MAX, PETSC_COMM_WORLD));
+   PetscCallMPI(MPIU_Allreduce(MPI_IN_PLACE, &n_interior, 1, MPIU_INT, MPI_SUM, PETSC_COMM_WORLD));
+
+   const PetscBool pass = (PetscBool)(sym_diff <= tol * d_norm && n_interior > 0 && lin_diff <= tol * au_norm && \
+      trip_diff <= trip_tol * u_norm);
    if (!pass) *ok = PETSC_FALSE;
-   PetscCall(PetscPrintf(PETSC_COMM_WORLD, "  DSA at DG1, %s, S%" PetscInt_FMT ": basis 0 vs DG0 %.3e (tol %.0e x |y| = " \
-      "%.3e), slopes %.1e (exact zero)%s\n", where, sn_order, (double)basis0_diff, (double)tol, (double)(tol * y_norm), \
-      (double)slope_max, pass ? "" : " FAILED"));
+   PetscCall(PetscPrintf(PETSC_COMM_WORLD, "  DSA at DG1, %s, S%" PetscInt_FMT ": symmetry %.3e (tol %.0e x |D| = %.3e), " \
+      "linear field on %" PetscInt_FMT " interior cells %.3e (tol %.0e x |Au| = %.3e), apply round trip %.3e " \
+      "(tol %.0e x |u| = %.3e)%s\n", where, sn_order, (double)sym_diff, (double)tol, (double)(tol * d_norm), n_interior, \
+      (double)lin_diff, (double)tol, (double)(tol * au_norm), (double)trip_diff, (double)trip_tol, \
+      (double)(trip_tol * u_norm), pass ? "" : " FAILED"));
 
-   for (PetscInt o = 0; o < 2; o++) {
-      PetscCall(VecDestroy(&x[o]));
-      PetscCall(VecDestroy(&y[o]));
-      PetscCall(dsa[o].destroy());
-      PetscCall(disc[o].destroy());
-   }
+   PetscCall(MatDestroy(&Dt));
+   PetscCall(VecDestroy(&u));
+   PetscCall(VecDestroy(&Au));
+   PetscCall(VecDestroy(&x));
+   PetscCall(VecDestroy(&y));
+   PetscCall(dsa.destroy());
+   PetscCall(disc.destroy());
 
    PetscFunctionReturn(PETSC_SUCCESS);
 }

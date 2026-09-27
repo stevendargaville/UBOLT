@@ -17,28 +17,27 @@
 // that is not a neutron balance - and the correction has to come back off those
 // rows again in the prolongation, so the mask has to be the same in both halves
 //
-// At DG1 only basis 0's node is summed: its rows are the cell balance, the
-// equation the diffusion unknown - the cell average - belongs to
+// Per (cell, basis) node: the cell at n_basis 1, and at DG1 every basis
+// function's moment, which is what the DG1 diffusion operator's rows test with
 static void RestrictKernel(PetscScalarConstKokkosView x_d, PetscScalarKokkosView rhs_d, \
-   PetscScalar2DKokkosView w_d, PetscIntKokkosView is_bc_row_d, PetscInt n_angles, \
-   PetscInt n_basis, PetscInt local_cells)
+   PetscScalar2DKokkosView w_d, PetscIntKokkosView is_bc_row_d, PetscInt n_angles, PetscInt n_nodes)
 {
    Kokkos::parallel_for(
-      Kokkos::TeamPolicy<>(PetscGetKokkosExecutionSpace(), local_cells, Kokkos::AUTO()),
+      Kokkos::TeamPolicy<>(PetscGetKokkosExecutionSpace(), n_nodes, Kokkos::AUTO()),
       KOKKOS_LAMBDA(const KokkosTeamMemberType &t) {
 
-         // cell
-         const PetscInt c = t.league_rank();
+         // node
+         const PetscInt node = t.league_rank();
 
          PetscScalar moment = 0.0;
          Kokkos::parallel_reduce(
             Kokkos::TeamThreadRange(t, n_angles), [&](const PetscInt a, PetscScalar &acc) {
 
-               const PetscInt r = c * n_basis * n_angles + a;
+               const PetscInt r = node * n_angles + a;
                if (!is_bc_row_d(r)) acc += w_d(a, 0) * x_d(r);
             }, moment);
 
-         Kokkos::single(Kokkos::PerTeam(t), [&]() { rhs_d(c) = moment; });
+         Kokkos::single(Kokkos::PerTeam(t), [&]() { rhs_d(node) = moment; });
       });
 }
 
@@ -50,8 +49,7 @@ static void RestrictKernel(PetscScalarConstKokkosView x_d, PetscScalarKokkosView
 // written, so y needs no zeroing beforehand; the BC rows get an explicit zero,
 // which is what the BC contract owes them - the assembled operator already
 // holds the boundary condition on those rows and a correction there would
-// pollute it. node_d is per (cell, basis) node: the inner solution itself at
-// n_basis 1, DG1's per-node correction (NodeCorrectionKernel) otherwise
+// pollute it. node_d is the inner solution, one entry per (cell, basis) node
 static void ProlongKernel(PetscScalarConstKokkosView node_d, PetscScalarKokkosView y_d, \
    PetscIntKokkosView is_bc_row_d, PetscInt n_angles, PetscScalar sum_weights, PetscInt local_rows)
 {
@@ -59,23 +57,6 @@ static void ProlongKernel(PetscScalarConstKokkosView node_d, PetscScalarKokkosVi
       Kokkos::RangePolicy<>(0, local_rows), KOKKOS_LAMBDA(PetscInt r) {
 
          y_d(r) = is_bc_row_d(r) ? (PetscScalar)0.0 : node_d(r / n_angles) / sum_weights;
-      });
-}
-
-// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-// DG1's per-node correction: the cell's diffusion solution on basis 0 - the
-// cell average, phi_0 = 1 - and nothing on the slopes. A slope rebuilt from
-// the neighbours' corrections (Green-Gauss, onto the modal coefficients) was
-// tried and measured no better or worse, see TODO.md: the cell-centred
-// operator is simply not the DG1 thick limit
-static void NodeCorrectionKernel(PetscScalarConstKokkosView sol_d, PetscScalarKokkosView node_d, \
-   PetscInt n_basis, PetscInt n_nodes)
-{
-   Kokkos::parallel_for(
-      Kokkos::RangePolicy<>(0, n_nodes), KOKKOS_LAMBDA(PetscInt node) {
-
-         node_d(node) = (node % n_basis == 0) ? sol_d(node / n_basis) : (PetscScalar)0.0;
       });
 }
 
@@ -195,6 +176,7 @@ PetscErrorCode DSAPrecon::create(MPI_Comm comm, const PhaseSpace &ps, const Unst
    const std::vector<PetscInt> &label = disc.face_label_host();
    const std::vector<PetscReal> &distance = disc.face_distance_host();
    const PetscInt n_slots = offset[local_cells_];
+   const PetscInt nb = n_basis_;
 
    cell_face_offset_ = offset;
    face_distance_ = distance;
@@ -215,8 +197,6 @@ PetscErrorCode DSAPrecon::create(MPI_Comm comm, const PhaseSpace &ps, const Unst
          if (nb_row[k] >= 0) {
             face_nb_[k] = (PetscInt)nb_global.size();
             nb_global.push_back(nb_row[k] / rows_per_cell);
-            coo_i.push_back(cstart + c);
-            coo_j.push_back(nb_global.back());
          }
          // A boundary face: Marshak if vacuum, zero Neumann if reflective -
          // the same families the structured faces take
@@ -225,28 +205,70 @@ PetscErrorCode DSAPrecon::create(MPI_Comm comm, const PhaseSpace &ps, const Unst
             any_vacuum = 1;
          }
       }
-      coo_i.push_back(cstart + c);
-      coo_j.push_back(cstart + c);
+
+      // Row (cell, i): n_basis columns per interior face in cone order (the
+      // neighbour's basis j), then the cell's own n_basis. At DG0 that is the
+      // face graph plus the diagonal
+      for (PetscInt i = 0; i < nb; i++) {
+         const PetscInt row = (cstart + c) * nb + i;
+         for (PetscInt k = offset[c]; k < offset[c + 1]; k++) {
+            if (face_nb_[k] < 0) continue;
+            for (PetscInt j = 0; j < nb; j++) {
+               coo_i.push_back(row);
+               coo_j.push_back(nb_global[face_nb_[k]] * nb + j);
+            }
+         }
+         for (PetscInt j = 0; j < nb; j++) {
+            coo_i.push_back(row);
+            coo_j.push_back((cstart + c) * nb + j);
+         }
+      }
       cell_entry_offset_[c + 1] = (PetscInt)coo_i.size();
    }
    coo_v_.assign(coo_i.size(), 0.0);
+
+   if (nb > 1) {
+
+      // DG1: the backend's face matrices and basis gradients, and the unit
+      // normals. The penalty constant is a runtime knob under the inner
+      // solve's prefix
+      face_own_ = disc.face_own_host();
+      face_up_ = disc.face_up_host();
+      basis_grad_ = disc.basis_grad_host();
+      face_nb_grad_ = disc.face_neighbour_grad_host();
+      face_normal_.assign(3 * n_slots, 0.0);
+      for (PetscInt k = 0; k < n_slots; k++) {
+         for (PetscInt d = 0; d < 3; d++) face_normal_[3 * k + d] = PetscRealPart(nA[3 * k + d]) / face_area_[k];
+      }
+      PetscCall(PetscOptionsGetReal(NULL, "dsa_", "-mip_penalty", &mip_penalty_, NULL));
+      PetscCheck(mip_penalty_ > 0.0, comm, PETSC_ERR_ARG_OUTOFRANGE, \
+         "-dsa_mip_penalty must be positive, got %g", (double)mip_penalty_);
+   }
    PetscCallMPI(MPIU_Allreduce(MPI_IN_PLACE, &any_vacuum, 1, MPIU_INT, MPI_MAX, comm_));
    any_vacuum_ = (PetscBool)(any_vacuum != 0);
 
-   // The COO pattern is the face graph plus the diagonal, set once
+   // The COO pattern is the face graph plus the diagonal (in n_basis blocks at
+   // DG1), set once
    PetscCall(MatCreate(comm_, &diff_mat_));
-   PetscCall(MatSetSizes(diff_mat_, local_cells_, local_cells_, PETSC_DETERMINE, PETSC_DETERMINE));
+   PetscCall(MatSetSizes(diff_mat_, local_cells_ * nb, local_cells_ * nb, PETSC_DETERMINE, PETSC_DETERMINE));
    PetscCall(MatSetType(diff_mat_, MATAIJKOKKOS));
+   // At DG1 a cell's n_basis nodes are one block, which is what lets GAMG
+   // aggregate them together (measured Sep 2026, one V-cycle: tets 16 -> 9,
+   // triangles 11 -> 8 on the diffusive problems, and no worse anywhere)
+   PetscCall(MatSetBlockSize(diff_mat_, nb));
    PetscCall(MatSetPreallocationCOO(diff_mat_, (PetscCount)coo_i.size(), coo_i.data(), coo_j.data()));
    PetscCall(MatSetOption(diff_mat_, MAT_SPD, PETSC_TRUE));
 
    PetscCall(MatCreateVecs(diff_mat_, &sol_, &rhs_));
-   PetscCall(VecDuplicate(rhs_, &d_global_));
+   // D is per cell whatever the order, so it is staged on a cell-sized Vec
+   PetscCall(VecCreateMPI(comm_, local_cells_, PETSC_DETERMINE, &d_global_));
    PetscCall(VecDuplicate(rhs_, &volume_vec_));
    {
       PetscScalar *v = nullptr;
       PetscCall(VecGetArrayWrite(volume_vec_, &v));
-      for (PetscInt c = 0; c < local_cells_; c++) v[c] = volume_[c];
+      for (PetscInt c = 0; c < local_cells_; c++) {
+         for (PetscInt i = 0; i < nb; i++) v[c * nb + i] = volume_[c];
+      }
       PetscCall(VecRestoreArrayWrite(volume_vec_, &v));
    }
 
@@ -256,9 +278,6 @@ PetscErrorCode DSAPrecon::create(MPI_Comm comm, const PhaseSpace &ps, const Unst
       PETSC_COPY_VALUES, &nb_is));
    PetscCall(VecScatterCreate(d_global_, nb_is, d_nb_, NULL, &nb_scatter_));
    PetscCall(ISDestroy(&nb_is));
-
-   // DG1: the per-node correction the prolongation reads, zero on the slopes
-   if (n_basis_ > 1) node_d_ = PetscScalarKokkosView("dsa_node", local_cells_ * n_basis_);
 
    PetscCall(create_ksp());
 
@@ -553,6 +572,10 @@ PetscErrorCode DSAPrecon::assemble_plex(const PetscScalar *sigma_t_h, const Pets
    PetscCall(VecRestoreArrayWrite(d_global_, &d_global_a));
    PetscCall(VecScatterBegin(nb_scatter_, d_global_, d_nb_, INSERT_VALUES, SCATTER_FORWARD));
    PetscCall(VecScatterEnd(nb_scatter_, d_global_, d_nb_, INSERT_VALUES, SCATTER_FORWARD));
+   if (n_basis_ > 1) {
+      PetscCall(assemble_plex_dg1(sigma_t_h, sigma_s_h));
+      PetscFunctionReturn(PETSC_SUCCESS);
+   }
    PetscCall(VecGetArrayRead(d_nb_, &d_nb_a));
 
    for (PetscInt c = 0; c < local_cells_; c++) {
@@ -591,6 +614,115 @@ PetscErrorCode DSAPrecon::assemble_plex(const PetscScalar *sigma_t_h, const Pets
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
+// DG1: the MIP form (see the header), row (c, i) tested with phi_i^c. Every
+// face is visited from both of its cells and each visit writes only its own
+// cell's rows, which is all a face contributes to them: v = phi_i^c has jump
+// phi_i^c across the face (normal n out of c) and average gradient
+// 1/2 D_c grad phi_i^c . n. With F the face matrices times V_c A_f,
+//    F_own(i, j) = int_f phi_i^c phi_j^c,  F_up(i, j) = int_f phi_i^c phi_j^n,
+// m_i = F_own(i, 0) = int_f phi_i^c, and g_j, gn_j this cell's and the
+// neighbour's grad phi_j . n (constant on a cell), an interior face adds
+//    own (c, j): kappa F_own(i, j) - 1/2 D_c g_j m_i - 1/2 D_c g_i F_own(0, j)
+//    nbr (n, j): -kappa F_up(i, j) - 1/2 D_n gn_j m_i + 1/2 D_c g_i F_up(0, j)
+// and a vacuum face the own block with kappa_b - the 1/2 is the MIP boundary
+// form's, not the average's. The matrix is symmetric: the neighbour's visit
+// writes the transpose of the nbr block (both normals and jumps flip). Volume
+// terms: V_c (D_c grad phi_i . grad phi_j + sigma_a delta_ij), the basis being
+// orthonormal in the volume average
+PetscErrorCode DSAPrecon::assemble_plex_dg1(const PetscScalar *sigma_t_h, const PetscScalar *sigma_s_h)
+{
+   const PetscScalar *d_nb_a = nullptr;
+   const PetscInt nb = n_basis_;
+   // n_basis is at most 4 (3D), so fixed-size locals
+   PetscScalar own[4][4], g[4], gn[4];
+
+   PetscFunctionBeginUser;
+
+   PetscCall(VecGetArrayRead(d_nb_, &d_nb_a));
+
+   for (PetscInt c = 0; c < local_cells_; c++) {
+
+      const PetscScalar d_c = 1.0 / (3.0 * sigma_t_h[c]);
+      const PetscScalar sigma_a = sigma_t_h[c] - sigma_s_h[c];
+      const PetscReal vol = volume_[c];
+
+      for (PetscInt i = 0; i < nb; i++) {
+         for (PetscInt j = 0; j < nb; j++) {
+            PetscScalar grad_dot = 0.0;
+            for (PetscInt d = 0; d < 3; d++) grad_dot += basis_grad_[(c * nb + i) * 3 + d] * basis_grad_[(c * nb + j) * 3 + d];
+            own[i][j] = vol * (d_c * grad_dot + (i == j ? sigma_a : (PetscScalar)0.0));
+         }
+      }
+
+      // The neighbour blocks are written straight into their COO entries: in
+      // row i's run, the q-th interior face of this cell (cone order) owns
+      // entries [q * nb, (q + 1) * nb), and the own block comes last
+      const PetscInt row_len = (cell_entry_offset_[c + 1] - cell_entry_offset_[c]) / nb;
+      const PetscInt n_interior = row_len / nb - 1;
+      PetscInt q = 0;
+
+      for (PetscInt k = cell_face_offset_[c]; k < cell_face_offset_[c + 1]; k++) {
+
+         const PetscBool interior = (PetscBool)(face_nb_[k] >= 0);
+         if (!interior && !face_vacuum_[k]) continue;
+
+         const PetscReal scale = vol * face_area_[k];
+         const PetscScalar *f_own = &face_own_[k * nb * nb];
+         const PetscScalar *f_up = &face_up_[k * nb * nb];
+         for (PetscInt j = 0; j < nb; j++) {
+            g[j] = 0.0;
+            gn[j] = 0.0;
+            for (PetscInt d = 0; d < 3; d++) {
+               g[j] += basis_grad_[(c * nb + j) * 3 + d] * face_normal_[3 * k + d];
+               gn[j] += face_nb_grad_[(k * nb + j) * 3 + d] * face_normal_[3 * k + d];
+            }
+         }
+
+         const PetscReal h_c = 2.0 * face_distance_[2 * k];
+         if (interior) {
+
+            const PetscScalar d_n = d_nb_a[face_nb_[k]];
+            const PetscReal h_n = 2.0 * face_distance_[2 * k + 1];
+            const PetscReal kappa = PetscMax(0.5 * mip_penalty_ * PetscRealPart(d_c / h_c + d_n / h_n), 0.25);
+
+            for (PetscInt i = 0; i < nb; i++) {
+               const PetscScalar m_i = scale * f_own[i * nb];
+               PetscScalar *nbr = &coo_v_[cell_entry_offset_[c] + i * row_len + q * nb];
+               for (PetscInt j = 0; j < nb; j++) {
+                  own[i][j] += kappa * scale * f_own[i * nb + j] - 0.5 * d_c * g[j] * m_i \
+                     - 0.5 * d_c * g[i] * scale * f_own[j];
+                  nbr[j] = -kappa * scale * f_up[i * nb + j] - 0.5 * d_n * gn[j] * m_i \
+                     + 0.5 * d_c * g[i] * scale * f_up[j];
+               }
+            }
+            q++;
+         }
+         else {
+
+            const PetscReal kappa = PetscMax(mip_penalty_ * PetscRealPart(d_c) / h_c, 0.25);
+            for (PetscInt i = 0; i < nb; i++) {
+               const PetscScalar m_i = scale * f_own[i * nb];
+               for (PetscInt j = 0; j < nb; j++) {
+                  own[i][j] += kappa * scale * f_own[i * nb + j] - 0.5 * d_c * g[j] * m_i \
+                     - 0.5 * d_c * g[i] * scale * f_own[j];
+               }
+            }
+         }
+      }
+
+      for (PetscInt i = 0; i < nb; i++) {
+         for (PetscInt j = 0; j < nb; j++) coo_v_[cell_entry_offset_[c] + i * row_len + n_interior * nb + j] = own[i][j];
+      }
+   }
+
+   PetscCall(VecRestoreArrayRead(d_nb_, &d_nb_a));
+   PetscCall(MatSetValuesCOO(diff_mat_, coo_v_.data(), INSERT_VALUES));
+
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
 // y = P D_diff^-1 R x
 PetscErrorCode DSAPrecon::apply(Vec x, Vec y)
 {
@@ -609,7 +741,7 @@ PetscErrorCode DSAPrecon::apply(Vec x, Vec y)
       PetscScalarKokkosView rhs_d;
       PetscCall(VecGetKokkosView(x, &x_d));
       PetscCall(VecGetKokkosViewWrite(rhs_, &rhs_d));
-      RestrictKernel(x_d, rhs_d, w_d_, is_bc_row_d_, n_angles_, n_basis_, local_cells_);
+      RestrictKernel(x_d, rhs_d, w_d_, is_bc_row_d_, n_angles_, local_cells_ * n_basis_);
       PetscCall(VecRestoreKokkosViewWrite(rhs_, &rhs_d));
       PetscCall(VecRestoreKokkosView(x, &x_d));
    }
@@ -619,37 +751,16 @@ PetscErrorCode DSAPrecon::apply(Vec x, Vec y)
    // Invert the diffusion operator, inexactly
    PetscCall(KSPSolve(ksp_, rhs_, sol_));
 
-   // DG1: the correction per node - the cell average on basis 0 only
-   if (n_basis_ > 1) PetscCall(build_node_correction());
-
    // Prolong: the scalar correction back onto every ordinate
    {
       PetscScalarConstKokkosView sol_d;
       PetscScalarKokkosView y_d;
-      if (n_basis_ > 1) sol_d = node_d_;
-      else PetscCall(VecGetKokkosView(sol_, &sol_d));
+      PetscCall(VecGetKokkosView(sol_, &sol_d));
       PetscCall(VecGetKokkosViewWrite(y, &y_d));
       ProlongKernel(sol_d, y_d, is_bc_row_d_, n_angles_, sum_weights_, local_rows);
       PetscCall(VecRestoreKokkosViewWrite(y, &y_d));
-      if (n_basis_ == 1) PetscCall(VecRestoreKokkosView(sol_, &sol_d));
+      PetscCall(VecRestoreKokkosView(sol_, &sol_d));
    }
-
-   PetscFunctionReturn(PETSC_SUCCESS);
-}
-
-// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-// DG1: the cell average onto basis 0, zero onto the slopes. Every node is
-// written, so node_d_ needs no zeroing
-PetscErrorCode DSAPrecon::build_node_correction()
-{
-   PetscScalarConstKokkosView sol_d;
-
-   PetscFunctionBeginUser;
-
-   PetscCall(VecGetKokkosView(sol_, &sol_d));
-   NodeCorrectionKernel(sol_d, node_d_, n_basis_, local_cells_ * n_basis_);
-   PetscCall(VecRestoreKokkosView(sol_, &sol_d));
 
    PetscFunctionReturn(PETSC_SUCCESS);
 }

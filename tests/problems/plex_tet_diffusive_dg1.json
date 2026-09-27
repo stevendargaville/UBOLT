@@ -1,8 +1,9 @@
 {
- "_comment": "plex_cube_diffusive.json at DG1 (\"order\": 1): the interior penalty (MIP) DSA on hexes.",
+ "_comment": "plex_tet_diffusive.json at DG1 (\"order\": 1): the interior penalty (MIP) DSA on tetrahedra (needs (c)tetgen).",
  "dimension": 3,
  "mesh": {
   "type": "unstructured",
+  "simplex": true,
   "n_cells": [10, 10, 10],
   "lengths": [1.0, 1.0, 1.0],
   "order": 1
