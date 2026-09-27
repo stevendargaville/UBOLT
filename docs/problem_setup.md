@@ -135,9 +135,11 @@ you:
   `Source 2.0` for exactly this reason).
 - A VOID is `Sigma_t = 0` with a zero `Sigma_s` row (and usually no
   `Source`). The transport streams straight through it, and `-precon_dsa`
-  masks void cells out of its diffusion correction rather than refusing them
-  (a face into the void is a Marshak face for its neighbour), so a void region
-  keeps the rest of a diffusive problem accelerated.
+  keeps void cells in its diffusion correction with a free-flight diffusion
+  coefficient (`L / 3`, `L` the voids' mean chord), so the correction couples
+  the regions a void separates; `-dsa_void_bridge 0` masks them out instead (a
+  face into the void is then a Marshak face for its neighbour). Either way a
+  void region keeps the rest of a diffusive problem accelerated.
 
 ### 4. Regions
 No `regions` = the background material everywhere. Otherwise paint shapes
@@ -280,4 +282,4 @@ your machine.
 | Unstructured twin of a structured box (one added line) | `plex_box_50_st2.json` (2D), `plex_cube_10_st2.json` (3D) |
 | Unstructured triangles / tets on a box | `plex_tri_30_st2.json` (2D), `plex_tet_6_st2.json` (3D) |
 | Unstructured mesh file, Cell Sets materials, integer-keyed BCs | `plex_square_msh.json` (+ `../meshes/square_2x2_tri.msh`) |
-| A void region in a diffusive problem (DSA void masking) | `box_void_channel.json` (2D), `slab_void_gap.json` (1D), `cube_void_duct.json` (3D), `plex_box_void_channel.json` / `_dg1.json` (plex) |
+| A void region in a diffusive problem (DSA void bridging / masking) | `box_void_channel.json` (2D), `slab_void_gap.json` (1D), `cube_void_duct.json` (3D), `plex_box_void_channel.json` / `_dg1.json` (plex) |
