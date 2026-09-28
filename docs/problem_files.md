@@ -35,7 +35,7 @@ ignored everywhere (JSON has no comments), holding provenance prose.
 | key | type | required | meaning |
 |---|---|---|---|
 | `dimension` | int, 1, 2 or 3 | yes | with `mesh.type`, picks the backend: `StructuredFD1D`, `StructuredFD2D` or `StructuredFD3D` on a structured mesh, `UnstructuredDG` (2 or 3 only) on an unstructured one, or `UnstructuredCG` with `mesh.discretisation` `"cg_supg"` |
-| `mesh.type` | `"structured"` or `"unstructured"` | no, default `"structured"` | the backend family: the DMDA finite-difference backends, or the upwind DG backend on a DMPlex - see "Unstructured meshes" below |
+| `mesh.type` | `"structured"` or `"unstructured"` | no, default `"structured"` | the backend family: the DMDA finite-difference backends, or a DMPlex backend - upwind DG by default, CG-SUPG with `mesh.discretisation` - see "Unstructured meshes" below |
 | `mesh.n_cells` | int[dimension] | yes, except with `mesh.file` | `[nx]`, `[nx, ny]` or `[nx, ny, nz]`, all positive. On an unstructured mesh, the cells per axis of the box PETSc builds |
 | `mesh.lengths` | number[dimension] | yes, except with `mesh.file` | `[lx]`, `[lx, ly]` or `[lx, ly, lz]`, all positive; the box runs from the origin |
 | `mesh.order` | int, 0 or 1 | no, default 0; unstructured only | the DG order: 0 is DG0 (one flux per cell and ordinate), 1 is linear DG (dimension + 1 per cell) - see "Linear DG" below. A `"cg_supg"` mesh is linear (P1/Q1): 1 or left out |
@@ -193,7 +193,10 @@ a migration message rather than being silently reinterpreted.
 
 ### Unstructured meshes
 
-`"type": "unstructured"` in `mesh` selects the upwind DG backend on a DMPlex,
+`"type": "unstructured"` in `mesh` selects the upwind DG backend on a DMPlex
+(or, with `"discretisation": "cg_supg"`, the CG-SUPG one - "Continuous
+Galerkin (SUPG)" below; the mesh, painting and "Face Sets" rules here are
+shared),
 at DG0 by default (`"order": 1` is linear DG, below): one flux per cell and
 ordinate, upwind on every face - first order in space,
 like the structured finite differences, and on a uniform quad/hex box exactly

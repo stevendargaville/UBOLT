@@ -44,7 +44,8 @@ convert, it just trusts you to be consistent).
 #### Structured or unstructured?
 `mesh.type` is `"structured"` by default: the DMDA finite-difference backends,
 a box of equal cells per axis. `"unstructured"` is the upwind DG backend on a
-DMPlex, DG0 by default or linear DG with `"order": 1` (2D and 3D only; schema in `docs/problem_files.md`, "Unstructured
+DMPlex, DG0 by default or linear DG with `"order": 1`, or continuous Galerkin
+with `"discretisation": "cg_supg"` (below) (2D and 3D only; schema in `docs/problem_files.md`, "Unstructured
 meshes"). Reach for it when the geometry is not a box of boxes:
 - **the geometry needs a mesh file** — curved or slanted material interfaces,
   a domain that is not a rectangle, a mesh from Gmsh with its physical groups

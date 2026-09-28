@@ -229,8 +229,9 @@ Codebase map
   the driver passes the group's `sigma_t` and its `source`, the latter expanded onto the
   cells by `UboltFillCellSource` — written through PETSc's VTK viewer onto a dof-1 twin
   of the backend's DM, dispatched on its type: `.vts`/`.vtr` on a DMDA, `.vtu` on a
-  DMPlex (owned cells only, via a "vtk" label); a problem file's `output.flux_vtk`, or
-  `-flux_vtk` as the override). `types.hpp` owns every Kokkos view typedef, `ubolt.hpp`
+  DMPlex (owned cells only, via a "vtk" label; on the CG backend its sibling
+  `UboltWriteScalarFluxVTKCG` writes the flux as point data, `scalar_flux.nodal`); a
+  problem file's `output.flux_vtk`, or `-flux_vtk` as the override). `types.hpp` owns every Kokkos view typedef, `ubolt.hpp`
   is the umbrella header. Every translation unit is a Kokkos one, named `Xk.kokkos.cxx`
   (the suffix triggers PETSc's Kokkos build rules). See `TODO.md` for the roadmap and
   current phase.
