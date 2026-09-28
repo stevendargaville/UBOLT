@@ -130,11 +130,9 @@ came from the pre-refactor code (the single-file `UBOLTk.kokkos.cxx`); Phase 1a 
 - Capture is capped at `-ksp_max_it 200`: all four st=2 diag_scale configs are pathological
   and a 200-iteration residual history is a strong enough fingerprint.
   Non-converged baselines are still valid fingerprints for a refactor diff. Under
-  Dirichlet-cell none of those four converged, so all four capture lines carry
-  `|| true`; under ghost-flux the default-pc pair scrapes in at 174/173 and the
-  streaming-pmat pair hits the cap. The `|| true` is still on all four lines (harmless on
-  the pair that converges), and the comment above `capture_baselines` in `tests/Makefile`
-  still says none of the four converges, which is the Dirichlet-cell-era statement.
+  ghost-flux the default-pc pair converges at 174/173 and the streaming-pmat pair hits
+  the cap (under Dirichlet-cell none of the four converged); all four capture lines carry
+  `|| true` so the capture runs to completion either way.
 - Re-capture with `make baselines` — only do this deliberately (i.e. when the reference
   behavior itself is being intentionally changed), never to make a failing test pass.
 - Environment matters for exact reproduction: these were captured with a debug PETSc main
