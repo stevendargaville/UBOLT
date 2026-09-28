@@ -1,6 +1,5 @@
 #include "ubolt/unstructured_cg.hpp"
 #include "plex_commonk.hpp"
-#include "petsc_kokkos.hpp"
 #include <petscdmplex.h>
 #include <petscfe.h>
 #include <petscsf.h>
@@ -13,24 +12,12 @@
 // then local - see the header
 PetscErrorCode UnstructuredCG::create_mesh(MPI_Comm comm, const PlexMeshSpec &mesh)
 {
-   PetscInt n_owned = 0;
-   std::vector<PetscInt> owned;
-
    PetscFunctionBeginUser;
 
-   PetscCheck(!dm_, comm, PETSC_ERR_ARG_WRONGSTATE, "create_mesh has already built this backend's mesh");
-
-   comm_ = comm;
-
-   PetscCall(UboltCreatePlexMesh(comm, mesh, PETSC_FALSE, PETSC_TRUE, &dm_));
-   dim_ = mesh.dimension;
-
+   PetscCall(create_plex_mesh(comm, mesh, PETSC_FALSE, PETSC_TRUE));
    // The mesh decides the global VERTEX count - the rows' spatial unit
    PetscCall(DMPlexGetDepthStratum(dm_, 0, &v_start_, &v_end_));
-   PetscCall(DMPlexGetHeightStratum(dm_, 0, &c_start_, &c_end_));
-   PetscCall(MarkOwnedPoints(dm_, v_start_, v_end_, owned));
-   for (const PetscInt o : owned) n_owned += o;
-   PetscCallMPI(MPI_Allreduce(&n_owned, &n_global_vertices_, 1, MPIU_INT, MPI_SUM, comm_));
+   PetscCall(CountOwnedPoints(dm_, comm_, v_start_, v_end_, &n_global_vertices_));
 
    PetscFunctionReturn(PETSC_SUCCESS);
 }
@@ -49,76 +36,6 @@ PetscErrorCode UnstructuredCG::destroy()
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-// The DG backend's CheckPlexLayout on the vertex stratum: every vertex carries
-// dof_per_vertex dof, the global section and the point SF agree on ownership,
-// and the owned vertices in increasing POINT order sit at rstart + k * dof -
-// contiguous. That last one is what makes "local vertex k = the k-th owned
-// vertex in point order" the indexing every per-row kernel uses
-static PetscErrorCode CheckCGLayout(DM dm, PetscSection gsec, PetscInt dof_per_vertex, PetscInt v_start, \
-   PetscInt v_end, const std::vector<PetscInt> &owned, PetscInt n_global_expected)
-{
-   MPI_Comm comm = PetscObjectComm((PetscObject)dm);
-   PetscInt rstart = 0, rend = 0, n_global = 0, k = 0;
-   Vec gv = NULL;
-
-   PetscFunctionBeginUser;
-
-   // A transient global vector, only to read the ownership range
-   PetscCall(DMCreateGlobalVector(dm, &gv));
-   PetscCall(VecGetOwnershipRange(gv, &rstart, &rend));
-   PetscCall(VecDestroy(&gv));
-
-   for (PetscInt v = v_start; v < v_end; v++) {
-      PetscInt g = 0, dof = 0;
-      PetscBool is_owned = PETSC_FALSE;
-      PetscCall(GlobalPointOffset(gsec, v, &g, &is_owned));
-      PetscCall(PetscSectionGetDof(gsec, v, &dof));
-      if (dof < 0) dof = -(dof + 1);
-      PetscCheck(dof == dof_per_vertex, PETSC_COMM_SELF, PETSC_ERR_PLIB, "vertex %" PetscInt_FMT \
-         " carries %" PetscInt_FMT " dof, not %" PetscInt_FMT, v, dof, dof_per_vertex);
-      PetscCheck(is_owned == (PetscBool)(owned[v - v_start] != 0), PETSC_COMM_SELF, PETSC_ERR_PLIB, \
-         "the global section and the point SF disagree about who owns vertex %" PetscInt_FMT, v);
-      if (!is_owned) continue;
-      PetscCheck(g == rstart + k * dof_per_vertex, PETSC_COMM_SELF, PETSC_ERR_PLIB, "owned vertex %" \
-         PetscInt_FMT " (local vertex %" PetscInt_FMT ") starts at global row %" PetscInt_FMT ", not the " \
-         "point-ordered %" PetscInt_FMT, v, k, g, rstart + k * dof_per_vertex);
-      k++;
-   }
-
-   PetscCheck(rend - rstart == k * dof_per_vertex, PETSC_COMM_SELF, PETSC_ERR_PLIB, \
-      "the DM owns %" PetscInt_FMT " rows but %" PetscInt_FMT " owned vertices x %" PetscInt_FMT " dof", \
-      rend - rstart, k, dof_per_vertex);
-   PetscCallMPI(MPI_Allreduce(&k, &n_global, 1, MPIU_INT, MPI_SUM, comm));
-   PetscCheck(n_global == n_global_expected, comm, PETSC_ERR_PLIB, "the mesh has %" PetscInt_FMT \
-      " vertices, the phase space %" PetscInt_FMT, n_global, n_global_expected);
-
-   PetscFunctionReturn(PETSC_SUCCESS);
-}
-
-// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-PetscErrorCode UnstructuredCG::create(PhaseSpace &ps, const SNQuadrature2D &quad, const BCSpec &bcs, PetscReal zeta)
-{
-   PetscFunctionBeginUser;
-
-   PetscCall(create_common(ps, 2, quad.n_angles(), quad.sum_weights(), quad.mu_host(), quad.eta_host(), NULL, \
-      quad.reflect_mu_host(), quad.reflect_eta_host(), NULL, bcs, zeta));
-
-   PetscFunctionReturn(PETSC_SUCCESS);
-}
-
-PetscErrorCode UnstructuredCG::create(PhaseSpace &ps, const SNQuadrature3D &quad, const BCSpec &bcs, PetscReal zeta)
-{
-   PetscFunctionBeginUser;
-
-   PetscCall(create_common(ps, 3, quad.n_angles(), quad.sum_weights(), quad.mu_host(), quad.eta_host(), \
-      quad.xi_host(), quad.reflect_mu_host(), quad.reflect_eta_host(), quad.reflect_xi_host(), bcs, zeta));
-
-   PetscFunctionReturn(PETSC_SUCCESS);
-}
-
-// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
 // The element tables, on the host once: which local vertex each basis
 // function belongs to, and M, G, K, the volume, the centroid and the centroid
 // gradients per local element (overlap included). PetscFE gives the reference
@@ -128,7 +45,8 @@ PetscErrorCode UnstructuredCG::create(PhaseSpace &ps, const SNQuadrature3D &quad
 // assuming the FE's node order is the plex closure order: the dual space's
 // node j is mapped from the reference cell through the cell's own geometry and
 // the nearest closure vertex is the one (asserted to be a vertex to rounding)
-PetscErrorCode UnstructuredCG::build_element_tables()
+PetscErrorCode UnstructuredCG::build_element_tables(std::vector<PetscScalar> &centre_grad, PetscBool *failed, \
+   char *message, size_t len)
 {
    const PetscInt dim = dim_;
    const PetscInt n_elem = c_end_ - c_start_;
@@ -139,23 +57,32 @@ PetscErrorCode UnstructuredCG::build_element_tables()
    PetscSection csec = NULL;
    Vec coords_vec = NULL;
    const PetscScalar *coords = nullptr;
-   DMPolytopeType ct;
+   PetscInt local_type = -1, mesh_type = -1;
 
    PetscFunctionBeginUser;
 
-   // One cell type per mesh: the tables are nv x nv per element
-   PetscCall(DMPlexGetCellType(dm_, c_start_, &ct));
-   PetscBool simplex = PETSC_FALSE;
-   if (ct == DM_POLYTOPE_TRIANGLE || ct == DM_POLYTOPE_TETRAHEDRON) simplex = PETSC_TRUE;
-   else PetscCheck(ct == DM_POLYTOPE_QUADRILATERAL || ct == DM_POLYTOPE_HEXAHEDRON, PETSC_COMM_SELF, \
+   // One cell type per mesh: the tables are nv x nv per element. Agreed over
+   // the ranks, because a rank may hold no element at all
+   if (c_end_ > c_start_) {
+      DMPolytopeType first;
+      PetscCall(DMPlexGetCellType(dm_, c_start_, &first));
+      local_type = (PetscInt)first;
+   }
+   PetscCallMPI(MPI_Allreduce(&local_type, &mesh_type, 1, MPIU_INT, MPI_MAX, comm_));
+   PetscCheck(mesh_type >= 0, comm_, PETSC_ERR_ARG_WRONG, "the CG backend was given a mesh with no cells");
+   const DMPolytopeType ct = (DMPolytopeType)mesh_type;
+   const PetscBool simplex = (PetscBool)(ct == DM_POLYTOPE_TRIANGLE || ct == DM_POLYTOPE_TETRAHEDRON);
+   PetscCheck(simplex || ct == DM_POLYTOPE_QUADRILATERAL || ct == DM_POLYTOPE_HEXAHEDRON, comm_, \
       PETSC_ERR_SUP, "the CG backend takes triangles, quadrilaterals, tetrahedra or hexahedra, not %s", \
       DMPolytopeTypes[ct]);
    for (PetscInt c = c_start_; c < c_end_; c++) {
       DMPolytopeType cc;
       PetscCall(DMPlexGetCellType(dm_, c, &cc));
-      PetscCheck(cc == ct, PETSC_COMM_SELF, PETSC_ERR_SUP, "the CG backend takes one cell type per mesh, " \
-         "found %s and %s", DMPolytopeTypes[ct], DMPolytopeTypes[cc]);
+      if (cc != ct) PetscCall(RecordFailure(failed, message, len, "the CG backend takes one cell type per " \
+         "mesh, found %s and %s", DMPolytopeTypes[ct], DMPolytopeTypes[cc]));
    }
+   // No tables for a mixed mesh - the caller's CollectiveFailure stops here
+   if (*failed) PetscFunctionReturn(PETSC_SUCCESS);
 
    // Degree 1 Lagrange, a quadrature exact for the mass matrix on any affine
    // cell (and close on a curved Q1 one)
@@ -210,7 +137,7 @@ PetscErrorCode UnstructuredCG::build_element_tables()
    mass_h_.assign(n_elem * nv * nv, 0.0);
    grad_h_.assign(n_elem * nv * nv * 3, 0.0);
    stiff_h_.assign(n_elem * nv * nv * 9, 0.0);
-   centre_grad_h_.assign(n_elem * nv * 3, 0.0);
+   centre_grad.assign(n_elem * nv * 3, 0.0);
    elem_volume_h_.assign(n_elem, 0.0);
    elem_centroid_h_.assign(3 * n_elem, 0.0);
 
@@ -277,8 +204,8 @@ PetscErrorCode UnstructuredCG::build_element_tables()
       PetscCall(DMPlexComputeCellGeometryFEM(dm_, c, quad, v.data(), J.data(), invJ.data(), detJ.data()));
       PetscReal vol = 0.0, cen[3] = {0.0, 0.0, 0.0};
       for (PetscInt q = 0; q < nq; q++) {
-         PetscCheck(PetscAbsReal(detJ[q]) > 0.0, PETSC_COMM_SELF, PETSC_ERR_ARG_WRONG, "cell %" PetscInt_FMT \
-            " is degenerate (det J = %g)", c, (double)detJ[q]);
+         if (!(PetscAbsReal(detJ[q]) > 0.0)) PetscCall(RecordFailure(failed, message, len, "cell %" \
+            PetscInt_FMT " is degenerate (det J = %g)", c, (double)detJ[q]));
          detJ[q] = PetscAbsReal(detJ[q]);
          for (PetscInt j = 0; j < nv; j++) {
             for (PetscInt d = 0; d < 3; d++) {
@@ -318,7 +245,7 @@ PetscErrorCode UnstructuredCG::build_element_tables()
          for (PetscInt d = 0; d < dim; d++) {
             PetscReal g = 0.0;
             for (PetscInt i = 0; i < dim; i++) g += Tc->T[1][j * dim + i] * invJc[i * dim + d];
-            centre_grad_h_[(e * nv + j) * 3 + d] = g;
+            centre_grad[(e * nv + j) * 3 + d] = g;
          }
       }
    }
@@ -347,9 +274,7 @@ struct CGBoundaryFace {
 
 // The layout, the element tables, the boundary faces and the COO sparsity.
 // This happens on the host but we only need to do it once
-PetscErrorCode UnstructuredCG::create_common(PhaseSpace &ps, PetscInt quad_dim, PetscInt n_angles, \
-   PetscScalar sum_weights, const PetscScalar *mu, const PetscScalar *eta, const PetscScalar *xi, \
-   const PetscInt *reflect_mu, const PetscInt *reflect_eta, const PetscInt *reflect_xi, const BCSpec &bcs, \
+PetscErrorCode UnstructuredCG::create(PhaseSpace &ps, const AngularQuadrature &quad, const BCSpec &bcs, \
    PetscReal zeta)
 {
    PetscSection sec = NULL, gsec = NULL;
@@ -365,10 +290,10 @@ PetscErrorCode UnstructuredCG::create_common(PhaseSpace &ps, PetscInt quad_dim, 
 
    PetscCheck(dm_, PETSC_COMM_SELF, PETSC_ERR_ARG_WRONGSTATE, \
       "UnstructuredCG::create_mesh has to come first - the mesh decides the vertex count");
-   PetscCheck(quad_dim == dim_, comm_, PETSC_ERR_ARG_INCOMP, "a %" PetscInt_FMT "D quadrature was " \
-      "handed to a %" PetscInt_FMT "D mesh", quad_dim, dim_);
-   PetscCheck(n_angles == ps.n_angles, comm_, PETSC_ERR_ARG_INCOMP, \
-      "quadrature has %" PetscInt_FMT " angles but the phase space has %" PetscInt_FMT, n_angles, ps.n_angles);
+   PetscCheck(quad.dimension() == dim_, comm_, PETSC_ERR_ARG_INCOMP, "a %" PetscInt_FMT "D quadrature was " \
+      "handed to a %" PetscInt_FMT "D mesh", quad.dimension(), dim_);
+   PetscCheck(quad.n_angles() == ps.n_angles, comm_, PETSC_ERR_ARG_INCOMP, "quadrature has %" PetscInt_FMT \
+      " angles but the phase space has %" PetscInt_FMT, quad.n_angles(), ps.n_angles);
    PetscCheck(ps.n_cells == n_global_vertices_, comm_, PETSC_ERR_ARG_INCOMP, "the mesh has %" PetscInt_FMT \
       " vertices but the phase space %" PetscInt_FMT " cells - size it off n_global_vertices()", \
       n_global_vertices_, ps.n_cells);
@@ -378,7 +303,11 @@ PetscErrorCode UnstructuredCG::create_common(PhaseSpace &ps, PetscInt quad_dim, 
       (double)zeta);
 
    const PetscInt dim = dim_;
-   const PetscInt *reflect[3] = {reflect_mu, reflect_eta, reflect_xi};
+   const PetscInt n_angles = quad.n_angles();
+   const PetscScalar sum_weights = quad.sum_weights();
+   const PetscInt *reflect[3] = {quad.reflect_host(0), quad.reflect_host(1), quad.reflect_host(2)};
+   // The ordinates flattened (a * 3 + d), as the device view has them
+   const std::vector<PetscScalar> omega(quad.omega_host(), quad.omega_host() + 3 * n_angles);
    zeta_ = zeta;
    ps.n_basis = 1;
 
@@ -397,7 +326,7 @@ PetscErrorCode UnstructuredCG::create_common(PhaseSpace &ps, PetscInt quad_dim, 
    PetscCall(DMGetGlobalSection(dm_, &gsec));
 
    PetscCall(MarkOwnedPoints(dm_, v_start_, v_end_, owned));
-   PetscCall(CheckCGLayout(dm_, gsec, n_angles, v_start_, v_end_, owned, ps.n_cells));
+   PetscCall(CheckPlexStratumLayout(dm_, gsec, v_start_, v_end_, owned, n_angles, ps.n_cells, "vertex", NULL));
 
    const PetscInt n_lv = v_end_ - v_start_;
    owned_lv_.clear();
@@ -415,11 +344,16 @@ PetscErrorCode UnstructuredCG::create_common(PhaseSpace &ps, PetscInt quad_dim, 
    const PetscInt local_rows = ps.local_rows();
 
    PetscCall(MarkOwnedPoints(dm_, c_start_, c_end_, elem_owned_h_));
+   // Painting paints every local element
+   paint_point_.resize(c_end_ - c_start_);
+   for (PetscInt c = c_start_; c < c_end_; c++) paint_point_[c - c_start_] = c;
 
    // ~~~~~~~~~~
    // The element tables, and the vertex coordinates
    // ~~~~~~~~~~
-   PetscCall(build_element_tables());
+   std::vector<PetscScalar> centre_grad;
+   PetscCall(build_element_tables(centre_grad, &failed, message, sizeof(message)));
+   PetscCall(CollectiveFailure(comm_, failed, message));
    const PetscInt nv = nv_;
    const PetscInt n_elem = c_end_ - c_start_;
    {
@@ -453,7 +387,6 @@ PetscErrorCode UnstructuredCG::create_common(PhaseSpace &ps, PetscInt quad_dim, 
    std::vector<std::vector<CGBoundaryFace>> bfaces(local_vertices);
    std::vector<PetscInt> labels_seen;
    lumped_mass_h_.assign(local_vertices, 0.0);
-   on_boundary_h_.assign(local_vertices, 0);
 
    for (PetscInt k = 0; k < local_vertices; k++) {
 
@@ -497,17 +430,11 @@ PetscErrorCode UnstructuredCG::create_common(PhaseSpace &ps, PetscInt quad_dim, 
          CGBoundaryFace bf;
          PetscReal normal[3] = {0.0, 0.0, 0.0};
          PetscCall(DMPlexComputeCellGeometryFVM(dm_, pt, &bf.area, bf.centroid, normal));
-         PetscCheck(bf.area > 0.0, PETSC_COMM_SELF, PETSC_ERR_ARG_WRONG, "face %" PetscInt_FMT \
-            " has non-positive area %g", pt, (double)bf.area);
-         PetscReal norm = 0.0, outward = 0.0;
+         if (!(bf.area > 0.0)) PetscCall(RecordFailure(&failed, message, sizeof(message), "face %" PetscInt_FMT \
+            " has non-positive area %g", pt, (double)bf.area));
          const PetscInt e_sup = support[0] - c_start_;
-         for (PetscInt d = 0; d < dim; d++) {
-            norm += normal[d] * normal[d];
-            outward += normal[d] * (bf.centroid[d] - elem_centroid_h_[3 * e_sup + d]);
-         }
-         norm = PetscSqrtReal(norm);
-         const PetscReal sign = (outward < 0.0) ? -1.0 : 1.0;
-         for (PetscInt d = 0; d < dim; d++) bf.nA[d] = sign * bf.area * normal[d] / norm;
+         if (!OutwardAreaNormal(dim, bf.area, normal, bf.centroid, &elem_centroid_h_[3 * e_sup], bf.nA)) \
+            PetscCall(RecordFailure(&failed, message, sizeof(message), "face %" PetscInt_FMT " has no normal", pt));
          bf.axis = DominantAxis(bf.nA, dim);
 
          PetscInt n_fcl = 0, *fcl = nullptr;
@@ -520,55 +447,23 @@ PetscErrorCode UnstructuredCG::create_common(PhaseSpace &ps, PetscInt quad_dim, 
          if (face_sets) PetscCall(DMLabelGetValue(face_sets, pt, &bf.label));
          labels_seen.push_back(bf.label);
 
-         const BCFace bc = bcs.face(bf.label);
-         if (!failed && bc.n_window_pairs != 0 && bc.n_window_pairs != dim - 1) {
-            failed = PETSC_TRUE;
-            PetscCall(PetscSNPrintf(message, sizeof(message), "a %" PetscInt_FMT "D face takes %" \
-               PetscInt_FMT " tangential [lo, hi] window pairs, face set %" PetscInt_FMT " was given %" \
-               PetscInt_FMT, dim, dim - 1, bf.label, bc.n_window_pairs));
-         }
-         if (!failed && bc.type == BCType::REFLECT && \
-             PetscAbsScalar(bf.nA[bf.axis]) < (1.0 - 1e-10) * bf.area) {
-            failed = PETSC_TRUE;
-            PetscCall(PetscSNPrintf(message, sizeof(message), "face %" PetscInt_FMT " (face set %" \
-               PetscInt_FMT ") is reflective but not axis-aligned - reflection maps an ordinate onto " \
-               "an ordinate only across a face normal to x, y or z", pt, bf.label));
-         }
+         PetscCall(CheckBoundaryFaceBC(bcs, dim, bf.label, bf.nA, bf.axis, bf.area, pt, &failed, message, \
+            sizeof(message)));
          bfaces[k].push_back(bf);
-         on_boundary_h_[k] = 1;
       }
       PetscCall(DMPlexRestoreTransitiveClosure(dm_, vtx, PETSC_FALSE, &n_st, &st));
 
       star_offset[k + 1] = (PetscInt)star_elem.size();
       std::sort(neighbours[k].begin(), neighbours[k].end());
       neighbours[k].erase(std::unique(neighbours[k].begin(), neighbours[k].end()), neighbours[k].end());
-      PetscCheck(lumped_mass_h_[k] > 0.0, PETSC_COMM_SELF, PETSC_ERR_PLIB, "vertex %" PetscInt_FMT \
-         " has a non-positive lumped mass %g", vtx, (double)lumped_mass_h_[k]);
+      if (!(lumped_mass_h_[k] > 0.0)) PetscCall(RecordFailure(&failed, message, sizeof(message), "vertex %" \
+         PetscInt_FMT " has a non-positive lumped mass %g", vtx, (double)lumped_mass_h_[k]));
    }
    PetscCall(CollectiveFailure(comm_, failed, message));
 
-   // Every label the BCSpec names has to be on some boundary face somewhere
-   // (see UnstructuredDG). A boundary face's vertices are all owned by
-   // someone, so every one is seen above on some rank
-   for (const auto &entry : bcs.faces()) {
-      PetscMPIInt seen = 0, any = 0;
-      for (const PetscInt value : labels_seen) {
-         if (value == entry.first) seen = 1;
-      }
-      PetscCallMPI(MPI_Allreduce(&seen, &any, 1, MPI_INT, MPI_MAX, comm_));
-      PetscCheck(any, comm_, PETSC_ERR_ARG_WRONG, "a boundary condition was given for \"Face Sets\" value %" \
-         PetscInt_FMT " but no boundary face of the mesh carries it", entry.first);
-   }
-
-   // ~~~~~~~~~~
-   // The ordinates, flattened (a * 3 + d)
-   // ~~~~~~~~~~
-   std::vector<PetscScalar> omega(3 * n_angles, 0.0);
-   for (PetscInt a = 0; a < n_angles; a++) {
-      omega[3 * a] = mu[a];
-      omega[3 * a + 1] = eta[a];
-      omega[3 * a + 2] = xi ? xi[a] : 0.0;
-   }
+   // A boundary face's vertices are all owned by someone, so every face is
+   // seen above on some rank
+   PetscCall(CheckBCLabelsSeen(comm_, bcs, labels_seen));
 
    // ~~~~~~~~~~
    // COO coordinates, slot order per row: neighbours (point order), one
@@ -581,10 +476,9 @@ PetscErrorCode UnstructuredCG::create_common(PhaseSpace &ps, PetscInt quad_dim, 
    ooc_.clear();
    std::vector<PetscInt> row_slot_offset(local_rows + 1, 0);
    std::vector<PetscInt> diag_slot(local_rows, 0);
-   std::vector<PetscInt> is_bc_row(local_rows, 0);
-   std::vector<PetscInt> reflect_slot(local_rows, -1);
-   std::vector<PetscScalar> dirichlet_value(local_rows, 0.0);
-   std::vector<PetscScalar> ghost_inflow(local_rows, 0.0);
+   // Weak BCs: no BC rows, only the ghost inflow
+   BoundaryRows rows;
+   rows.reset(local_rows, PETSC_TRUE);
 
    std::vector<PetscInt> star_slot(star_elem.size() * nv, -1);
    std::vector<PetscInt> bface_offset(local_vertices + 1, 0), bface_slot;
@@ -674,13 +568,10 @@ PetscErrorCode UnstructuredCG::create_common(PhaseSpace &ps, PetscInt quad_dim, 
             const PetscScalar s = FaceFlux(omega.data(), a, bf.nA, 0);
             if (PetscRealPart(s) >= 0.0) continue;
             PetscReal t[2] = {0.0, 0.0};
-            PetscInt n_t = 0;
-            for (PetscInt d = 0; d < dim; d++) {
-               if (d != bf.axis) t[n_t++] = bf.centroid[d];
-            }
+            const PetscInt n_t = FaceWindowCoords(bf.centroid, bf.axis, dim, t);
             if (!InWindow(bc, t, n_t)) continue;
             // |Omega . nA_f| m^f_i / (m_i A_f) times the per-angle inflow
-            ghost_inflow[r] += -s * inv_m / (PetscReal)bf.n_face_vertices * bc.inflow / sum_weights;
+            rows.ghost_inflow[r] += -s * inv_m / (PetscReal)bf.n_face_vertices * bc.inflow / sum_weights;
          }
 
          PetscCheck((PetscInt)oor_.size() - row_slot_offset[r] == row_len, PETSC_COMM_SELF, PETSC_ERR_PLIB, \
@@ -690,8 +581,7 @@ PetscErrorCode UnstructuredCG::create_common(PhaseSpace &ps, PetscInt quad_dim, 
    }
    row_slot_offset[local_rows] = (PetscInt)oor_.size();
 
-   PetscCall(set_pattern(row_slot_offset, diag_slot, is_bc_row, reflect_slot, dirichlet_value, ghost_inflow, \
-      PETSC_TRUE));
+   PetscCall(set_pattern(row_slot_offset, diag_slot, rows));
 
    // ~~~~~~~~~~
    // The device tables - flat rank-1 views only
@@ -724,16 +614,16 @@ PetscErrorCode UnstructuredCG::create_common(PhaseSpace &ps, PetscInt quad_dim, 
    upload_scalar(mass_h_, "mass_d", mass_d_);
    upload_scalar(grad_h_, "grad_d", grad_d_);
    upload_scalar(stiff_h_, "stiff_d", stiff_d_);
-   upload_scalar(centre_grad_h_, "centre_grad_d", centre_grad_d_);
-   upload_scalar(centroid, "elem_centroid_d", elem_centroid_d_);
+   upload_scalar(centre_grad, "centre_grad_d", centre_grad_d_);
+   upload_scalar(centroid, "elem_centroid_d", paint_centroid_d_);
    upload_int(bface_offset, "bface_offset_d", bface_offset_d_);
    upload_scalar(bface_nA, "bface_nA_d", bface_nA_d_);
    upload_scalar(bface_mass, "bface_mass_d", bface_mass_d_);
    upload_int(bface_slot, "bface_slot_d", bface_slot_d_);
-   bface_offset_h_ = bface_offset;
-   bface_nA_h_ = bface_nA;
-   bface_mass_h_ = bface_mass;
-   bface_slot_h_ = bface_slot;
+   bface_offset_h_ = std::move(bface_offset);
+   bface_nA_h_ = std::move(bface_nA);
+   bface_mass_h_ = std::move(bface_mass);
+   bface_slot_h_ = std::move(bface_slot);
 
    // ~~~~~~~~~~
    // The dof-1 vertex twin, for nodal fields. Its owned vertices sit in point
@@ -750,7 +640,7 @@ PetscErrorCode UnstructuredCG::create_common(PhaseSpace &ps, PetscInt quad_dim, 
       PetscCall(PetscSectionDestroy(&vsec));
       PetscCall(DMSetVecType(vertex_dm_, VECKOKKOS));
       PetscCall(DMGetGlobalSection(vertex_dm_, &vgsec));
-      PetscCall(CheckCGLayout(vertex_dm_, vgsec, 1, v_start_, v_end_, owned, ps.n_cells));
+      PetscCall(CheckPlexStratumLayout(vertex_dm_, vgsec, v_start_, v_end_, owned, 1, ps.n_cells, "vertex", NULL));
       local_vertex_global_h_.assign(v_end_ - v_start_, -1);
       for (PetscInt vtx = v_start_; vtx < v_end_; vtx++) {
          PetscBool is_owned = PETSC_FALSE;
@@ -841,6 +731,14 @@ PetscErrorCode UnstructuredCG::add_weighted_load(const PetscScalarKokkosView &si
       " elements but there are %" PetscInt_FMT " local elements", (PetscInt)sigma_t_e.extent(0), \
       (PetscInt)coeff_e.extent(0), n_local_elements());
 
+   if (f_local) {
+      PetscInt n_f = 0;
+      PetscCall(VecGetLocalSize(f_local, &n_f));
+      PetscCheck(n_f == v_end_ - v_start_, PETSC_COMM_SELF, PETSC_ERR_ARG_INCOMP, "the nodal field has %" \
+         PetscInt_FMT " local entries, not the %" PetscInt_FMT " local vertices - pass the vertex twin's LOCAL Vec", \
+         n_f, v_end_ - v_start_);
+   }
+
    PetscScalarConstKokkosView f_d;
    PetscScalarKokkosView y_d;
    if (f_local) PetscCall(VecGetKokkosView(f_local, &f_d));
@@ -852,85 +750,6 @@ PetscErrorCode UnstructuredCG::add_weighted_load(const PetscScalarKokkosView &si
 
    PetscCall(VecRestoreKokkosView(y, &y_d));
    if (f_local) PetscCall(VecRestoreKokkosView(f_local, &f_d));
-
-   PetscFunctionReturn(PETSC_SUCCESS);
-}
-
-// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-// Painting - every local element, by centroid
-// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-PetscErrorCode UnstructuredCG::paint_boxes_over(const std::vector<MaterialBox2D> &boxes, PetscIntKokkosView &mat_id_d) const
-{
-   std::vector<PetscScalar> box_lohi;
-   std::vector<PetscInt> box_material;
-
-   PetscFunctionBeginUser;
-
-   PetscCheck(dim_ == 2, comm_, PETSC_ERR_ARG_INCOMP, "2D boxes painted onto a %" PetscInt_FMT "D mesh", dim_);
-   PetscCall(ps_.check_decomposed());
-   FlattenBoxes(boxes, box_lohi, box_material);
-   PetscCall(PaintFlatBoxes(comm_, dim_, n_local_elements(), elem_centroid_d_, (PetscInt)boxes.size(), box_lohi, \
-      box_material, mat_id_d));
-
-   PetscFunctionReturn(PETSC_SUCCESS);
-}
-
-PetscErrorCode UnstructuredCG::paint_boxes_over(const std::vector<MaterialBox3D> &boxes, PetscIntKokkosView &mat_id_d) const
-{
-   std::vector<PetscScalar> box_lohi;
-   std::vector<PetscInt> box_material;
-
-   PetscFunctionBeginUser;
-
-   PetscCheck(dim_ == 3, comm_, PETSC_ERR_ARG_INCOMP, "3D boxes painted onto a %" PetscInt_FMT "D mesh", dim_);
-   PetscCall(ps_.check_decomposed());
-   FlattenBoxes(boxes, box_lohi, box_material);
-   PetscCall(PaintFlatBoxes(comm_, dim_, n_local_elements(), elem_centroid_d_, (PetscInt)boxes.size(), box_lohi, \
-      box_material, mat_id_d));
-
-   PetscFunctionReturn(PETSC_SUCCESS);
-}
-
-PetscErrorCode UnstructuredCG::paint_boxes(PetscInt background_material, const std::vector<MaterialBox2D> &boxes, \
-   PetscIntKokkosView &mat_id_d) const
-{
-   PetscFunctionBeginUser;
-
-   PetscCall(PetscKokkosInitializeCheck());
-   PetscCheck(background_material >= 0, comm_, PETSC_ERR_ARG_OUTOFRANGE, \
-      "background material index %" PetscInt_FMT " is negative", background_material);
-   mat_id_d = PetscIntKokkosView("mat_id_d", n_local_elements());
-   Kokkos::deep_copy(mat_id_d, background_material);
-   PetscCall(paint_boxes_over(boxes, mat_id_d));
-
-   PetscFunctionReturn(PETSC_SUCCESS);
-}
-
-PetscErrorCode UnstructuredCG::paint_boxes(PetscInt background_material, const std::vector<MaterialBox3D> &boxes, \
-   PetscIntKokkosView &mat_id_d) const
-{
-   PetscFunctionBeginUser;
-
-   PetscCall(PetscKokkosInitializeCheck());
-   PetscCheck(background_material >= 0, comm_, PETSC_ERR_ARG_OUTOFRANGE, \
-      "background material index %" PetscInt_FMT " is negative", background_material);
-   mat_id_d = PetscIntKokkosView("mat_id_d", n_local_elements());
-   Kokkos::deep_copy(mat_id_d, background_material);
-   PetscCall(paint_boxes_over(boxes, mat_id_d));
-
-   PetscFunctionReturn(PETSC_SUCCESS);
-}
-
-PetscErrorCode UnstructuredCG::paint_cell_sets(PetscInt background_material, \
-   const std::map<PetscInt, PetscInt> &label_to_material, PetscIntKokkosView &mat_id_d) const
-{
-   PetscFunctionBeginUser;
-
-   PetscCall(ps_.check_decomposed());
-   std::vector<PetscInt> cells(n_local_elements());
-   for (PetscInt c = c_start_; c < c_end_; c++) cells[c - c_start_] = c;
-   PetscCall(PaintCellSets(dm_, comm_, background_material, label_to_material, cells, mat_id_d));
 
    PetscFunctionReturn(PETSC_SUCCESS);
 }

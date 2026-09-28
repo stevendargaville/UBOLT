@@ -4,7 +4,9 @@
 #include <petscsys.h>
 
 // The discrete phase space: how many spatial cells and how many angles, and how
-// they are split over the ranks
+// they are split over the ranks. A "cell" is the rows' spatial unit - a mesh
+// cell on every backend except UnstructuredCG, where it is a VERTEX (materials
+// live on elements there: Discretisation::n_material_entries)
 //
 // The parallel decomposition is decided in CELLS. All the angles on a cell live
 // on the same rank, so a row split can never land mid-cell (with PETSC_DECIDE

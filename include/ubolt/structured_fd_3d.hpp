@@ -6,54 +6,26 @@
 #include "ubolt/phase_space.hpp"
 #include "ubolt/sn_quadrature.hpp"
 #include "ubolt/bc_spec.hpp"
+#include "ubolt/material_regions.hpp"
 #include <vector>
-
-// An axis-aligned box of one material, for StructuredFD3D::paint_boxes
-struct PETSC_VISIBILITY_PUBLIC MaterialBox3D {
-   PetscScalar x0 = 0.0, x1 = 0.0, y0 = 0.0, y1 = 0.0, z0 = 0.0, z1 = 0.0;
-   PetscInt material = 0;
-};
 
 // Uniform-grid upwinded finite difference discretisation of a 3D box
 //
-// FOUR entries per row, not seven: upwinding mu dpsi/dx, eta dpsi/dy and
-// xi dpsi/dz separately reaches one neighbour per axis, plus the diagonal -
-// the direct generalisation of 2D's three. Seven is what the DMDA star stencil
-// would preallocate, which is why create_matrix builds the sparsity by hand
-// rather than calling DMCreateMatrix (see the Discretisation base)
-//
-// Slot order extends the 1D/2D "off-diagonals first, diagonal last": upwind-x,
-// upwind-y, upwind-z, diagonal. Which neighbour on each axis is the upwind one
-// is fixed per angle at preallocation from the sign of its cosine, so the
-// value fills never branch. A row whose cosine is exactly zero on an axis
-// takes a -1 in that slot, the same trick the Dirichlet rows use
-//
-// BC rows are the inflow ones: a node on a boundary face that its own
-// direction points in through - any node with an upwind neighbour outside the
-// box on any axis, edges and corners included. What the row then holds depends
-// on the face's BC family: vacuum makes it a Dirichlet row (every upwind slot
-// nulled, the rhs carries the incoming flux - that face's angle-integrated
-// inflow shared over the ordinates, zero outside its window), reflective
-// repurposes the first slot for the -1 coupling to the mirrored angle in the
-// same cell. A direction incoming through several faces of an edge or corner
-// reflects in every reflective axis - up to a triple flip where three
-// reflective faces meet - and is Dirichlet if any of those faces is vacuum:
-// vacuum wins, and the inflow value and window such a row takes are the first
-// vacuum incoming face's in axis order x, y, z
-//
-// Those BC rows are VacuumTreatment::DIRICHLET_CELL, now opt-in. Under the
-// default GHOST_FLUX there are no BC rows at all: every inflow row keeps its
-// physical stencil and each outside-pointing slot takes its own face's ghost
-// value - nulled with the inflow summed into BoundaryInfo::ghost_inflow_d on a
-// vacuum face, pointed at the mirrored angle in the same cell on a reflective
-// one - so a mixed edge or corner takes both (see the 2D backend)
+// FOUR COO entries per row - upwind-x, upwind-y, upwind-z, diagonal - not the
+// seven of the DMDA star stencil. Everything else is StructuredFD2D one axis
+// wider (the same shared code, src/structured_fd_commonk.hpp): a zero cosine
+// nulls its slot; under GHOST_FLUX (the default) each outside-pointing slot
+// takes its own face's ghost value, so a mixed edge or corner takes all of
+// them; under DIRICHLET_CELL an inflow row is Dirichlet if any inflow face is
+// vacuum (the first in axis order x, y, z supplies value and window), else it
+// reflects over every inflow axis - up to a triple flip at a corner
 class PETSC_VISIBILITY_PUBLIC StructuredFD3D : public Discretisation {
 public:
-   // The boundary label ids this backend hands to the BCSpec - the ids
-   // PETSc's DMPlexCreateBoxMesh "Face Sets" convention gives a 3D box, so
-   // the future unstructured backend agrees with these. CAREFUL: PETSc's 3D
-   // convention puts bottom/top on the Z axis, where 2D's bottom/top are the
-   // Y faces - in 3D the y faces are front (y-min) and back (y-max)
+   // The boundary label ids this backend hands to the BCSpec - PETSc's
+   // DMPlexCreateBoxMesh "Face Sets" ids for a 3D box, which UnstructuredDG/CG
+   // share; any other id is an error. CAREFUL: PETSc's 3D convention puts
+   // bottom/top on the Z axis, where 2D's bottom/top are the Y faces - in 3D
+   // the y faces are front (y-min) and back (y-max)
    static constexpr PetscInt FACE_BOTTOM = 1; // z-min
    static constexpr PetscInt FACE_TOP = 2;    // z-max
    static constexpr PetscInt FACE_FRONT = 3;  // y-min
@@ -95,10 +67,8 @@ public:
 
    // Paint material indices onto this rank's cells: the background everywhere,
    // then the boxes in order with the later ones winning, membership decided by
-   // the cell CENTRE. Allocates mat_id_d sized local_cells - the per-cell
-   // material index view MaterialSpec's fill steps consume. The painting is
-   // the geometric half of the material split (see MaterialSpec), which is why
-   // it lives on the concrete backend
+   // the cell CENTRE, inclusive. Allocates mat_id_d sized local_cells - the
+   // per-cell material index view MaterialSpec's fill steps consume
    PetscErrorCode paint_boxes(PetscInt background_material, const std::vector<MaterialBox3D> &boxes, \
       PetscIntKokkosView &mat_id_d) const;
 
