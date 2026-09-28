@@ -77,9 +77,10 @@ continuous Galerkin at the vertices with consistent SUPG (Wang's SAAF-tau) -
 it is the cheapest second-order option (about the vertex count, where DG1 is
 `dimension + 1` per cell). It is the one to try when the diffusion limit
 matters without paying for DG1: tau becomes `1 / Sigma_t` in thick cells,
-which is SAAF's diffusion limit. The costs: weak boundary conditions only, no
-`-precon_dsa` yet (so a thick, highly scattering problem is iteration-bound, as
-DG is without DSA), `-matfree_removal` and `-precon_ref_shift` refused (the
+which is SAAF's diffusion limit, and `-precon_dsa` works on it (a diffusion
+operator on the same vertices: a thick, highly scattering problem takes 5-6
+iterations, as its DG0 twin does). The costs: weak boundary conditions only,
+`-matfree_removal` and `-precon_ref_shift` refused (the
 operator depends on the group through tau), and a flux that is continuous
 across material interfaces, so a sharp interface layer is smeared over one
 element until the mesh resolves it (a thin/thick interface at a coarse mesh

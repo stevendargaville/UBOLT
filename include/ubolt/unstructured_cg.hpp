@@ -170,6 +170,15 @@ public:
    const std::vector<PetscInt> &local_to_owned_host() const { return lv_owned_; }
    // Which boundary vertices (owned) touch any boundary face: 1/0 per owned vertex
    const std::vector<PetscInt> &on_boundary_host() const { return on_boundary_h_; }
+   // Every local vertex's (owned and overlap, index v - v_start) global
+   // vertex index - the vertex twin's, which is the transport rows' over
+   // n_angles
+   const std::vector<PetscInt> &local_vertex_global_host() const { return local_vertex_global_h_; }
+   // Host copies of the boundary-face CSR above (bface_*_d), same layouts
+   const std::vector<PetscInt> &bface_offset_host() const { return bface_offset_h_; }
+   const std::vector<PetscScalar> &bface_nA_host() const { return bface_nA_h_; }
+   const std::vector<PetscScalar> &bface_mass_host() const { return bface_mass_h_; }
+   const std::vector<PetscInt> &bface_slot_host() const { return bface_slot_h_; }
 
    // Nodal fields: one value per OWNED vertex in (a Vec of) the dof-1 vertex
    // twin's global layout, and the same over every LOCAL vertex, overlap
@@ -230,6 +239,9 @@ private:
    std::vector<PetscInt> lv_owned_;
    std::vector<PetscInt> elem_owned_h_;
    std::vector<PetscInt> on_boundary_h_;
+   std::vector<PetscInt> local_vertex_global_h_;
+   std::vector<PetscInt> bface_offset_h_, bface_slot_h_;
+   std::vector<PetscScalar> bface_nA_h_, bface_mass_h_;
 
    std::vector<PetscInt> elem_vertex_h_;
    std::vector<PetscScalar> mass_h_, grad_h_, stiff_h_, centre_grad_h_;

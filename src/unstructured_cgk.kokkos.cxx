@@ -730,6 +730,10 @@ PetscErrorCode UnstructuredCG::create_common(PhaseSpace &ps, PetscInt quad_dim, 
    upload_scalar(bface_nA, "bface_nA_d", bface_nA_d_);
    upload_scalar(bface_mass, "bface_mass_d", bface_mass_d_);
    upload_int(bface_slot, "bface_slot_d", bface_slot_d_);
+   bface_offset_h_ = bface_offset;
+   bface_nA_h_ = bface_nA;
+   bface_mass_h_ = bface_mass;
+   bface_slot_h_ = bface_slot;
 
    // ~~~~~~~~~~
    // The dof-1 vertex twin, for nodal fields. Its owned vertices sit in point
@@ -747,6 +751,11 @@ PetscErrorCode UnstructuredCG::create_common(PhaseSpace &ps, PetscInt quad_dim, 
       PetscCall(DMSetVecType(vertex_dm_, VECKOKKOS));
       PetscCall(DMGetGlobalSection(vertex_dm_, &vgsec));
       PetscCall(CheckCGLayout(vertex_dm_, vgsec, 1, v_start_, v_end_, owned, ps.n_cells));
+      local_vertex_global_h_.assign(v_end_ - v_start_, -1);
+      for (PetscInt vtx = v_start_; vtx < v_end_; vtx++) {
+         PetscBool is_owned = PETSC_FALSE;
+         PetscCall(GlobalPointOffset(vgsec, vtx, &local_vertex_global_h_[vtx - v_start_], &is_owned));
+      }
       // The local Vec is indexed v - v_start: the section's offsets are
       // assigned in chart order, which is point order
       PetscSection lsec = NULL;

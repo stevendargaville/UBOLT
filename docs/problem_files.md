@@ -363,8 +363,10 @@ What differs from DG:
   `name.component`); `sigma_t` and `source` stay per-element cell data.
 - the whole operator depends on the group (tau does), so the driver options
   that rely on a group-independent streaming matrix - `-matfree_removal`,
-  `-precon_stream`, `-precon_ref_shift`, `-check_matfree` - are refused, and
-  so is `-precon_dsa`: there is no CG diffusion operator yet.
+  `-precon_stream`, `-precon_ref_shift`, `-check_matfree` - are refused.
+  `-precon_dsa` works: a P1/Q1 diffusion operator on the same vertices, with
+  voids bridged as below (`-dsa_void_bridge 0` keeps the SUPG streamline
+  diffusion in a void rather than masking it - nothing is masked on CG).
 
 Parallel: the mesh is distributed by PETSc's **`simple`** partitioner by
 default - deterministic on every machine and CI image, so iteration counts

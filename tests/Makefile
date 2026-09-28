@@ -761,10 +761,12 @@ endif
 # point-Jacobi (element-block at one dof per vertex) scaled pmat by default,
 # as on the DG backend; on CG it changes nothing measurable (the unscaled
 # lines match). The counts sit on the DG0 twins' except the diffusive quad
-# box (39 against 29) and the void channel (46-47 against 26). -matfree_removal,
-# -precon_stream, -precon_ref_shift, -precon_dsa and -check_matfree are
-# refused on this backend (the operator refills per group). Counts and the
-# measurements behind the defaults: docs/dev/testing.md, "CG-SUPG"
+# box (39 against 29) and the void channel (46-47 against 26), which the CG
+# DSA (-precon_dsa, a P1/Q1 diffusion operator on the same vertices) takes to
+# the DG0 twins' DSA counts, the void channel to 8 against 6. -matfree_removal,
+# -precon_stream, -precon_ref_shift and -check_matfree are refused on this
+# backend (the operator refills per group). Counts and the measurements
+# behind the defaults: docs/dev/testing.md, "CG-SUPG"
 	@echo "Test 2D unstructured quad box, CG-SUPG, pure scattering"
 	./transportk -problem problems/cg_box_50_st2.json -ksp_max_it 7
 	@echo "Test 2D unstructured quad box, CG-SUPG, reflective left + bottom faces"
@@ -785,14 +787,36 @@ endif
 	./transportk -problem problems/cg_box_20_inf_medium.json -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 11
 	@echo "Test 2D unstructured quad box, CG-SUPG, four groups over four decades of Sigma_t (a per-group refill)"
 	./transportk -problem problems/cg_decades4.json -ksp_max_it 41
-	@echo "Test 2D unstructured quad box, CG-SUPG, diffusive regime (no DSA on this backend yet)"
+	@echo "Test 2D unstructured quad box, CG-SUPG, four groups with the DSA correction"
+	./transportk -problem problems/cg_decades4.json -precon_dsa -ksp_max_it 5
+	@echo "Test 2D unstructured quad box, CG-SUPG, diffusive regime WITHOUT the DSA correction (the reference)"
 	./transportk -problem problems/cg_box_diffusive.json -ksp_max_it 39
+	@echo "Test 2D unstructured quad box, CG-SUPG, diffusive regime with the DSA correction"
+	./transportk -problem problems/cg_box_diffusive.json -precon_dsa -ksp_max_it 5
+	@echo "Test 2D unstructured quad box, CG-SUPG, DSA with reflective left + bottom faces (zero Neumann)"
+	./transportk -problem problems/cg_box_50_reflect_lb.json -precon_dsa -ksp_max_it 4
 ifeq ($(PETSC_HAVE_TRIANGLE),1)
-	@echo "Test 2D unstructured triangles, CG-SUPG, diffusive regime"
+	@echo "Test 2D unstructured triangles, CG-SUPG, diffusive regime WITHOUT the DSA correction (the reference)"
 	./transportk -problem problems/cg_tri_diffusive.json -ksp_max_it 35
+	@echo "Test 2D unstructured triangles, CG-SUPG, diffusive regime with the DSA correction"
+	./transportk -problem problems/cg_tri_diffusive.json -precon_dsa -ksp_max_it 5
+endif
+	@echo "Test 3D unstructured hex cube, CG-SUPG, diffusive regime WITHOUT the DSA correction (the reference)"
+	./transportk -problem problems/cg_cube_diffusive.json -ksp_max_it 48
+	@echo "Test 3D unstructured hex cube, CG-SUPG, diffusive regime with the DSA correction"
+	./transportk -problem problems/cg_cube_diffusive.json -precon_dsa -ksp_max_it 6
+ifeq ($(PETSC_HAVE_TETMESHER),1)
+	@echo "Test 3D unstructured tetrahedra, CG-SUPG, diffusive regime WITHOUT the DSA correction (the reference)"
+	./transportk -problem problems/cg_tet_diffusive.json -ksp_max_it 39
+	@echo "Test 3D unstructured tetrahedra, CG-SUPG, diffusive regime with the DSA correction"
+	./transportk -problem problems/cg_tet_diffusive.json -precon_dsa -ksp_max_it 5
 endif
 	@echo "Test 2D unstructured quad box, CG-SUPG, a void channel (tau = h / zeta there)"
 	./transportk -problem problems/cg_box_void_channel.json -ksp_max_it 47
+	@echo "Test 2D unstructured quad box, CG-SUPG, a void channel with the DSA correction (voids bridged)"
+	./transportk -problem problems/cg_box_void_channel.json -precon_dsa -ksp_max_it 8
+	@echo "Test 2D unstructured quad box, CG-SUPG, a void channel with the DSA correction (the SUPG D in the void)"
+	./transportk -problem problems/cg_box_void_channel.json -precon_dsa -dsa_void_bridge 0 -ksp_max_it 7
 	@echo "Test the SAAF-LS void slab benchmark, CG-SUPG (GMRES + BoomerAMG took 801-8120 on SAAF-tau)"
 	./transportk -problem problems/cg_slab_saaf_ls_void.json -ksp_max_it 4
 	@echo "Test the SAAF-LS void slab benchmark, CG-SUPG at zeta 2 (the classical h/2 in the void)"
@@ -1129,6 +1153,14 @@ endif
 	$(MPIEXEC) -n 2 ./transportk -problem problems/cg_decades4.json -ksp_max_it 42
 	@echo "Test 2D unstructured quad box, CG-SUPG, a void channel in parallel"
 	$(MPIEXEC) -n 2 ./transportk -problem problems/cg_box_void_channel.json -ksp_max_it 46
+	@echo "Test 2D unstructured quad box, CG-SUPG, diffusive regime with the DSA correction in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/cg_box_diffusive.json -precon_dsa -ksp_max_it 5
+	@echo "Test 2D unstructured quad box, CG-SUPG, a void channel with the DSA correction in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/cg_box_void_channel.json -precon_dsa -ksp_max_it 8
+ifeq ($(PETSC_HAVE_TETMESHER),1)
+	@echo "Test 3D unstructured tetrahedra, CG-SUPG, diffusive regime with the DSA correction in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/cg_tet_diffusive.json -precon_dsa -ksp_max_it 5
+endif
 	@echo "Test the thin/thick slab benchmark, CG-SUPG, in parallel"
 	$(MPIEXEC) -n 2 ./transportk -problem problems/cg_slab_thin_thick.json -ksp_max_it 4
 
