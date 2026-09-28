@@ -12,11 +12,12 @@ verbatim; "Where the notes live" at the end maps the names code comments use ont
 ## Current state (updated 2026-09-28)
 
 ### Next up
-- Sep 2026 refactor: shared structured/plex plumbing, DSA split per backend, per-group
-  term/source interfaces, execution-space rule, docs restructure - bit-identical, see
-  docs/dev/history.md. (Round 1 - W1 backends, W2 DSA split, W3 per-group hooks /
-  `GroupSource` / one structured streaming kernel - is merged on the refactor branch; the
-  measurements it moved out of headers are in history.md, Phase 5 and the research notes.)
+- Extensions the refactor's seams now make local (not scheduled): upscatter (an outer
+  iteration over `GroupSource::add_transfer` + a norm), a time-derivative term
+  (`OperatorTerm` with a diagonal half and a rhs half), Pn/anisotropic scatter (widen
+  `AngularQuadrature::w_d` plus a moment-to-discrete matrix), a new direction set (a
+  subclass calling `set_weights` + `set_directions`) - see docs/architecture.md, "new
+  physics seams".
 - [ ] Per-group cached DSA Mat/KSP instead of one refilled pair (a local change inside
   `DSAPrecon`, see its header; only worth it if a sweep revisits groups). One of the two
   open questions carried as checkboxes since 27 Sep 2026 (void masking, the other, is
@@ -50,6 +51,13 @@ verbatim; "Where the notes live" at the end maps the names code comments use ont
 
 ### Landed, newest first
 One line each; the full item is in docs/dev/history.md under the phase named.
+- 2026-09-29 Clean-up refactor after the merge wave (branch
+  `claude/ubolt-review-refactor-c95859`): 2D/3D structured backends on one template,
+  `PlexDiscretisation` base, one quadrature type for the plex backends, DSA split into a
+  policy TU + one operator TU per backend (a per-face-slot d2h weight copy at create
+  removed), `OperatorTerm::set_group` / `GroupSource`, one structured streaming kernel,
+  every Kokkos kernel on PETSc's execution space, driver `BuildBackend`, one flux writer,
+  AGENTS.md / TODO.md / testing docs restructured. Bit-identical on all 341 short-suite runs.
 - 2026-09-28 CG DSA (PR #22): a vertex P1/Q1 diffusion operator on `cg_supg`, exactly
   `m R A P` of the SUPG operator in thick cells; diffusive CG 35-48 -> 5-6, void channel
   47 -> 8. Phase 6.
