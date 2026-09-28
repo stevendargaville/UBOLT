@@ -2,12 +2,10 @@
 #define UBOLT_UNSTRUCTURED_CG_HPP
 
 #include "ubolt/types.hpp"
-#include "ubolt/discretisation.hpp"
+#include "ubolt/plex_discretisation.hpp"
 #include "ubolt/phase_space.hpp"
 #include "ubolt/sn_quadrature.hpp"
 #include "ubolt/bc_spec.hpp"
-#include "ubolt/unstructured_dg.hpp"
-#include <map>
 #include <vector>
 
 // Continuous Galerkin with consistent SUPG stabilisation on a DMPlex, 2D or 3D:
@@ -18,12 +16,12 @@
 // Rows are (vertex, angle), angle fastest: row = vertex * n_angles + angle,
 // ps.n_basis = 1. The PhaseSpace's "cell" is the rows' spatial unit, so here it
 // is a VERTEX: ps.n_cells is the global vertex count and ps.local_cells the
-// vertices this rank owns (in point order - CheckCGLayout asserts the global
+// vertices this rank owns (in point order - the layout check asserts the global
 // numbering follows it). Cross sections stay per mesh ELEMENT, the only place a
 // material is defined - every LOCAL element, the overlap included, because a
-// row reads every element of its vertex's star. So GroupXSections is sized
-// n_local_elements() on this backend (its create(n_groups, n_entries)
-// overload), and the painting methods paint every local element
+// row reads every element of its vertex's star. So n_material_entries() is
+// n_local_elements() on this backend, and the painting (PlexDiscretisation)
+// paints every local element by its centroid
 //
 // ~~~~~~~~~~ The scheme ~~~~~~~~~~
 //
@@ -90,26 +88,25 @@
 // Construction is two-stage like UnstructuredDG, because the MESH decides the
 // global vertex count: create_mesh, then PhaseSpace::create off
 // n_global_vertices(), then create
-class PETSC_VISIBILITY_PUBLIC UnstructuredCG : public Discretisation {
+class PETSC_VISIBILITY_PUBLIC UnstructuredCG : public PlexDiscretisation {
 public:
    // Stage 1: build and distribute the mesh (the same box / file choices as
    // UnstructuredDG, the same "Face Sets" ids)
    PetscErrorCode create_mesh(MPI_Comm comm, const PlexMeshSpec &mesh);
    PetscInt n_global_vertices() const { return n_global_vertices_; }
-   PetscInt dimension() const { return dim_; }
 
    // Stage 2: the layout, the element tables, the BC classification and the
-   // COO pattern. ps.n_cells must equal n_global_vertices(). zeta > 0 is the
-   // thin-cell SUPG parameter (see above)
-   PetscErrorCode create(PhaseSpace &ps, const SNQuadrature2D &quad, const BCSpec &bcs = BCSpec(), \
-      PetscReal zeta = 0.5);
-   PetscErrorCode create(PhaseSpace &ps, const SNQuadrature3D &quad, const BCSpec &bcs = BCSpec(), \
+   // COO pattern. ps.n_cells must equal n_global_vertices(), and the
+   // quadrature's dimension the mesh's. zeta > 0 is the thin-cell SUPG
+   // parameter (see above)
+   PetscErrorCode create(PhaseSpace &ps, const AngularQuadrature &quad, const BCSpec &bcs = BCSpec(), \
       PetscReal zeta = 0.5);
 
    PetscReal zeta() const { return zeta_; }
    // Every element of the local mesh, overlap included - what cross sections
    // and material ids are sized on here
    PetscInt n_local_elements() const { return c_end_ - c_start_; }
+   PetscInt n_material_entries() const override { return n_local_elements(); }
    // Vertices per element (3/4 in 2D, 4/8 in 3D) - one cell type per mesh
    PetscInt n_element_vertices() const { return nv_; }
 
@@ -151,10 +148,9 @@ public:
    const PetscScalarKokkosView &bface_mass_d() const { return bface_mass_d_; }
    const PetscIntKokkosView &bface_slot_d() const { return bface_slot_d_; }
 
-   // Host copies, for the tests: the element tables above in the same flat
-   // layouts, the element volumes, the lumped masses m_i (owned vertices),
-   // the owned vertices' coordinates (3 per vertex) and the local elements'
-   // centroids (3 per element)
+   // Host copies, for DSAPrecon and the tests: the element tables above in the
+   // same flat layouts, the element volumes, the lumped masses m_i (owned
+   // vertices), and the owned and the local vertices' coordinates (3 each)
    const std::vector<PetscScalar> &mass_host() const { return mass_h_; }
    const std::vector<PetscScalar> &grad_host() const { return grad_h_; }
    const std::vector<PetscScalar> &stiff_host() const { return stiff_h_; }
@@ -163,13 +159,10 @@ public:
    const std::vector<PetscReal> &lumped_mass_host() const { return lumped_mass_h_; }
    const std::vector<PetscReal> &vertex_coord_host() const { return vertex_coord_h_; }
    const std::vector<PetscReal> &local_vertex_coord_host() const { return local_vertex_coord_h_; }
-   const std::vector<PetscReal> &element_centroid_host() const { return elem_centroid_h_; }
    // Owned vertex k -> local vertex index (v - v_start) and back (-1 on an
    // overlap vertex)
    const std::vector<PetscInt> &owned_local_vertex_host() const { return owned_lv_; }
    const std::vector<PetscInt> &local_to_owned_host() const { return lv_owned_; }
-   // Which boundary vertices (owned) touch any boundary face: 1/0 per owned vertex
-   const std::vector<PetscInt> &on_boundary_host() const { return on_boundary_h_; }
    // Every local vertex's (owned and overlap, index v - v_start) global
    // vertex index - the vertex twin's, which is the transport rows' over
    // n_angles
@@ -196,21 +189,10 @@ public:
    // nodal field over the LOCAL vertices (a local Vec of the vertex twin); a
    // NULL f means f = 1 (a constant per element: the external source). Used
    // by ScatteringTermCG (scale -1/W, sigma_s), UboltFillSourceCG (1/W, q)
-   // and GroupTransferCG (1/W, sigma_s(g' -> g)). y is a row-layout Vec
+   // and GroupTransferCG (1/W, sigma_s(g' -> g)). y is a row-layout Vec, and
+   // f_local must be the vertex twin's LOCAL Vec (every local vertex)
    PetscErrorCode add_weighted_load(const PetscScalarKokkosView &sigma_t_e, const PetscScalarKokkosView &coeff_e, \
       Vec f_local, PetscScalar scale, Vec y) const;
-
-   // Painting, same semantics as UnstructuredDG's, but over EVERY LOCAL
-   // ELEMENT (overlap included), by element centroid. Allocates mat_id_d sized
-   // n_local_elements()
-   PetscErrorCode paint_boxes(PetscInt background_material, const std::vector<MaterialBox2D> &boxes, \
-      PetscIntKokkosView &mat_id_d) const;
-   PetscErrorCode paint_boxes(PetscInt background_material, const std::vector<MaterialBox3D> &boxes, \
-      PetscIntKokkosView &mat_id_d) const;
-   PetscErrorCode paint_cell_sets(PetscInt background_material, const std::map<PetscInt, PetscInt> &label_to_material, \
-      PetscIntKokkosView &mat_id_d) const;
-   PetscErrorCode paint_boxes_over(const std::vector<MaterialBox2D> &boxes, PetscIntKokkosView &mat_id_d) const;
-   PetscErrorCode paint_boxes_over(const std::vector<MaterialBox3D> &boxes, PetscIntKokkosView &mat_id_d) const;
 
    // Which local elements this rank owns (1/0, n_local_elements()) - output
    // writes each element once
@@ -220,37 +202,34 @@ public:
    PetscErrorCode destroy() override;
 
 private:
-   PetscErrorCode create_common(PhaseSpace &ps, PetscInt quad_dim, PetscInt n_angles, PetscScalar sum_weights, \
-      const PetscScalar *mu, const PetscScalar *eta, const PetscScalar *xi, \
-      const PetscInt *reflect_mu, const PetscInt *reflect_eta, const PetscInt *reflect_xi, \
-      const BCSpec &bcs, PetscReal zeta);
-   // The element tables, host then device
-   PetscErrorCode build_element_tables();
+   // The element tables on the host (centre_grad: the centroid gradients,
+   // uploaded and dropped). One cell type per mesh, agreed over the
+   // ranks (a rank may hold no element); a bad cell is recorded in
+   // failed/message (see RecordFailure in src/plex_commonk.hpp)
+   PetscErrorCode build_element_tables(std::vector<PetscScalar> &centre_grad, PetscBool *failed, \
+      char *message, size_t len);
 
-   PetscInt dim_ = 0;
    PetscInt nv_ = 0;
    PetscReal zeta_ = 0.5;
    PetscInt n_global_vertices_ = 0;
-   PetscInt c_start_ = 0, c_end_ = 0;
    PetscInt v_start_ = 0, v_end_ = 0;
    DM vertex_dm_ = NULL;
 
    std::vector<PetscInt> owned_lv_;
    std::vector<PetscInt> lv_owned_;
    std::vector<PetscInt> elem_owned_h_;
-   std::vector<PetscInt> on_boundary_h_;
    std::vector<PetscInt> local_vertex_global_h_;
    std::vector<PetscInt> bface_offset_h_, bface_slot_h_;
    std::vector<PetscScalar> bface_nA_h_, bface_mass_h_;
 
    std::vector<PetscInt> elem_vertex_h_;
-   std::vector<PetscScalar> mass_h_, grad_h_, stiff_h_, centre_grad_h_;
+   std::vector<PetscScalar> mass_h_, grad_h_, stiff_h_;
    std::vector<PetscReal> elem_volume_h_, elem_centroid_h_;
    std::vector<PetscReal> lumped_mass_h_, vertex_coord_h_, local_vertex_coord_h_;
 
    PetscScalarKokkosView omega_d_, inv_mass_d_;
    PetscIntKokkosView star_offset_d_, star_elem_d_, star_li_d_, star_slot_d_, elem_vertex_d_;
-   PetscScalarKokkosView mass_d_, grad_d_, stiff_d_, centre_grad_d_, elem_centroid_d_;
+   PetscScalarKokkosView mass_d_, grad_d_, stiff_d_, centre_grad_d_;
    PetscIntKokkosView bface_offset_d_, bface_slot_d_;
    PetscScalarKokkosView bface_nA_d_, bface_mass_d_;
 };

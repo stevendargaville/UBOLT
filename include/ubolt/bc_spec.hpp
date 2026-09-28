@@ -8,13 +8,13 @@
 // what a vacuum face lets in
 //
 // Keyed by an integer boundary label id, the way a DMPlex "Face Sets" label is:
-// the structured backends define their face ids to match PETSc's box-mesh
-// convention (see the FACE_* constants on StructuredFD1D / StructuredFD2D), and
-// the unstructured phase will feed real "Face Sets" values through this same
-// spec. The label only answers which family a face belongs to - what actually
-// happens to each row is decided per direction by the physics (the sign of
-// direction dot normal, which is the discretisation's upwind test), the same
-// split PFLARE's adv_dg_upwind example makes
+// the structured backends' face ids match PETSc's box-mesh convention (the
+// FACE_* constants on StructuredFD1D/2D/3D), and the plex backends read the
+// mesh's "Face Sets" values, which on a box ARE those ids. The label only
+// answers which family a face belongs to - what happens to each row is decided
+// per direction by the physics (the sign of direction dot normal, the
+// discretisation's upwind test), the same split PFLARE's adv_dg_upwind example
+// makes
 //
 // A label id that was never set is VACUUM with inflow 0, so a
 // default-constructed BCSpec is a cold box: every incoming direction is
@@ -25,7 +25,7 @@ enum class BCType { VACUUM, REFLECT };
 // prescribed incoming flux - that differ in whether the boundary cell stays an
 // unknown
 //
-// GHOST_FLUX (the default since Sep 2026): the boundary cell stays an ordinary
+// GHOST_FLUX (the default): the boundary cell stays an ordinary
 // unknown. Its row carries the full upwind stencil - the same diagonal
 // sum_a |Omega_a| / h_a every interior row has - and the one off-diagonal whose
 // upwind neighbour lies outside the domain is simply absent, its contribution
@@ -39,20 +39,17 @@ enum class BCType { VACUUM, REFLECT };
 // psi(a) - psi(mirror a) = 0 belongs to DIRICHLET_CELL only)
 //
 // Why it is the default: with no boundary rows left, A_{-d} is the exact
-// transpose of A_d on EVERY row rather than only the interior ones, because a
-// row's stencil no longer depends on which direction it is for. With P
-// swapping (cell, Omega) and (cell, -Omega): A^T = P A P for ANY combination
-// of vacuum and reflective faces - inflow values and windows only touch the
-// rhs - on the assembled streaming + removal operator (the block PCAIR
-// inverts; sigma_t may vary cell to cell), in every structured backend. On the
-// unstructured DG backend it is the volume-weighted (V A)^T = P (V A) P (see
-// unstructured_dg.hpp), which is the plain identity on equal volumes. It does
-// NOT hold under DIRICHLET_CELL, and it is not a property of the matrix-free
-// isotropic scatter, which commutes with P but is not symmetric once the
-// quadrature weights differ (level-symmetric beyond S4). See the
-// transposed-solve study for what that buys
+// transpose of A_d on EVERY row, because a row's stencil no longer depends on
+// which direction it is for. With P swapping (cell, Omega) and (cell, -Omega):
+// A^T = P A P for ANY combination of vacuum and reflective faces - inflow
+// values and windows only touch the rhs - on the assembled streaming + removal
+// operator (the block PCAIR inverts), in every structured backend; on the DG
+// backend the volume-weighted (V A)^T = P (V A) P. Not under DIRICHLET_CELL,
+// and not for the matrix-free isotropic scatter once the quadrature weights
+// differ. The groundwork for transposed half-quadrature preconditioning - see
+// docs/architecture.md
 //
-// DIRICHLET_CELL (opt-in, and everything UBOLT did before Sep 2026): the
+// DIRICHLET_CELL (opt-in): the
 // boundary cell's row for an incoming direction is REPLACED by the identity
 // and the rhs there carries the incoming flux. The cell is not an unknown for
 // that direction; its equation says psi = psi_in. It puts the boundary at the

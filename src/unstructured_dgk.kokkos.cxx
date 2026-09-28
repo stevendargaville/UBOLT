@@ -1,107 +1,24 @@
 #include "ubolt/unstructured_dg.hpp"
 #include "plex_commonk.hpp"
-#include "petsc_kokkos.hpp"
 #include <petscdmplex.h>
 #include <petscsf.h>
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 // Build (or read) the mesh and distribute it with a one-cell, face-adjacent
-// overlap - the shared UboltCreatePlexMesh (plex_commonk.hpp) does the work
+// overlap: cone, not closure, adjacency, so the overlap is the face neighbours
+// only - what the upwind flux reads and nothing more. The default (closure)
+// adjacency would also bring in every cell sharing a vertex
 PetscErrorCode UnstructuredDG::create_mesh(MPI_Comm comm, const PlexMeshSpec &mesh)
 {
-   PetscInt n_owned = 0;
-   std::vector<PetscInt> owned;
-
    PetscFunctionBeginUser;
 
-   PetscCheck(!dm_, comm, PETSC_ERR_ARG_WRONGSTATE, "create_mesh has already built this backend's mesh");
-
-   comm_ = comm;
-
-   // Face adjacency (cone, not closure): the overlap is then the face
-   // neighbours only - what the upwind flux reads and nothing more. The
-   // default (closure) adjacency would also bring in every cell sharing a
-   // vertex
-   PetscCall(UboltCreatePlexMesh(comm, mesh, PETSC_TRUE, PETSC_FALSE, &dm_));
-   dim_ = mesh.dimension;
-
+   PetscCall(create_plex_mesh(comm, mesh, PETSC_TRUE, PETSC_FALSE));
    // The mesh decides the global cell count - count once, cached
-   PetscCall(DMPlexGetHeightStratum(dm_, 0, &c_start_, &c_end_));
-   PetscCall(MarkOwnedPoints(dm_, c_start_, c_end_, owned));
-   for (const PetscInt o : owned) n_owned += o;
-   PetscCallMPI(MPI_Allreduce(&n_owned, &n_global_cells_, 1, MPIU_INT, MPI_SUM, comm_));
+   PetscCall(CountOwnedPoints(dm_, comm_, c_start_, c_end_, &n_global_cells_));
 
    PetscFunctionReturn(PETSC_SUCCESS);
 }
-
-// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-// Check the DM's layout is the one everything downstream is written against -
-// the sibling of the DMDA backends' CheckDALayout, asserted rather than
-// assumed:
-//   (i)   the global section agrees with the point SF about which cells are
-//         owned, and the owned cells over all ranks are the phase space's,
-//   (ii)  this rank owns owned cells x n_basis x n_angles rows,
-//   (iii) walking the owned cells in increasing POINT order, their offsets
-//         are rstart + k * n_basis * n_angles, k = 0, 1, ... - contiguous,
-//         and (basis, angle) inside a cell, angle fastest.
-// (iii) is what makes "local cell k = the k-th owned cell in point order" the
-// indexing every per-cell view uses, and what RemovalTerm's r / rows_per_cell
-// relies on. PETSc builds the global section in point order today; this is
-// what stops a change there from surfacing as a wrong answer
-static PetscErrorCode CheckPlexLayout(DM dm, PetscSection gsec, const PhaseSpace &ps, PetscInt c_start, \
-   PetscInt c_end, const std::vector<PetscInt> &owned, PetscInt *rstart_out)
-{
-   MPI_Comm comm = PetscObjectComm((PetscObject)dm);
-   PetscInt rstart = 0, rend = 0, n_owned = 0, n_global = 0, k = 0;
-   Vec gv = NULL;
-
-   PetscFunctionBeginUser;
-
-   // A transient global vector, only to read the ownership range - it never
-   // reaches the solve (see docs/dev/kokkos.md)
-   PetscCall(DMCreateGlobalVector(dm, &gv));
-   PetscCall(VecGetOwnershipRange(gv, &rstart, &rend));
-   PetscCall(VecDestroy(&gv));
-
-   for (PetscInt c = c_start; c < c_end; c++) {
-      PetscInt g = 0, dof = 0;
-      PetscBool is_owned = PETSC_FALSE;
-      PetscCall(GlobalPointOffset(gsec, c, &g, &is_owned));
-      PetscCall(PetscSectionGetDof(gsec, c, &dof));
-      // A ghost's dof is encoded as -(dof + 1) in a global section too
-      if (dof < 0) dof = -(dof + 1);
-      PetscCheck(dof == ps.rows_per_cell(), PETSC_COMM_SELF, PETSC_ERR_PLIB, "cell %" PetscInt_FMT \
-         " carries %" PetscInt_FMT " dof, not the phase space's %" PetscInt_FMT " basis x %" PetscInt_FMT \
-         " angles", c, dof, ps.n_basis, ps.n_angles);
-      PetscCheck(is_owned == (PetscBool)(owned[c - c_start] != 0), PETSC_COMM_SELF, PETSC_ERR_PLIB, \
-         "the global section and the point SF disagree about who owns cell %" PetscInt_FMT, c);
-      if (!is_owned) continue;
-
-      const PetscInt expected = rstart + k * ps.rows_per_cell();
-      PetscCheck(g == expected, PETSC_COMM_SELF, PETSC_ERR_PLIB, "owned cell %" PetscInt_FMT \
-         " (local cell %" PetscInt_FMT ") starts at global row %" PetscInt_FMT ", not the " \
-         "point-ordered angle-fastest %" PetscInt_FMT, c, k, g, expected);
-      k++;
-   }
-   n_owned = k;
-
-   PetscCheck(rend - rstart == n_owned * ps.rows_per_cell(), PETSC_COMM_SELF, PETSC_ERR_PLIB, \
-      "the DM owns %" PetscInt_FMT " rows but %" PetscInt_FMT " owned cells x %" PetscInt_FMT \
-      " rows per cell", rend - rstart, n_owned, ps.rows_per_cell());
-   PetscCallMPI(MPI_Allreduce(&n_owned, &n_global, 1, MPIU_INT, MPI_SUM, comm));
-   PetscCheck(n_global == ps.n_cells, comm, PETSC_ERR_PLIB, "the mesh has %" PetscInt_FMT \
-      " cells, the phase space %" PetscInt_FMT, n_global, ps.n_cells);
-
-   *rstart_out = rstart;
-
-   PetscFunctionReturn(PETSC_SUCCESS);
-}
-
-
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 // DG1 geometry: exact moments of polytopes as fans of simplices
@@ -302,35 +219,9 @@ static PetscErrorCode OrthonormalGradients(PetscInt dim, PetscInt c, PetscReal v
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-PetscErrorCode UnstructuredDG::create(PhaseSpace &ps, const SNQuadrature2D &quad, const BCSpec &bcs, PetscInt order)
-{
-   PetscFunctionBeginUser;
-
-   PetscCall(create_common(ps, 2, quad.n_angles(), quad.sum_weights(), quad.mu_host(), quad.eta_host(), \
-      nullptr, quad.reflect_mu_host(), quad.reflect_eta_host(), nullptr, bcs, order));
-
-   PetscFunctionReturn(PETSC_SUCCESS);
-}
-
-// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-PetscErrorCode UnstructuredDG::create(PhaseSpace &ps, const SNQuadrature3D &quad, const BCSpec &bcs, PetscInt order)
-{
-   PetscFunctionBeginUser;
-
-   PetscCall(create_common(ps, 3, quad.n_angles(), quad.sum_weights(), quad.mu_host(), quad.eta_host(), \
-      quad.xi_host(), quad.reflect_mu_host(), quad.reflect_eta_host(), quad.reflect_xi_host(), bcs, order));
-
-   PetscFunctionReturn(PETSC_SUCCESS);
-}
-
-// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
 // The layout, the geometry, the BC classification and the COO sparsity
 // This happens on the host but we only need to do it once
-PetscErrorCode UnstructuredDG::create_common(PhaseSpace &ps, PetscInt quad_dim, PetscInt n_angles, \
-   PetscScalar sum_weights, const PetscScalar *mu, const PetscScalar *eta, const PetscScalar *xi, \
-   const PetscInt *reflect_mu, const PetscInt *reflect_eta, const PetscInt *reflect_xi, const BCSpec &bcs, \
+PetscErrorCode UnstructuredDG::create(PhaseSpace &ps, const AngularQuadrature &quad, const BCSpec &bcs, \
    PetscInt order)
 {
    PetscSection sec = NULL, gsec = NULL;
@@ -347,10 +238,10 @@ PetscErrorCode UnstructuredDG::create_common(PhaseSpace &ps, PetscInt quad_dim, 
 
    PetscCheck(dm_, PETSC_COMM_SELF, PETSC_ERR_ARG_WRONGSTATE, \
       "UnstructuredDG::create_mesh has to come first - the mesh decides the cell count");
-   PetscCheck(quad_dim == dim_, comm_, PETSC_ERR_ARG_INCOMP, "a %" PetscInt_FMT "D quadrature was " \
-      "handed to a %" PetscInt_FMT "D mesh", quad_dim, dim_);
-   PetscCheck(n_angles == ps.n_angles, comm_, PETSC_ERR_ARG_INCOMP, \
-      "quadrature has %" PetscInt_FMT " angles but the phase space has %" PetscInt_FMT, n_angles, ps.n_angles);
+   PetscCheck(quad.dimension() == dim_, comm_, PETSC_ERR_ARG_INCOMP, "a %" PetscInt_FMT "D quadrature was " \
+      "handed to a %" PetscInt_FMT "D mesh", quad.dimension(), dim_);
+   PetscCheck(quad.n_angles() == ps.n_angles, comm_, PETSC_ERR_ARG_INCOMP, "quadrature has %" PetscInt_FMT \
+      " angles but the phase space has %" PetscInt_FMT, quad.n_angles(), ps.n_angles);
    PetscCheck(ps.n_cells == n_global_cells_, comm_, PETSC_ERR_ARG_INCOMP, "the mesh has %" PetscInt_FMT \
       " cells but the phase space %" PetscInt_FMT " - size it off n_global_cells()", n_global_cells_, ps.n_cells);
 
@@ -363,7 +254,12 @@ PetscErrorCode UnstructuredDG::create_common(PhaseSpace &ps, PetscInt quad_dim, 
       "\"vacuum_treatment\": \"dirichlet_cell\"");
 
    const PetscInt dim = dim_;
-   const PetscInt *reflect[3] = {reflect_mu, reflect_eta, reflect_xi};
+   const PetscInt n_angles = quad.n_angles();
+   const PetscScalar sum_weights = quad.sum_weights();
+   // The ordinates flattened (a * 3 + d) - the layout the device view has, so
+   // the host classification reads them exactly as the fill does
+   const PetscScalar *omega = quad.omega_host();
+   const PetscInt *reflect[3] = {quad.reflect_host(0), quad.reflect_host(1), quad.reflect_host(2)};
    order_ = order;
    n_basis_ = (order == 0) ? 1 : dim + 1;
    const PetscInt nb = n_basis_;
@@ -389,16 +285,15 @@ PetscErrorCode UnstructuredDG::create_common(PhaseSpace &ps, PetscInt quad_dim, 
    PetscCall(DMGetGlobalSection(dm_, &gsec));
 
    PetscCall(MarkOwnedPoints(dm_, c_start_, c_end_, owned));
-   PetscCall(CheckPlexLayout(dm_, gsec, ps, c_start_, c_end_, owned, &rstart));
+   PetscCall(CheckPlexStratumLayout(dm_, gsec, c_start_, c_end_, owned, rows_per_cell, ps.n_cells, "cell", &rstart));
 
-   cell_of_local_.clear();
-   local_of_cell_.assign(c_end_ - c_start_, -1);
+   // Local cell k is the k-th owned cell in point order - what painting paints
+   paint_point_.clear();
    for (PetscInt c = c_start_; c < c_end_; c++) {
-      if (!owned[c - c_start_]) continue;
-      local_of_cell_[c - c_start_] = (PetscInt)cell_of_local_.size();
-      cell_of_local_.push_back(c);
+      if (owned[c - c_start_]) paint_point_.push_back(c);
    }
-   const PetscInt local_cells = (PetscInt)cell_of_local_.size();
+   const std::vector<PetscInt> &cell_of_local = paint_point_;
+   const PetscInt local_cells = (PetscInt)cell_of_local.size();
 
    // The DM decided the decomposition - the PhaseSpace is told
    ps.local_cells = local_cells;
@@ -409,7 +304,8 @@ PetscErrorCode UnstructuredDG::create_common(PhaseSpace &ps, PetscInt quad_dim, 
    // Geometry, once on the host. Per owned cell its volume and centroid; per
    // face in cone order its outward area-weighted normal, its centroid, its
    // neighbour's global row base (-1 on the boundary) and, on the boundary,
-   // its "Face Sets" value
+   // its "Face Sets" value. A bad cell or face is recorded and everybody
+   // errors together below
    // ~~~~~~~~~~
    PetscCall(DMGetLabel(dm_, "Face Sets", &face_sets));
 
@@ -426,11 +322,11 @@ PetscErrorCode UnstructuredDG::create_common(PhaseSpace &ps, PetscInt quad_dim, 
 
    for (PetscInt k = 0; k < local_cells; k++) {
 
-      const PetscInt c = cell_of_local_[k];
+      const PetscInt c = cell_of_local[k];
       PetscReal vol = 0.0, cen[3] = {0.0, 0.0, 0.0};
       PetscCall(DMPlexComputeCellGeometryFVM(dm_, c, &vol, cen, NULL));
-      PetscCheck(vol > 0.0, PETSC_COMM_SELF, PETSC_ERR_ARG_WRONG, "cell %" PetscInt_FMT \
-         " has non-positive volume %g", c, (double)vol);
+      if (!(vol > 0.0)) PetscCall(RecordFailure(&failed, message, sizeof(message), "cell %" PetscInt_FMT \
+         " has non-positive volume %g", c, (double)vol));
       volume_h_[k] = vol;
       for (PetscInt d = 0; d < 3; d++) centroid_h_[3 * k + d] = cen[d];
 
@@ -444,23 +340,15 @@ PetscErrorCode UnstructuredDG::create_common(PhaseSpace &ps, PetscInt quad_dim, 
 
          const PetscInt f = cone[lf];
          // In 2D a face is an edge: its "area" is its length and the normal
-         // is the in-plane one. The normal's sign is PETSc's orientation, so
-         // it is pointed out of this cell by the centroid test below
+         // is the in-plane one
          PetscReal area = 0.0, fcen[3] = {0.0, 0.0, 0.0}, normal[3] = {0.0, 0.0, 0.0};
          PetscCall(DMPlexComputeCellGeometryFVM(dm_, f, &area, fcen, normal));
-         PetscCheck(area > 0.0, PETSC_COMM_SELF, PETSC_ERR_ARG_WRONG, "face %" PetscInt_FMT \
-            " of cell %" PetscInt_FMT " has non-positive area %g", f, c, (double)area);
+         if (!(area > 0.0)) PetscCall(RecordFailure(&failed, message, sizeof(message), "face %" PetscInt_FMT \
+            " of cell %" PetscInt_FMT " has non-positive area %g", f, c, (double)area));
 
-         PetscReal norm = 0.0, outward = 0.0;
-         for (PetscInt d = 0; d < dim; d++) norm += normal[d] * normal[d];
-         norm = PetscSqrtReal(norm);
-         PetscCheck(norm > 0.0, PETSC_COMM_SELF, PETSC_ERR_ARG_WRONG, "face %" PetscInt_FMT \
-            " has no normal", f);
-         for (PetscInt d = 0; d < dim; d++) outward += normal[d] * (fcen[d] - cen[d]);
-         const PetscReal sign = (outward < 0.0) ? -1.0 : 1.0;
-
-         PetscScalar nA[3] = {0.0, 0.0, 0.0};
-         for (PetscInt d = 0; d < dim; d++) nA[d] = sign * area * normal[d] / norm;
+         PetscScalar nA[3];
+         if (!OutwardAreaNormal(dim, area, normal, fcen, cen, nA)) PetscCall(RecordFailure(&failed, message, \
+            sizeof(message), "face %" PetscInt_FMT " has no normal", f));
          for (PetscInt d = 0; d < 3; d++) {
             face_nA_h_.push_back(nA[d]);
             face_centroid.push_back(fcen[d]);
@@ -473,16 +361,16 @@ PetscErrorCode UnstructuredDG::create_common(PhaseSpace &ps, PetscInt quad_dim, 
          // (DSAPrecon). Positive for any convex cell
          PetscReal dist_own = 0.0;
          for (PetscInt d = 0; d < dim; d++) dist_own += PetscRealPart(nA[d]) / area * (fcen[d] - cen[d]);
-         PetscCheck(dist_own > 0.0, PETSC_COMM_SELF, PETSC_ERR_ARG_WRONG, "the centroid of cell %" \
-            PetscInt_FMT " is not inside its face %" PetscInt_FMT, c, f);
+         if (!(dist_own > 0.0)) PetscCall(RecordFailure(&failed, message, sizeof(message), "the centroid of cell %" \
+            PetscInt_FMT " is not inside its face %" PetscInt_FMT, c, f));
          face_distance_h_.push_back(dist_own);
 
          const PetscInt *support = nullptr;
          PetscInt n_support = 0;
          PetscCall(DMPlexGetSupportSize(dm_, f, &n_support));
          PetscCall(DMPlexGetSupport(dm_, f, &support));
-         PetscCheck(n_support == 1 || n_support == 2, PETSC_COMM_SELF, PETSC_ERR_ARG_WRONG, \
-            "face %" PetscInt_FMT " is shared by %" PetscInt_FMT " cells", f, n_support);
+         if (n_support != 1 && n_support != 2) PetscCall(RecordFailure(&failed, message, sizeof(message), \
+            "face %" PetscInt_FMT " is shared by %" PetscInt_FMT " cells", f, n_support));
 
          if (n_support == 2) {
 
@@ -499,8 +387,8 @@ PetscErrorCode UnstructuredDG::create_common(PhaseSpace &ps, PetscInt quad_dim, 
             PetscReal ncen[3] = {0.0, 0.0, 0.0}, dist_nb = 0.0;
             PetscCall(DMPlexComputeCellGeometryFVM(dm_, other, NULL, ncen, NULL));
             for (PetscInt d = 0; d < dim; d++) dist_nb += PetscRealPart(nA[d]) / area * (ncen[d] - fcen[d]);
-            PetscCheck(dist_nb > 0.0, PETSC_COMM_SELF, PETSC_ERR_ARG_WRONG, "the centroid of cell %" \
-               PetscInt_FMT " is not inside its face %" PetscInt_FMT, other, f);
+            if (!(dist_nb > 0.0)) PetscCall(RecordFailure(&failed, message, sizeof(message), "the centroid of " \
+               "cell %" PetscInt_FMT " is not inside its face %" PetscInt_FMT, other, f));
             face_distance_h_.push_back(dist_nb);
 
          } else {
@@ -513,53 +401,13 @@ PetscErrorCode UnstructuredDG::create_common(PhaseSpace &ps, PetscInt quad_dim, 
             face_neighbour_row_h_.push_back(-1);
             face_label_h_.push_back(value);
             face_distance_h_.push_back(0.0);
-
-            // The face's family is used below; validate its shape here, once
-            const BCFace bc = bcs.face(value);
-            if (!failed && bc.n_window_pairs != 0 && bc.n_window_pairs != dim - 1) {
-               failed = PETSC_TRUE;
-               PetscCall(PetscSNPrintf(message, sizeof(message), "a %" PetscInt_FMT "D face takes %" \
-                  PetscInt_FMT " tangential [lo, hi] window pairs, face set %" PetscInt_FMT " was given %" \
-                  PetscInt_FMT, dim, dim - 1, value, bc.n_window_pairs));
-            }
-            // The mirror of an ordinate in a general plane is not an ordinate
-            // of the set, so reflection is only defined on axis-aligned faces
-            if (!failed && bc.type == BCType::REFLECT && \
-                PetscAbsScalar(nA[face_axis.back()]) < (1.0 - 1e-10) * area) {
-               failed = PETSC_TRUE;
-               PetscCall(PetscSNPrintf(message, sizeof(message), "face %" PetscInt_FMT " (face set %" \
-                  PetscInt_FMT ") is reflective but not axis-aligned - reflection maps an ordinate onto " \
-                  "an ordinate only across a face normal to x, y or z", f, value));
-            }
+            PetscCall(CheckBoundaryFaceBC(bcs, dim, value, nA, face_axis.back(), area, f, &failed, message, \
+               sizeof(message)));
          }
       }
    }
    PetscCall(CollectiveFailure(comm_, failed, message));
-
-   // Every label the BCSpec names has to be on some boundary face of the mesh,
-   // somewhere: a boundary condition on a "Face Sets" value no face carries is
-   // a mistyped id, and the alternative is a face the user meant to drive or
-   // reflect silently going cold. Collective - a rank may own no faces at all
-   for (const auto &entry : bcs.faces()) {
-      PetscMPIInt seen = 0, any = 0;
-      for (const PetscInt value : face_label_h_) {
-         if (value == entry.first) seen = 1;
-      }
-      PetscCallMPI(MPI_Allreduce(&seen, &any, 1, MPI_INT, MPI_MAX, comm_));
-      PetscCheck(any, comm_, PETSC_ERR_ARG_WRONG, "a boundary condition was given for \"Face Sets\" value %" \
-         PetscInt_FMT " but no boundary face of the mesh carries it", entry.first);
-   }
-
-   // ~~~~~~~~~~
-   // The ordinates, flattened (a * 3 + d) - the layout the device view has,
-   // so the host classification reads them exactly as the fill does
-   // ~~~~~~~~~~
-   std::vector<PetscScalar> omega(3 * n_angles, 0.0);
-   for (PetscInt a = 0; a < n_angles; a++) {
-      omega[3 * a] = mu[a];
-      omega[3 * a + 1] = eta[a];
-      omega[3 * a + 2] = xi ? xi[a] : 0.0;
-   }
+   PetscCall(CheckBCLabelsSeen(comm_, bcs, face_label_h_));
 
    // ~~~~~~~~~~
    // COO coordinates. DG0: n_faces + 1 entries per row, in slot order: one
@@ -570,33 +418,26 @@ PetscErrorCode UnstructuredDG::create_common(PhaseSpace &ps, PetscInt quad_dim, 
    // A -1 row/col index in the COO format says just ignore this entry. A face
    // slot is live only on an interior row, across an interior face, for an
    // angle flowing IN through it: the upwind selection, made here once, so
-   // the value fill never branches on which neighbour is upwind. A reflective
-   // boundary row instead repurposes the slot of its first incoming reflective
-   // face for the coupling to the mirrored angle, and a Dirichlet row keeps
-   // only its diagonal
+   // the value fill never branches on which neighbour is upwind
    //
-   // Under VacuumTreatment::GHOST_FLUX a row that comes in only through
-   // VACUUM faces is not a BC row at all: it keeps the interior row's slots -
-   // whose boundary faces are nulled by the same "neighbour exists" test - and
-   // the streaming term writes its full diagonal, so the one change is the
-   // rhs, |Omega . nA_f| / V_c times the face's per-angle inflow for every
-   // vacuum face it comes in through (windowed per face, summed over faces).
-   // That is exactly the upwind face flux with the inflow as the ghost value
-   // outside, which is the natural DG0 vacuum condition. A REFLECTIVE inflow
-   // face is a face flux the same way, its ghost value the mirrored angle in
-   // this same cell, so its slot points there - DG1's rule, face by face - and
-   // a row coming in through both kinds takes both, with no precedence rule
-   // (the old "reflect wins" corner never saw the vacuum inflow). Under
-   // ghost-flux there are no BC rows at all
+   // Under GHOST_FLUX a row keeps the interior row's slots - its boundary
+   // faces nulled by the same "neighbour exists" test - and the streaming
+   // term writes its full diagonal; |Omega . nA_f| / V_c times each vacuum
+   // inflow face's per-angle inflow (windowed per face, summed over faces)
+   // goes to the rhs - the upwind face flux with the inflow as the ghost value
+   // outside. A REFLECTIVE inflow face is a face flux the same way, its ghost
+   // value the mirrored angle in this cell, so its slot points there, face by
+   // face - a row coming in through both kinds takes both, with no precedence
+   // rule. Under DIRICHLET_CELL a reflective row repurposes the slot of its
+   // first incoming reflective face for the coupling to the mirrored angle,
+   // and a Dirichlet row keeps only its diagonal
    const PetscBool ghost = bcs.ghost_flux_vacuum();
    oor_.clear();
    ooc_.clear();
    std::vector<PetscInt> row_slot_offset(local_rows + 1, 0);
    std::vector<PetscInt> diag_slot(local_rows, 0);
-   std::vector<PetscInt> is_bc_row(local_rows, 0);
-   std::vector<PetscInt> reflect_slot(local_rows, -1);
-   std::vector<PetscScalar> dirichlet_value(local_rows, 0.0);
-   std::vector<PetscScalar> ghost_inflow(local_rows, 0.0);
+   BoundaryRows rows;
+   rows.reset(local_rows, ghost);
 
    if (order == 1) {
 
@@ -604,7 +445,8 @@ PetscErrorCode UnstructuredDG::create_common(PhaseSpace &ps, PetscInt quad_dim, 
       // ghost inflow below reads the basis at the face centroids
       std::vector<PetscScalar> face_own, face_up, basis_grad;
       std::vector<PetscReal> face_basis_value;
-      PetscCall(build_dg1_geometry(face_own, face_up, basis_grad, face_basis_value, bcs));
+      PetscCall(build_dg1_geometry(face_own, face_up, basis_grad, face_basis_value, bcs, &failed, message, \
+         sizeof(message)));
 
       // No BC rows: every face is a face flux. Per row, n_basis slots per face
       // in cone order - the upwind cell's basis j on an interior inflow face,
@@ -626,7 +468,7 @@ PetscErrorCode UnstructuredDG::create_common(PhaseSpace &ps, PetscInt quad_dim, 
 
                for (PetscInt lf = 0; lf < n_faces; lf++) {
                   const PetscInt kf = k0 + lf;
-                  const PetscScalar s = FaceFlux(omega.data(), a, face_nA_h_.data(), kf);
+                  const PetscScalar s = FaceFlux(omega, a, face_nA_h_.data(), kf);
                   const PetscBool inflow = (PetscBool)(PetscRealPart(s) < 0.0);
                   const PetscBool interior = (PetscBool)(face_neighbour_row_h_[kf] >= 0);
                   const PetscBool reflective = (PetscBool)(!interior && \
@@ -646,11 +488,8 @@ PetscErrorCode UnstructuredDG::create_common(PhaseSpace &ps, PetscInt quad_dim, 
                   if (!inflow || interior || reflective) continue;
                   const BCFace bc = bcs.face(face_label_h_[kf]);
                   PetscReal t[2] = {0.0, 0.0};
-                  PetscInt n_t = 0;
-                  for (PetscInt d = 0; d < dim; d++) {
-                     if (d != face_axis[kf]) t[n_t++] = face_centroid[3 * kf + d];
-                  }
-                  if (InWindow(bc, t, n_t)) ghost_inflow[r] += -s / volume_h_[k] * \
+                  const PetscInt n_t = FaceWindowCoords(&face_centroid[3 * kf], face_axis[kf], dim, t);
+                  if (InWindow(bc, t, n_t)) rows.ghost_inflow[r] += -s / volume_h_[k] * \
                      face_basis_value[kf * nb + i] * ((PetscScalar)bc.inflow / sum_weights);
                }
 
@@ -664,7 +503,7 @@ PetscErrorCode UnstructuredDG::create_common(PhaseSpace &ps, PetscInt quad_dim, 
                for (PetscInt sl = row_slot_offset[r]; sl < (PetscInt)oor_.size(); sl++) {
                   PetscCheck(ooc_[sl] >= 0 || oor_[sl] == -1, PETSC_COMM_SELF, PETSC_ERR_PLIB, \
                      "no global index for slot %" PetscInt_FMT " of cell %" PetscInt_FMT, \
-                     sl - row_slot_offset[r], cell_of_local_[k]);
+                     sl - row_slot_offset[r], cell_of_local[k]);
                }
             }
          }
@@ -705,7 +544,7 @@ PetscErrorCode UnstructuredDG::create_common(PhaseSpace &ps, PetscInt quad_dim, 
             for (PetscInt lf = 0; lf < n_faces; lf++) {
                const PetscInt kf = k0 + lf;
                if (face_neighbour_row_h_[kf] >= 0) continue;
-               if (!(PetscRealPart(FaceFlux(omega.data(), a, face_nA_h_.data(), kf)) < 0.0)) continue;
+               if (!(PetscRealPart(FaceFlux(omega, a, face_nA_h_.data(), kf)) < 0.0)) continue;
                any_incoming = PETSC_TRUE;
                if (bcs.type(face_label_h_[kf]) == BCType::VACUUM) {
                   any_vacuum = PETSC_TRUE;
@@ -717,7 +556,6 @@ PetscErrorCode UnstructuredDG::create_common(PhaseSpace &ps, PetscInt quad_dim, 
                   reflect_axes |= (1 << face_axis[kf]);
                }
             }
-
             row_slot_offset[r] = (PetscInt)oor_.size();
 
             if (!any_incoming || ghost) {
@@ -729,7 +567,7 @@ PetscErrorCode UnstructuredDG::create_common(PhaseSpace &ps, PetscInt quad_dim, 
                // always rank-local)
                for (PetscInt lf = 0; lf < n_faces; lf++) {
                   const PetscInt kf = k0 + lf;
-                  const PetscScalar s = FaceFlux(omega.data(), a, face_nA_h_.data(), kf);
+                  const PetscScalar s = FaceFlux(omega, a, face_nA_h_.data(), kf);
                   const PetscBool inflow = (PetscBool)(PetscRealPart(s) < 0.0);
                   const PetscBool interior = (PetscBool)(face_neighbour_row_h_[kf] >= 0);
                   const PetscBool reflective = (PetscBool)(!interior && \
@@ -742,62 +580,53 @@ PetscErrorCode UnstructuredDG::create_common(PhaseSpace &ps, PetscInt quad_dim, 
                   if (interior || reflective || !inflow) continue;
                   const BCFace bc = bcs.face(face_label_h_[kf]);
                   PetscReal t[2] = {0.0, 0.0};
-                  PetscInt n_t = 0;
-                  for (PetscInt d = 0; d < dim; d++) {
-                     if (d != face_axis[kf]) t[n_t++] = face_centroid[3 * kf + d];
-                  }
-                  if (InWindow(bc, t, n_t)) ghost_inflow[r] += -s / volume_h_[k] * ((PetscScalar)bc.inflow / sum_weights);
+                  const PetscInt n_t = FaceWindowCoords(&face_centroid[3 * kf], face_axis[kf], dim, t);
+                  if (InWindow(bc, t, n_t)) rows.ghost_inflow[r] += -s / volume_h_[k] * \
+                     ((PetscScalar)bc.inflow / sum_weights);
                }
 
             } else if (any_vacuum) {
 
                // Dirichlet row: identity, and the rhs takes the winning face's
                // inflow if the face centroid is inside its window
-               is_bc_row[r] = 1;
+               rows.is_bc_row[r] = 1;
                for (PetscInt lf = 0; lf < n_faces; lf++) {
                   oor_.push_back(-1);
                   ooc_.push_back(-1);
                }
                const BCFace bc = bcs.face(face_label_h_[win]);
                PetscReal t[2] = {0.0, 0.0};
-               PetscInt n_t = 0;
-               for (PetscInt d = 0; d < dim; d++) {
-                  if (d != face_axis[win]) t[n_t++] = face_centroid[3 * win + d];
-               }
-               dirichlet_value[r] = InWindow(bc, t, n_t) ? (PetscScalar)bc.inflow / sum_weights : (PetscScalar)0.0;
+               const PetscInt n_t = FaceWindowCoords(&face_centroid[3 * win], face_axis[win], dim, t);
+               rows.dirichlet_value[r] = InWindow(bc, t, n_t) ? (PetscScalar)bc.inflow / sum_weights : \
+                  (PetscScalar)0.0;
 
             } else {
 
                // Reflective row (Dirichlet-cell only): psi(a) - psi(partner) = 0
                // in the same cell, the partner mirrored in every axis the
                // direction came in through
-               is_bc_row[r] = 1;
+               rows.is_bc_row[r] = 1;
                PetscInt partner = a;
                for (PetscInt d = 0; d < dim; d++) {
                   if (reflect_axes & (1 << d)) partner = reflect[d][partner];
                }
 
                // The partner is outgoing through every face this direction came
-               // in through. Its row may still be a boundary row: coming in
-               // through a VACUUM face - a cell where a reflective axis plane
-               // meets a slanted or curved vacuum boundary, the usual
-               // symmetry-reduced geometry - makes it a Dirichlet row, and
-               // psi(a) = psi(partner) = the inflow is a perfectly good pair of
-               // equations. Coming in through another REFLECTIVE face is not: the
-               // two rows would each define the other (a single-cell-wide
-               // direction between two reflective faces), and there is no
-               // sensible matrix for that
+               // in through. Its row may still be a Dirichlet row - a
+               // reflective axis plane meeting a slanted vacuum face, where
+               // psi(a) = psi(partner) = the inflow is a good pair of
+               // equations - but not a REFLECTIVE one: the two rows would each
+               // define the other (a single-cell-wide direction between two
+               // reflective faces)
                for (PetscInt lf = 0; lf < n_faces; lf++) {
                   const PetscInt kf = k0 + lf;
                   if (face_neighbour_row_h_[kf] >= 0) continue;
                   if (bcs.type(face_label_h_[kf]) != BCType::REFLECT) continue;
-                  if (PetscRealPart(FaceFlux(omega.data(), partner, face_nA_h_.data(), kf)) < 0.0 && !failed) {
-                     failed = PETSC_TRUE;
-                     PetscCall(PetscSNPrintf(message, sizeof(message), "the reflection partner of cell %" \
-                        PetscInt_FMT " angle %" PetscInt_FMT " is itself a reflective boundary row - a " \
-                        "reflective face on a single-cell-wide direction between two reflective faces is not " \
-                        "supported", cell_of_local_[k], a));
-                  }
+                  if (PetscRealPart(FaceFlux(omega, partner, face_nA_h_.data(), kf)) < 0.0) \
+                     PetscCall(RecordFailure(&failed, message, sizeof(message), "the reflection partner of cell %" \
+                     PetscInt_FMT " angle %" PetscInt_FMT " is itself a reflective boundary row - a reflective " \
+                     "face on a single-cell-wide direction between two reflective faces is not supported", \
+                     cell_of_local[k], a));
                }
 
                for (PetscInt lf = 0; lf < n_faces; lf++) {
@@ -805,7 +634,7 @@ PetscErrorCode UnstructuredDG::create_common(PhaseSpace &ps, PetscInt quad_dim, 
                   oor_.push_back(lf == first_reflect ? row : -1);
                   ooc_.push_back(lf == first_reflect ? rstart + k * n_angles + partner : -1);
                }
-               reflect_slot[r] = row_slot_offset[r] + first_reflect;
+               rows.reflect_slot[r] = row_slot_offset[r] + first_reflect;
             }
 
             diag_slot[r] = (PetscInt)oor_.size();
@@ -820,7 +649,7 @@ PetscErrorCode UnstructuredDG::create_common(PhaseSpace &ps, PetscInt quad_dim, 
             for (PetscInt s = row_slot_offset[r]; s < (PetscInt)oor_.size(); s++) {
                PetscCheck(ooc_[s] >= 0 || oor_[s] == -1, PETSC_COMM_SELF, PETSC_ERR_PLIB, \
                   "no global index for face slot %" PetscInt_FMT " of cell %" PetscInt_FMT, \
-                  s - row_slot_offset[r], cell_of_local_[k]);
+                  s - row_slot_offset[r], cell_of_local[k]);
             }
          }
       }
@@ -828,8 +657,7 @@ PetscErrorCode UnstructuredDG::create_common(PhaseSpace &ps, PetscInt quad_dim, 
    PetscCall(CollectiveFailure(comm_, failed, message));
    row_slot_offset[local_rows] = (PetscInt)oor_.size();
 
-   PetscCall(set_pattern(row_slot_offset, diag_slot, is_bc_row, reflect_slot, dirichlet_value, ghost_inflow, \
-      ghost));
+   PetscCall(set_pattern(row_slot_offset, diag_slot, rows));
 
    // ~~~~~~~~~~
    // The device geometry the streaming term reads - flat rank-1 views only
@@ -843,9 +671,11 @@ PetscErrorCode UnstructuredDG::create_common(PhaseSpace &ps, PetscInt quad_dim, 
    cell_face_offset_d_ = PetscIntKokkosView("cell_face_offset_d", local_cells + 1);
    face_nA_d_ = PetscScalarKokkosView("face_nA_d", 3 * n_cell_faces);
    inv_volume_d_ = PetscScalarKokkosView("inv_volume_d", local_cells);
-   centroid_d_ = PetscScalarKokkosView("centroid_d", 3 * local_cells);
+   paint_centroid_d_ = PetscScalarKokkosView("centroid_d", 3 * local_cells);
 
-   PetscScalarKokkosViewHostUnmanaged omega_h(omega.data(), 3 * n_angles);
+   // const_cast only because the unmanaged host view type is non-const; the
+   // deep_copy reads it
+   PetscScalarKokkosViewHostUnmanaged omega_h(const_cast<PetscScalar *>(omega), 3 * n_angles);
    PetscIntKokkosViewHostUnmanaged cell_face_offset_h(cell_face_offset_h_.data(), local_cells + 1);
    PetscScalarKokkosViewHostUnmanaged face_nA_h(face_nA_h_.data(), 3 * n_cell_faces);
    PetscScalarKokkosViewHostUnmanaged inv_volume_h(inv_volume.data(), local_cells);
@@ -854,7 +684,7 @@ PetscErrorCode UnstructuredDG::create_common(PhaseSpace &ps, PetscInt quad_dim, 
    Kokkos::deep_copy(cell_face_offset_d_, cell_face_offset_h);
    Kokkos::deep_copy(face_nA_d_, face_nA_h);
    Kokkos::deep_copy(inv_volume_d_, inv_volume_h);
-   Kokkos::deep_copy(centroid_d_, centroid_h);
+   Kokkos::deep_copy(paint_centroid_d_, centroid_h);
 
    PetscFunctionReturn(PETSC_SUCCESS);
 }
@@ -871,13 +701,13 @@ PetscErrorCode UnstructuredDG::create_common(PhaseSpace &ps, PetscInt quad_dim, 
 // exactly, whichever cells the two come from
 PetscErrorCode UnstructuredDG::build_dg1_geometry(std::vector<PetscScalar> &face_own, \
    std::vector<PetscScalar> &face_up, std::vector<PetscScalar> &basis_grad, \
-   std::vector<PetscReal> &face_basis_value, const BCSpec &bcs)
+   std::vector<PetscReal> &face_basis_value, const BCSpec &bcs, PetscBool *failed, char *message, size_t len)
 {
    PetscSection csec = NULL;
    Vec coords_vec = NULL;
    const PetscScalar *coords = nullptr;
    const PetscInt dim = dim_, nb = n_basis_;
-   const PetscInt local_cells = (PetscInt)cell_of_local_.size();
+   const PetscInt local_cells = (PetscInt)paint_point_.size();
    const PetscInt n_mesh_cells = c_end_ - c_start_;
 
    PetscFunctionBeginUser;
@@ -896,9 +726,9 @@ PetscErrorCode UnstructuredDG::build_dg1_geometry(std::vector<PetscScalar> &face
       // The fan and PETSc's FVM geometry agree on any cell with planar faces;
       // a cell where they do not has a face whose single normal the face
       // fluxes would be wrong for
-      PetscCheck(PetscAbsReal(vol[m] - fvm_vol) <= 1e-8 * fvm_vol, PETSC_COMM_SELF, PETSC_ERR_SUP, \
+      if (!(PetscAbsReal(vol[m] - fvm_vol) <= 1e-8 * fvm_vol)) PetscCall(RecordFailure(failed, message, len, \
          "cell %" PetscInt_FMT ": fan volume %.15g against PETSc's %.15g - DG1 needs planar faces", \
-         c, (double)vol[m], (double)fvm_vol);
+         c, (double)vol[m], (double)fvm_vol));
       PetscCall(OrthonormalGradients(dim, c, vol[m], central, &beta[9 * m]));
    }
 
@@ -922,7 +752,7 @@ PetscErrorCode UnstructuredDG::build_dg1_geometry(std::vector<PetscScalar> &face
 
    for (PetscInt k = 0; k < local_cells; k++) {
 
-      const PetscInt c = cell_of_local_[k];
+      const PetscInt c = paint_point_[k];
       const PetscInt m = c - c_start_;
       // The fan geometry is what the basis is orthonormal against, so it is
       // what the rows are divided by
@@ -940,9 +770,9 @@ PetscErrorCode UnstructuredDG::build_dg1_geometry(std::vector<PetscScalar> &face
          PetscReal fvm_area = 0.0, fref[3] = {0.0, 0.0, 0.0}, area = 0.0, xf[3], Cf[9];
          PetscCall(DMPlexComputeCellGeometryFVM(dm_, f, &fvm_area, fref, NULL));
          PetscCall(FaceMoments(dm_, csec, coords, dim, f, fref, &area, xf, Cf));
-         PetscCheck(PetscAbsReal(area - fvm_area) <= 1e-8 * fvm_area, PETSC_COMM_SELF, PETSC_ERR_SUP, \
+         if (!(PetscAbsReal(area - fvm_area) <= 1e-8 * fvm_area)) PetscCall(RecordFailure(failed, message, len, \
             "face %" PetscInt_FMT ": fan area %.15g against PETSc's %.15g - DG1 needs planar faces", \
-            f, (double)area, (double)fvm_area);
+            f, (double)area, (double)fvm_area));
 
          // The upwind cell across this face: the neighbour through an
          // interior face, this cell itself through a reflective one (the
@@ -1022,118 +852,6 @@ PetscErrorCode UnstructuredDG::scalar_flux_gradient(Vec psi, const AngularQuadra
       grad[d] = PetscScalarKokkosView("scalar_flux_grad_d", ps_.local_cells);
       ScalarFluxGradientKernel(grad[d], phi_d, basis_grad_d_, n_basis_, d, ps_.local_cells);
    }
-
-   PetscFunctionReturn(PETSC_SUCCESS);
-}
-
-// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-// Paint the flattened boxes over mat_id_d, later ones winning - the shared
-// PaintFlatBoxes (plex_commonk.hpp) over the owned cells' centroids
-PetscErrorCode UnstructuredDG::paint_flat_boxes(PetscInt n_boxes, const std::vector<PetscScalar> &box_lohi, \
-   const std::vector<PetscInt> &box_material, PetscIntKokkosView &mat_id_d) const
-{
-   PetscFunctionBeginUser;
-
-   PetscCall(ps_.check_decomposed());
-   PetscCall(PaintFlatBoxes(comm_, dim_, ps_.local_cells, centroid_d_, n_boxes, box_lohi, box_material, mat_id_d));
-
-   PetscFunctionReturn(PETSC_SUCCESS);
-}
-
-// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-PetscErrorCode UnstructuredDG::paint_boxes_over(const std::vector<MaterialBox2D> &boxes, PetscIntKokkosView &mat_id_d) const
-{
-   const PetscInt n_boxes = (PetscInt)boxes.size();
-
-   PetscFunctionBeginUser;
-
-   PetscCheck(dim_ == 2, comm_, PETSC_ERR_ARG_INCOMP, "2D boxes painted onto a %" PetscInt_FMT "D mesh", dim_);
-
-   std::vector<PetscScalar> box_lohi;
-   std::vector<PetscInt> box_material;
-   FlattenBoxes(boxes, box_lohi, box_material);
-   PetscCall(paint_flat_boxes(n_boxes, box_lohi, box_material, mat_id_d));
-
-   PetscFunctionReturn(PETSC_SUCCESS);
-}
-
-// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-PetscErrorCode UnstructuredDG::paint_boxes_over(const std::vector<MaterialBox3D> &boxes, PetscIntKokkosView &mat_id_d) const
-{
-   const PetscInt n_boxes = (PetscInt)boxes.size();
-
-   PetscFunctionBeginUser;
-
-   PetscCheck(dim_ == 3, comm_, PETSC_ERR_ARG_INCOMP, "3D boxes painted onto a %" PetscInt_FMT "D mesh", dim_);
-
-   std::vector<PetscScalar> box_lohi;
-   std::vector<PetscInt> box_material;
-   FlattenBoxes(boxes, box_lohi, box_material);
-   PetscCall(paint_flat_boxes(n_boxes, box_lohi, box_material, mat_id_d));
-
-   PetscFunctionReturn(PETSC_SUCCESS);
-}
-
-// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-// See the declaration for the painting rules (background, later boxes win,
-// membership by cell centroid)
-PetscErrorCode UnstructuredDG::paint_boxes(PetscInt background_material, const std::vector<MaterialBox2D> &boxes, \
-   PetscIntKokkosView &mat_id_d) const
-{
-   PetscFunctionBeginUser;
-
-   // We allocate device memory below, and PETSc brings Kokkos up lazily
-   PetscCall(PetscKokkosInitializeCheck());
-
-   PetscCall(ps_.check_decomposed());
-   PetscCheck(background_material >= 0, comm_, PETSC_ERR_ARG_OUTOFRANGE, \
-      "background material index %" PetscInt_FMT " is negative", background_material);
-
-   mat_id_d = PetscIntKokkosView("mat_id_d", ps_.local_cells);
-   Kokkos::deep_copy(mat_id_d, background_material);
-   PetscCall(paint_boxes_over(boxes, mat_id_d));
-
-   PetscFunctionReturn(PETSC_SUCCESS);
-}
-
-// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-PetscErrorCode UnstructuredDG::paint_boxes(PetscInt background_material, const std::vector<MaterialBox3D> &boxes, \
-   PetscIntKokkosView &mat_id_d) const
-{
-   PetscFunctionBeginUser;
-
-   // We allocate device memory below, and PETSc brings Kokkos up lazily
-   PetscCall(PetscKokkosInitializeCheck());
-
-   PetscCall(ps_.check_decomposed());
-   PetscCheck(background_material >= 0, comm_, PETSC_ERR_ARG_OUTOFRANGE, \
-      "background material index %" PetscInt_FMT " is negative", background_material);
-
-   mat_id_d = PetscIntKokkosView("mat_id_d", ps_.local_cells);
-   Kokkos::deep_copy(mat_id_d, background_material);
-   PetscCall(paint_boxes_over(boxes, mat_id_d));
-
-   PetscFunctionReturn(PETSC_SUCCESS);
-}
-
-// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-// The DMPlex half of the material split: which cells are which material is a
-// label on the mesh, and the label's arbitrary values are remapped here onto
-// MaterialSpec's dense indices - a host step, the same place BCSpec is
-// consulted
-PetscErrorCode UnstructuredDG::paint_cell_sets(PetscInt background_material, \
-   const std::map<PetscInt, PetscInt> &label_to_material, PetscIntKokkosView &mat_id_d) const
-{
-   PetscFunctionBeginUser;
-
-   PetscCall(ps_.check_decomposed());
-   PetscCall(PaintCellSets(dm_, comm_, background_material, label_to_material, cell_of_local_, mat_id_d));
 
    PetscFunctionReturn(PETSC_SUCCESS);
 }

@@ -103,6 +103,7 @@ OBJS := $(SRCDIR)/sn_quadraturek.o \
 		  $(SRCDIR)/structured_fd_1dk.o \
 		  $(SRCDIR)/structured_fd_2dk.o \
 		  $(SRCDIR)/structured_fd_3dk.o \
+		  $(SRCDIR)/plex_discretisationk.o \
 		  $(SRCDIR)/unstructured_dgk.o \
 		  $(SRCDIR)/unstructured_cgk.o \
 		  $(SRCDIR)/material_speck.o \
@@ -134,9 +135,9 @@ $(SRCDIR)/problem_speck.o: $(SRCDIR)/external/nlohmann/json.hpp
 # so it can never enter the public include tree, so the one TU that includes it
 # declares the dependency by hand
 $(SRCDIR)/sn_quadraturek.o: $(SRCDIR)/sn_lqn_table.hpp
-# And the plex plumbing the two unstructured backends share - internal, under
-# src/ for the same reason
-$(SRCDIR)/unstructured_dgk.o $(SRCDIR)/unstructured_cgk.o: $(SRCDIR)/plex_commonk.hpp
+# And the plumbing the backends share - internal, under src/ for the same reason
+$(SRCDIR)/plex_discretisationk.o $(SRCDIR)/unstructured_dgk.o $(SRCDIR)/unstructured_cgk.o: $(SRCDIR)/plex_commonk.hpp
+$(SRCDIR)/structured_fd_1dk.o $(SRCDIR)/structured_fd_2dk.o $(SRCDIR)/structured_fd_3dk.o: $(SRCDIR)/structured_fd_commonk.hpp
 
 # Define a variable containing all the tests
 export TEST_TARGETS = transportk verify_2dk verify_3dk verify_quadraturek verify_plexk verify_cgk
