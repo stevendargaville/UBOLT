@@ -34,11 +34,13 @@ ignored everywhere (JSON has no comments), holding provenance prose.
 
 | key | type | required | meaning |
 |---|---|---|---|
-| `dimension` | int, 1, 2 or 3 | yes | with `mesh.type`, picks the backend: `StructuredFD1D`, `StructuredFD2D` or `StructuredFD3D` on a structured mesh, `UnstructuredDG` (2 or 3 only) on an unstructured one |
+| `dimension` | int, 1, 2 or 3 | yes | with `mesh.type`, picks the backend: `StructuredFD1D`, `StructuredFD2D` or `StructuredFD3D` on a structured mesh, `UnstructuredDG` (2 or 3 only) on an unstructured one, or `UnstructuredCG` with `mesh.discretisation` `"cg_supg"` |
 | `mesh.type` | `"structured"` or `"unstructured"` | no, default `"structured"` | the backend family: the DMDA finite-difference backends, or the upwind DG backend on a DMPlex - see "Unstructured meshes" below |
 | `mesh.n_cells` | int[dimension] | yes, except with `mesh.file` | `[nx]`, `[nx, ny]` or `[nx, ny, nz]`, all positive. On an unstructured mesh, the cells per axis of the box PETSc builds |
 | `mesh.lengths` | number[dimension] | yes, except with `mesh.file` | `[lx]`, `[lx, ly]` or `[lx, ly, lz]`, all positive; the box runs from the origin |
-| `mesh.order` | int, 0 or 1 | no, default 0; unstructured only | the DG order: 0 is DG0 (one flux per cell and ordinate), 1 is linear DG (dimension + 1 per cell) - see "Linear DG" below |
+| `mesh.order` | int, 0 or 1 | no, default 0; unstructured only | the DG order: 0 is DG0 (one flux per cell and ordinate), 1 is linear DG (dimension + 1 per cell) - see "Linear DG" below. A `"cg_supg"` mesh is linear (P1/Q1): 1 or left out |
+| `mesh.discretisation` | `"dg"` or `"cg_supg"` | no, default `"dg"`; unstructured only | upwind DG (the order above), or continuous Galerkin with consistent SUPG, one flux per VERTEX and ordinate - see "Continuous Galerkin (SUPG)" below |
+| `mesh.supg_zeta` | number, positive | no, default 0.5; `"cg_supg"` only | the thin-cell SUPG parameter: tau = min(1 / Sigma_t, h / zeta). It changes the solution, so it is the problem's; `-supg_zeta` overrides it for sweeps |
 | `mesh.simplex` | bool | no, default `false`; unstructured box only | triangles (2D) / tetrahedra (3D) instead of quads / hexes |
 | `mesh.file` | string | no; unstructured only | a mesh file PETSc reads (Gmsh `.msh`, ...), resolved relative to the problem file's own directory like a `materials` path. The file decides the mesh, so `n_cells`, `lengths` and `simplex` are errors alongside it; `dimension` is still required and must match the file |
 | `sn_order` | int, positive and even | yes | the SN order N, NOT the ordinate count - how many ordinates that is, is the quadrature's business and differs by dimension (N in 1D, N(N+2)/2 in 2D, N(N+2) in 3D, so S4 is 4, 12 and 24 ordinates; a 3D set has twice the ordinates of the same-order 2D set, because there is no xi > 0 half to fold over). 1D takes ANY even order - it is a Gauss-Legendre rule, generated at run time; 2D and 3D take the even orders 2 to 18, the level-symmetric (LQn) sets, which is as far as that family goes with all-positive weights |
@@ -46,7 +48,7 @@ ignored everywhere (JSON has no comments), holding provenance prose.
 | `regions` | object | no | which cells are which material - see below; absent = uniform background. An unstructured mesh may also paint by `"Cell Sets"` label value, `regions.cell_sets` |
 | `boundary_conditions` | object | no | per-face `"vacuum"`/`"reflect"`, or an object `{"type", "inflow", "window"}` - see below; unset faces are vacuum with inflow 0. An unstructured mesh may also key faces by `"Face Sets"` label value (`"13": "reflect"`) |
 | `vacuum_treatment` | string | no | how every VACUUM face is discretised: `"ghost_flux"` (default) or `"dirichlet_cell"` - see below. Reflective faces are unaffected |
-| `output.flux_vtk` | string | no | output path: `.vts` or `.vtr` on a structured mesh, `.vtu` on an unstructured one (the parser checks the extension against `mesh.type`); `-flux_vtk` on the command line overrides it. A single-group problem writes the filename as given, multigroup writes one file per group (`flux.vts` becomes `flux_g0.vts`, ...). Each file carries three per-cell fields for its group: `scalar_flux`, `sigma_t` and `source` (the isotropic strength as written here, not the per-ordinate share) |
+| `output.flux_vtk` | string | no | output path: `.vts` or `.vtr` on a structured mesh, `.vtu` on an unstructured one (the parser checks the extension against `mesh.type`); `-flux_vtk` on the command line overrides it. A single-group problem writes the filename as given, multigroup writes one file per group (`flux.vts` becomes `flux_g0.vts`, ...). Each file carries three per-cell fields for its group: `scalar_flux`, `sigma_t` and `source` (the isotropic strength as written here, not the per-ordinate share); on a `"cg_supg"` mesh the flux is point data instead, `scalar_flux.nodal` |
 
 ### Vacuum treatment
 
@@ -327,6 +329,39 @@ What differs from DG0:
   centroid. A multigroup file writes them per group like the rest.
 - the mesh's faces must be planar (every box, simplex and Gmsh mesh here is);
   a cell whose faces are not is an error when the backend builds the basis.
+
+#### Continuous Galerkin (SUPG)
+
+`"discretisation": "cg_supg"` in `mesh` swaps the DG backend for
+`UnstructuredCG`: continuous P1 (triangles, tets) or Q1 (quads, hexes) nodal
+values at the mesh VERTICES, stabilised by consistent SUPG - the whole
+transport residual (streaming, removal, scattering, source, group transfer)
+tested with `v + tau Omega . grad v`, which is the same method as Wang's
+SAAF-tau (Rattlesnake's CFEM "SAAF with a void treatment") written from the
+first-order side. So the exact solution satisfies the discrete equations for
+any tau: a constant infinite medium is reproduced to rounding, and the scheme
+is second order in space. `tau = min(1 / Sigma_t, h / zeta)` per element,
+ordinate and group - the SAAF value `1 / Sigma_t` in an optically thick cell,
+which gives the right diffusion limit, and `h / zeta` in a thin cell or a void
+(`h` the element's length along the ordinate); `mesh.supg_zeta` is zeta, 0.5
+by default (Rattlesnake's; 2 is the classical `h / 2` of SUPG for advection).
+What differs from DG:
+- **boundary conditions are weak, with a lumped face mass, and there are no
+  boundary-condition rows.** A vacuum face adds its inflow to the rhs, a
+  reflective face couples each incoming ordinate to its mirror over that
+  face's axis at the same vertex (axis-aligned reflective faces only, as DG1).
+  `"vacuum_treatment": "dirichlet_cell"` is an error.
+- **the cross sections are per element, the unknowns per vertex**, so a
+  vertex on a material interface sees both materials through the elements
+  around it. `regions` paint elements (by centroid, or `"Cell Sets"`) as
+  before.
+- **the output's `scalar_flux` is point data**, the array
+  `scalar_flux.nodal` (PETSc's writer names every point array
+  `name.component`); `sigma_t` and `source` stay per-element cell data.
+- the whole operator depends on the group (tau does), so the driver options
+  that rely on a group-independent streaming matrix - `-matfree_removal`,
+  `-precon_stream`, `-precon_ref_shift`, `-check_matfree` - are refused, and
+  so is `-precon_dsa`: there is no CG diffusion operator yet.
 
 Parallel: the mesh is distributed by PETSc's **`simple`** partitioner by
 default - deterministic on every machine and CI image, so iteration counts

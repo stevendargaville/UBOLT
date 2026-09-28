@@ -4,8 +4,9 @@ Full plan and architecture rationale: see the approved plan (design discussion J
 Each phase is a reviewable unit with its own verification. Do not start a phase before the
 previous one's verification has passed and been reviewed.
 
-## Current state (updated 2026-09-27)
-Last landed: **`-precon_ref_shift` on voids** (`RefShiftPmats` sorts the groups by
+## Current state (updated 2026-09-28)
+Last landed: **CG-SUPG** (`UnstructuredCG`, Phase 6b - the Phase 6 item); before it,
+**`-precon_ref_shift` on voids** (`RefShiftPmats` sorts the groups by
 their void cells, one reference per pattern, zero in the void, so a void cell's pmat
 row is the bare streaming row the operator has there; exact coverage stays the full
 pmat, voids included - see the ticked item at the end of Phase 6); before it, **void
@@ -41,8 +42,10 @@ DMPlex, PR #2) and the ghost-flux vacuum treatment as the default (PR #4). DSA n
 works at both orders on the plex: at DG0 every quad/hex twin takes the structured DSA
 count and simplices go 35 -> 10 / 31 -> 9; at DG1 (27 Sep 2026) the diffusive quad box,
 hex cube, triangles and tets go 34 / 32 / 40 / 43 -> 6 / 7 / 8 / 9 (DG0+DSA now takes
-5 on all four meshes' DG0 twins, through the consistent D). Next up: 6b CG-SUPG (Phase
-6), or one of the open questions carried as checkboxes since 27 Sep 2026: per-group
+5 on all four meshes' DG0 twins, through the consistent D). 6b CG-SUPG landed 28 Sep
+2026 (the Phase 6 item: `mesh.discretisation: "cg_supg"`, consistent SUPG = SAAF-tau,
+verified against the SAAF-LS void slab and the thin/thick slab benchmarks; its
+follow-ups - a CG DSA first - are under it). Next up: a CG DSA, or one of the open questions carried as checkboxes since 27 Sep 2026: per-group
 cached Mat/KSP for the DSA (in the Phase 4 postscript 5 DSA notes; void masking, the
 other, is done), and the follow-ups the 27 Sep 2026 round left (the simplex +1 - a
 stronger cheap DSA inner solve was looked at and closed with no change; the list at the end of Phase 6 - the void-bridging
@@ -617,8 +620,50 @@ now direct and tested (see that item).
     problems only, so 4 stays. The thin, c = 0.5 infinite-medium quad box went 9 -> 11
     (12 without DSA) - DSA has little to do there and the IP operator's thin-cell
     penalty is not the transport's; not pursued.
-- [ ] 6b CGSUPG: PetscFE/PetscDS host-only for quadrature/tabulations copied to device
-      once; volume kernels; Dirichlet via identity-row mechanism
+- [x] 6b CG-SUPG (28 Sep 2026): `UnstructuredCG`, `mesh.discretisation: "cg_supg"`.
+      Decisions, from a literature pass (SN transport SUPG, Rattlesnake): CONSISTENT
+      SUPG - the whole residual tested with `v + tau Omega.grad v`, which is Wang's
+      SAAF-tau (NSE 176, 2014; Rattlesnake's CFEM "SAAF with a void treatment")
+      written from the first-order side, so the exact solution satisfies the discrete
+      equations for any tau; an inconsistent (streaming-only) SUPG is first order and
+      adds a streamline diffusion ~h that ruins the thick limit. tau = min(1/sigma_t,
+      h_Omega/zeta) per (element, angle, group): 1/sigma_t in thick cells is SAAF's
+      diffusion limit, h/zeta covers thin cells and voids; zeta 0.5 (Rattlesnake's)
+      by default, `mesh.supg_zeta` / `-supg_zeta`. The TODO's "Dirichlet via
+      identity-row" was NOT taken: boundaries are weak with a lumped face mass and
+      there are no BC rows, as DG1 (ghost-flux became the default after this line
+      was written). PetscFE only on the host for the element tables (M, G, K), as
+      planned; the kernels are row gathers over each vertex's star, no atomics.
+      Rows (vertex, angle); xsections per local element; FEM-closure overlap. The
+      plex plumbing is shared with the DG backend (`src/plex_commonk.hpp`, bitwise
+      inert on all 91 plex recipes). Verified by `tests/verify_cgk`: constant exact
+      to 1.3e-15 through operator and rhs (voids, reflective faces, every shape),
+      second order (quads 1.95, triangles 1.96), and the two literature benchmarks
+      against the exact SN solution - the SAAF-LS void slab (arXiv 1605.05388,
+      order 2.05, 8-10 iterations to rtol 1e-13 at every refinement to 640 cells where
+      GMRES + BoomerAMG on SAAF-tau took 801-8120) and the thin/thick slab (arXiv
+      1902.08729, order 1.93; the flux at the interface vertex dips 33% (zeta 0.5) /
+      35% (zeta 2) at their 8 cells per region). A global-balance check (a linear psi,
+      outflow minus inflow) is what pins the weak boundary terms' scale - the first
+      cut had the face coefficient divided by the area twice and passed everything
+      else. Counts: the DG0 twins' except the diffusive quad box (39 vs 29) and the
+      void channel (47 vs 26). Tables in
+      docs/dev/testing.md, "CG-SUPG verification and iteration counts".
+  - [ ] DSA for CG-SUPG. `-precon_dsa` is refused on the backend today. Candidates:
+    Wang's consistent DSA for SAAF-tau (P0-projected, NSE 176, 2014), or a
+    continuous P1 diffusion operator on the same vertices (restriction/prolongation
+    would then be the identity in space). The diffusive CG recipes (39/35) show the
+    same scattering-dominated need DG0 had before its DSA.
+  - [ ] `-matfree_removal`, `-precon_stream` and `-precon_ref_shift` on CG. All three
+    assume a group-independent streaming matrix; with tau = min(1/sigma_t, h/zeta) the
+    SUPG streaming part depends on the group. A sigma-independent tau (h/zeta only)
+    would restore it at the cost of the thick diffusion limit; not done.
+  - [ ] The CG void channel takes 47 against DG0's 26 and the diffusive quad box 39
+    against 29 (every other CG twin is within 1 of DG0). Not investigated.
+  - [ ] SUPG is not adjoint-consistent: no `A^T = P A P` on this backend, so the
+    half-quadrature transposed PC (blocked on PFLARE anyway) would not carry over.
+  - [ ] h_Omega is the Tezduyar/Shakib element length along Omega; Wang's SAAF-tau uses
+    a cell size. On a strip the two differ by 1/|mu| - not compared.
 - BCs: consume the existing `BCSpec` with real "Face Sets" label values (the structured
   backends' FACE_* ids already match the box-mesh convention, so square meshes carry
   over unchanged) — see the reflective-BC postscript below for the label/physics split

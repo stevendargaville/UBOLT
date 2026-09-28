@@ -116,6 +116,10 @@ endif
 	./transportk -problem problems/plex_box_50_st2.json -ksp_max_it 7
 	@echo "Check 2D unstructured quad box at DG1"
 	./transportk -problem problems/plex_box_50_st2_dg1.json -ksp_max_it 7
+	@echo "Check the CG-SUPG backend: element tables, consistency, order and the two slab benchmarks"
+	./verify_cgk
+	@echo "Check 2D unstructured quad box, CG-SUPG, the twin of plex_box_50_st2"
+	./transportk -problem problems/cg_box_50_st2.json -ksp_max_it 7
 	@echo "Check 3D cube streaming/removal + matrix-free scatter with AIRG"
 	./transportk -problem problems/cube_10_st2.json -ksp_max_it 6
 	@echo "Check 3D cube, reflective left + front + bottom faces"
@@ -750,6 +754,56 @@ ifeq ($(PETSC_HAVE_TETMESHER),1)
 	./transportk -problem problems/plex_tet_diffusive_dg1.json -precon_dsa -ksp_max_it 9
 endif
 
+# The CG-SUPG backend (mesh.discretisation "cg_supg", Phase 6b): P1/Q1 nodal
+# values at the vertices, consistent SUPG with tau = min(1/sigma_t, h/zeta).
+# Each cg_*.json is the twin of the plex_*.json of the same name (the slab
+# benchmarks and the infinite medium are CG-only). PCAIR runs on the
+# point-Jacobi (element-block at one dof per vertex) scaled pmat by default,
+# as on the DG backend; on CG it changes nothing measurable (the unscaled
+# lines match). The counts sit on the DG0 twins' except the diffusive quad
+# box (39 against 29) and the void channel (46-47 against 26). -matfree_removal,
+# -precon_stream, -precon_ref_shift, -precon_dsa and -check_matfree are
+# refused on this backend (the operator refills per group). Counts and the
+# measurements behind the defaults: docs/dev/testing.md, "CG-SUPG"
+	@echo "Test 2D unstructured quad box, CG-SUPG, pure scattering"
+	./transportk -problem problems/cg_box_50_st2.json -ksp_max_it 7
+	@echo "Test 2D unstructured quad box, CG-SUPG, reflective left + bottom faces"
+	./transportk -problem problems/cg_box_50_reflect_lb.json -ksp_max_it 6
+ifeq ($(PETSC_HAVE_TRIANGLE),1)
+	@echo "Test 2D unstructured triangles, CG-SUPG, S4, scattering ratio 0.5"
+	./transportk -problem problems/cg_tri_30_st2.json -ksp_max_it 5
+endif
+	@echo "Test 3D unstructured hex box, CG-SUPG, pure scattering"
+	./transportk -problem problems/cg_cube_10_st2.json -ksp_max_it 6
+ifeq ($(PETSC_HAVE_TETMESHER),1)
+	@echo "Test 3D unstructured tetrahedra, CG-SUPG, scattering ratio 0.5"
+	./transportk -problem problems/cg_tet_6_st2.json -ksp_max_it 5
+endif
+	@echo "Test 2D unstructured Gmsh file, CG-SUPG, Cell Sets materials and Face Sets boundary conditions"
+	./transportk -problem problems/cg_square_msh.json -ksp_max_it 4
+	@echo "Test 2D unstructured quad box, CG-SUPG, vacuum + reflective faces against the infinite-medium solution"
+	./transportk -problem problems/cg_box_20_inf_medium.json -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 11
+	@echo "Test 2D unstructured quad box, CG-SUPG, four groups over four decades of Sigma_t (a per-group refill)"
+	./transportk -problem problems/cg_decades4.json -ksp_max_it 41
+	@echo "Test 2D unstructured quad box, CG-SUPG, diffusive regime (no DSA on this backend yet)"
+	./transportk -problem problems/cg_box_diffusive.json -ksp_max_it 39
+ifeq ($(PETSC_HAVE_TRIANGLE),1)
+	@echo "Test 2D unstructured triangles, CG-SUPG, diffusive regime"
+	./transportk -problem problems/cg_tri_diffusive.json -ksp_max_it 35
+endif
+	@echo "Test 2D unstructured quad box, CG-SUPG, a void channel (tau = h / zeta there)"
+	./transportk -problem problems/cg_box_void_channel.json -ksp_max_it 47
+	@echo "Test the SAAF-LS void slab benchmark, CG-SUPG (GMRES + BoomerAMG took 801-8120 on SAAF-tau)"
+	./transportk -problem problems/cg_slab_saaf_ls_void.json -ksp_max_it 4
+	@echo "Test the SAAF-LS void slab benchmark, CG-SUPG at zeta 2 (the classical h/2 in the void)"
+	./transportk -problem problems/cg_slab_saaf_ls_void.json -supg_zeta 2 -ksp_max_it 3
+	@echo "Test the SAAF-LS void slab benchmark, CG-SUPG, PCAIR on the unscaled pmat"
+	./transportk -problem problems/cg_slab_saaf_ls_void.json -precon_block_scale 0 -ksp_max_it 4
+	@echo "Test the SAAF-LS void slab benchmark, CG-SUPG, diagonally scaled (no scattering, so a consistent scaling)"
+	./transportk -problem problems/cg_slab_saaf_ls_void.json -diag_scale -ksp_max_it 4
+	@echo "Test the thin/thick slab benchmark, CG-SUPG"
+	./transportk -problem problems/cg_slab_thin_thick.json -ksp_max_it 4
+
 # ~~~~~~~~~~~
 # ~~~~~~~~~~~
 run_tests_short_parallel:
@@ -1057,6 +1111,26 @@ endif
 	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_box_diffusive_dg1.json -precon_dsa -ksp_max_it 7
 	@echo "Test 3D unstructured hex cube at DG1, DSA correction in parallel"
 	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_cube_diffusive_dg1.json -precon_dsa -ksp_max_it 7
+	@echo "Test the CG-SUPG backend's checks in parallel"
+	$(MPIEXEC) -n 2 ./verify_cgk
+	@echo "Test the CG-SUPG backend's checks on 4 ranks"
+	$(MPIEXEC) -n 4 ./verify_cgk
+	@echo "Test 2D unstructured quad box, CG-SUPG, in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/cg_box_50_st2.json -ksp_max_it 7
+ifeq ($(PETSC_HAVE_TETMESHER),1)
+	@echo "Test 3D unstructured tetrahedra, CG-SUPG, in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/cg_tet_6_st2.json -ksp_max_it 5
+endif
+	@echo "Test 2D unstructured Gmsh file, CG-SUPG, in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/cg_square_msh.json -ksp_max_it 4
+	@echo "Test 2D unstructured quad box, CG-SUPG, against the infinite-medium solution in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/cg_box_20_inf_medium.json -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 11
+	@echo "Test 2D unstructured quad box, CG-SUPG, four groups in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/cg_decades4.json -ksp_max_it 42
+	@echo "Test 2D unstructured quad box, CG-SUPG, a void channel in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/cg_box_void_channel.json -ksp_max_it 46
+	@echo "Test the thin/thick slab benchmark, CG-SUPG, in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/cg_slab_thin_thick.json -ksp_max_it 4
 
 # ~~~~~~~~~~~
 # ~~~~~~~~~~~

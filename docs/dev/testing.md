@@ -1081,6 +1081,82 @@ global cell count (2500, 1800, 1000, 1296, 8, 900) and it carries `scalar_flux`,
 `sigma_t`, `source`. (`-precon_dsa` on a plex file failed with PETSC_ERR_SUP then; it
 has a plex operator since 2026-09-27, see "Unstructured iteration counts".)
 
+## CG-SUPG verification and iteration counts
+The CG-SUPG backend (`UnstructuredCG` + `terms_cg.hpp`, Phase 6b) is checked by
+`tests/verify_cgk`, serially in `run_check` and at `-n 2` and `-n 4` in
+`run_tests_short_parallel`. Every measured value below is identical at 1, 2 and 4
+ranks (28 Sep 2026, opt arch).
+
+1. **Element tables** on quads, triangles, hexes, tets and the irregular Gmsh
+   triangulation: `sum_ij M = V`, `sum_j G_ij = 0`, `sum_j K_ij = 0` and the linear
+   exactness `sum_j G^d_ij x^d'_j = delta_dd' int phi_i`, tol 1e-12 (measured
+   <= 1.2e-15). The last one is also what catches a basis function matched to the
+   wrong vertex.
+2. **Layout**: rows = global vertices x angles, lumped masses of the owned vertices
+   summing to the domain volume (<= 4.8e-16).
+3. **Consistency**: an infinite medium (Sigma_t 1.5, Sigma_s 0.7) with a painted
+   VOID box, reflective faces on one corner and vacuum faces fed the medium's flux,
+   through the library's operator and rhs: `|A c - b| / |b| <= 1e-12` (measured
+   <= 1.3e-15) at zeta 0.5 and 2 on all four shapes, and `SUPGTermCG::add_diagonal`
+   against `MatGetDiagonal` **bitwise** (0.0).
+   **3b, the global balance**: pure streaming, a LINEAR psi, vacuum faces with an
+   inflow; the lumped-mass sum of `A psi - b` per ordinate equals the outflow of psi
+   minus the prescribed inflow through the box faces, exactly (measured <= 1.4e-15,
+   tol 1e-12). This is the check that fixes the SCALE of the weak boundary terms,
+   which a constant cannot see (it makes `psi - psi_in` vanish whatever the weight):
+   the first cut divided the face coefficient by the face area twice, and every
+   other check here passed with it.
+4. **Order**: the pure absorber with left inflow and reflective y faces (DG1 check
+   9's problem), nodal RMS error against the exact SN solution at n = 8/16/32:
+   quads 1.5e-3 / 3.8e-4 / 9.8e-5 (order 1.95), triangles 1.6e-3 / 4.0e-4 / 1.0e-4
+   (1.96); min 1.8.
+5. **SAAF-LS void slab** (arXiv 1605.05388 s4.3: source | void | absorber,
+   reflective at x = 0), a 1-cell-high strip with reflective y faces, S8, against
+   the exact SN solution of the same quadrature (per ordinate, region by region in
+   closed form). Relative RMS error at 40/80/160/320 cells, zeta 0.5: 3.0e-3 /
+   7.4e-4 / 1.8e-4 / 4.3e-5 (order 2.05); zeta 2: 3.5e-3 / 8.1e-4 / 1.9e-4 / 4.4e-5
+   (2.08). Asserted: order >= 1.8, finest <= 1e-4. Iterations at rtol 1e-13: 8-10 at
+   every level, flat to 640 cells, with or without the element-block scaling -
+   where that paper's GMRES + BoomerAMG on SAAF-tau took 801 to 8120.
+6. **Thin/thick slab** (Hammer, Morel & Wang, arXiv 1902.08729 s III.B: Sigma 0.1 |
+   Sigma 10, a source everywhere, vacuum both ends), S8, 16/32/64/128 cells: zeta
+   0.5 7.8e-2 / 2.9e-2 / 8.6e-3 / 2.3e-3 (order 1.93), zeta 2 9.6e-2 / 3.7e-2 /
+   1.1e-2 / 2.7e-3 (2.04); asserted order >= 1.5, finest <= 5e-3. PRINTED, not
+   asserted: at their 8 cells per region the flux at the interface vertex sits 33%
+   (zeta 0.5) / 35% (zeta 2) below the exact one - a continuous flux cannot bend
+   into the thick side's boundary layer within one element, the dip they report for
+   SAAF-tau. Zeta 0.5 (Rattlesnake's) is slightly the better of the two on this
+   problem's error at every mesh, so it is the default.
+7. **Error paths**: `dirichlet_cell`, zeta 0 and -1, an unknown "Face Sets" id and a
+   reflective slanted face (`meshes/tri_slanted.msh`, set 12) all rejected.
+
+**Iteration counts** (28 Sep 2026, opt arch, default rtol; each `cg_*.json` is the
+twin of the `plex_*.json` of the same name). `-precon_block_scale` keeps its
+unstructured default ON, but on CG it changes nothing that matters:
+
+| recipe | CG np=1 | CG np=2 | unscaled pmat | zeta 2 | DG0 twin |
+|---|---|---|---|---|---|
+| `cg_box_50_st2` | 7 | 7 | 7 | 7 | 7 |
+| `cg_box_50_reflect_lb` | 6 | 6 | 6 | 6 | 6 |
+| `cg_tri_30_st2` | 5 | 6 | 5 | 5 | 5 |
+| `cg_cube_10_st2` | 6 | 6 | 6 | 6 | 6 |
+| `cg_tet_6_st2` | 5 | 5 | 5 | 5 | 5 |
+| `cg_square_msh` | 4 | 4 | 4 | 4 | 4 |
+| `cg_decades4` (per group) | 4, 7, 16, 41 | 4, 7, 16, 42 | 4, 7, 16, 42 | 5, 7, 16, 41 | - |
+| `cg_box_diffusive` | 39 | 39 | 39 | 39 | 29 |
+| `cg_tri_diffusive` | 35 | 35 | 35 | 35 | 35 |
+| `cg_box_void_channel` | 47 | 46 | 47 | 41 | 26 |
+| `cg_slab_saaf_ls_void` | 4 | 4 | 4 | 3 | - |
+| `cg_slab_thin_thick` | 4 | 4 | 4 | 3 | - |
+| `cg_box_20_inf_medium`, `-check_inf_medium -ksp_rtol 1e-12` | 11 | 11 | - | - | - |
+
+Above the DG0 twin: the diffusive quad box (39 against 29) and the void channel
+(47 against 26), neither investigated (TODO.md). `-diag_scale` on a scattering
+problem stalls (`cg_box_50_st2` does not converge in 500; the DG0 twin goes 7 ->
+83): it scales the assembled operator but not the matrix-free scatter, the caveat
+it has on every backend. Without scattering it is consistent and harmless (the void
+slab, 4 -> 4, pinned).
+
 ## Matrix-free removal (`-matfree_removal`)
 
 `RemovalTerm` can be applied matrix-free instead of assembled
@@ -1822,7 +1898,8 @@ again, the next lever is `OMP_NUM_THREADS=1`, which trades the threading coverag
    converged count.
    `mesh.type` picks the backend: `"structured"` (the default) is the DMDA finite
    difference ones, `"unstructured"` the DG plex one (2D/3D, a box or a mesh file,
-   `mesh.order` 1 for DG1); an unstructured quad/hex box is the
+   `mesh.order` 1 for DG1, `mesh.discretisation` `"cg_supg"` for CG-SUPG, whose
+   counts go in "CG-SUPG verification and iteration counts"); an unstructured quad/hex box is the
    natural twin of a structured file, and its count goes next to the structured one in
    "Unstructured iteration counts" (a DG1 file goes in that section's DG1 table, next to
    its DG0 twin).

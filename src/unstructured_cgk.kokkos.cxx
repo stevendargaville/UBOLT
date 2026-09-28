@@ -630,7 +630,8 @@ PetscErrorCode UnstructuredCG::create_common(PhaseSpace &ps, PetscInt quad_dim, 
       const PetscReal inv_m = 1.0 / lumped_mass_h_[k];
       for (const auto &bf : bfaces[k]) {
          for (PetscInt d = 0; d < 3; d++) bface_nA.push_back(bf.nA[d]);
-         bface_mass.push_back(inv_m / (PetscReal)bf.n_face_vertices / bf.area);
+         // m^f_i / (m_i A_f) with m^f_i = A_f / n_face_vertices
+         bface_mass.push_back(inv_m / (PetscReal)bf.n_face_vertices);
          PetscInt slot = -1;
          if (bcs.type(bf.label) == BCType::REFLECT) {
             slot = n_nb + (PetscInt)(std::lower_bound(refl_axes.begin(), refl_axes.end(), bf.axis) - refl_axes.begin());
@@ -678,7 +679,8 @@ PetscErrorCode UnstructuredCG::create_common(PhaseSpace &ps, PetscInt quad_dim, 
                if (d != bf.axis) t[n_t++] = bf.centroid[d];
             }
             if (!InWindow(bc, t, n_t)) continue;
-            ghost_inflow[r] += -s * inv_m / (PetscReal)bf.n_face_vertices / bf.area * bc.inflow / sum_weights;
+            // |Omega . nA_f| m^f_i / (m_i A_f) times the per-angle inflow
+            ghost_inflow[r] += -s * inv_m / (PetscReal)bf.n_face_vertices * bc.inflow / sum_weights;
          }
 
          PetscCheck((PetscInt)oor_.size() - row_slot_offset[r] == row_len, PETSC_COMM_SELF, PETSC_ERR_PLIB, \

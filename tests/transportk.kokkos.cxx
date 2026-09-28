@@ -30,8 +30,11 @@
 // (terms_cg.hpp): tau depends on sigma_t, so its one assembled term refills per
 // group and there is no group-independent streaming matrix. So -matfree_removal,
 // -precon_stream, -precon_ref_shift, -precon_dsa, -check_matfree and
-// -check_ref_shift are refused on it; -check_inf_medium, -diag_scale and
-// -precon_block_scale (point Jacobi at one dof per vertex) work
+// -check_ref_shift are refused on it; -check_inf_medium and -precon_block_scale
+// (point Jacobi at one dof per vertex, the default as on DG) work, and so does
+// -diag_scale - with the caveat it has everywhere, that the matrix-free
+// scatter goes unscaled: pathological with scattering (the DG0 box 7 -> 83),
+// and on CG it stalls
 //
 // Group Gauss-Seidel with downscatter only: groups are ordered high energy to
 // low, the within-group scatter stays on the lhs (matrix-free) and everything

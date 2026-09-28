@@ -15,7 +15,10 @@
 //      shape - so A c - b is zero to rounding through the library's operator
 //      AND rhs (weighted source, weak inflow, reflective couplings, the
 //      matrix-free SUPG scatter). And the term's add_diagonal is bitwise the
-//      assembled matrix's diagonal
+//      assembled matrix's diagonal. 3b: the global balance of a LINEAR flux
+//      (the lumped-mass sum of A psi - b is outflow minus inflow, exactly) -
+//      what fixes the SCALE of the weak boundary terms, which a constant
+//      cannot see
 //   4. Order: the pure absorber with left inflow and reflective y faces
 //      (verify_plexk's DG1 order check's problem), nodal scalar flux against
 //      the exact discrete-ordinates solution, quads and triangles
@@ -40,6 +43,7 @@
 #include "pflare.h"
 #include <cmath>
 #include <functional>
+#include <type_traits>
 #include <string>
 #include <vector>
 
@@ -96,9 +100,8 @@ static PetscErrorCode FillRhsCG(const CGProblem<Quad> &p, const MaterialSpec &ma
 
 // Solve to well below every comparison tolerance, with the driver's default
 // on an unstructured mesh: PCAIR on the element-block (at one dof per vertex,
-// point Jacobi) scaled pmat. Unscaled, PCAIR's iteration count grows with
-// refinement on the void slab (10 -> 40 at 40 -> 320 cells, zeta 0.5) and
-// stalls at zeta 2; scaled it is flat (8 - 12, 40 -> 640 cells)
+// point Jacobi) scaled pmat. On CG it makes no measurable difference (the void
+// slab takes 9 - 10 at rtol 1e-13 from 40 to 640 cells either way)
 template <class Quad>
 static PetscErrorCode SolveTight(const CGProblem<Quad> &p, Vec b, Vec x, PetscBool *converged, PetscInt *its)
 {
@@ -433,6 +436,101 @@ static PetscErrorCode CheckConstant(const char *where, const PlexMeshSpec &mesh,
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
+// Check 3b: the global balance, which fixes the weak boundary terms' SCALE (a
+// constant cannot: it makes psi - psi_in vanish whatever the weight). Pure
+// streaming on a box [0, L]^dim, psi = 1 + c . x on every ordinate, vacuum
+// faces with inflow q_in. Weighted by the lumped masses the rows sum to
+//   sum_i m_i (A psi - b)_i = int Omega . grad psi + sum_{inflow f} |Omega . n| int_f (psi - q_in / W)
+// (the SUPG parts drop out, sum_i grad phi_i = 0), and int Omega . grad psi is
+// the outflow minus the inflow of psi, so per ordinate it is
+//   sum_{outflow faces} |Omega . n| int_f psi - sum_{inflow faces} |Omega . n| A_f q_in / W
+// exact for a linear psi (the lumped face mass integrates it exactly)
+template <class Quad>
+static PetscErrorCode CheckBalance(const char *where, const PlexMeshSpec &mesh, PetscBool *ok)
+{
+   CGProblem<Quad> p;
+   MaterialSpec mats;
+   BCSpec bcs;
+   const std::vector<typename std::conditional<std::is_same<Quad, SNQuadrature2D>::value, MaterialBox2D, \
+      MaterialBox3D>::type> no_boxes;
+   const PetscReal q_in = 0.7, c[3] = {0.3, -0.45, 0.2}, tol = 1e-12;
+   const PetscInt dim = mesh.dimension;
+   Vec psi = NULL, b = NULL, y = NULL;
+
+   PetscFunctionBeginUser;
+
+   PetscCall(mats.create(1, 1));
+   for (PetscInt f = 1; f <= 2 * dim; f++) bcs.set_inflow(f, q_in);
+   PetscCall(BuildCG(mesh, 4, bcs, 0.5, mats, no_boxes, p));
+   PetscCall(MatCreateVecs(p.op.assembled_mat(), &psi, &b));
+   PetscCall(VecDuplicate(b, &y));
+   PetscCall(FillRhsCG(p, mats, b));
+
+   const PetscInt na = p.ps.n_angles;
+   {
+      PetscScalar *a = nullptr;
+      PetscCall(VecGetArray(psi, &a));
+      for (PetscInt k = 0; k < p.ps.local_cells; k++) {
+         PetscReal v = 1.0;
+         for (PetscInt d = 0; d < dim; d++) v += c[d] * p.disc.vertex_coord_host()[3 * k + d];
+         for (PetscInt q = 0; q < na; q++) a[k * na + q] = v;
+      }
+      PetscCall(VecRestoreArray(psi, &a));
+   }
+   PetscCall(MatMult(p.op.mat(), psi, y));
+   PetscCall(VecAXPY(y, -1.0, b));
+
+   std::vector<PetscReal> sums(na, 0.0);
+   {
+      const PetscScalar *a = nullptr;
+      PetscCall(VecGetArrayRead(y, &a));
+      for (PetscInt k = 0; k < p.ps.local_cells; k++) {
+         for (PetscInt q = 0; q < na; q++) sums[q] += p.disc.lumped_mass_host()[k] * PetscRealPart(a[k * na + q]);
+      }
+      PetscCall(VecRestoreArrayRead(y, &a));
+   }
+   PetscCallMPI(MPIU_Allreduce(MPI_IN_PLACE, sums.data(), na, MPIU_REAL, MPIU_SUM, PETSC_COMM_WORLD));
+
+   PetscReal err = 0.0, scale = 0.0;
+   const PetscReal W = PetscRealPart(p.quad.sum_weights());
+   for (PetscInt q = 0; q < na; q++) {
+      PetscReal om[3] = {PetscRealPart(p.quad.mu_host()[q]), PetscRealPart(p.quad.eta_host()[q]), 0.0};
+      if constexpr (std::is_same<Quad, SNQuadrature3D>::value) om[2] = PetscRealPart(p.quad.xi_host()[q]);
+      PetscReal expect = 0.0;
+      for (PetscInt d = 0; d < dim; d++) {
+         PetscReal area = 1.0, centre_rest = 1.0;
+         for (PetscInt e = 0; e < dim; e++) {
+            if (e == d) continue;
+            area *= mesh.lengths[e];
+            centre_rest += c[e] * 0.5 * mesh.lengths[e];
+         }
+         // The low face (normal -e_d) and the high one (+e_d)
+         for (PetscInt side = 0; side < 2; side++) {
+            const PetscReal on = side ? om[d] : -om[d];
+            const PetscReal psi_face = centre_rest + (side ? c[d] * mesh.lengths[d] : 0.0);
+            if (on > 0.0) expect += on * area * psi_face;
+            else expect -= -on * area * q_in / W;
+         }
+      }
+      err = PetscMax(err, PetscAbsReal(sums[q] - expect));
+      scale = PetscMax(scale, PetscAbsReal(expect));
+   }
+   const PetscReal rel = err / scale;
+   const PetscBool pass = (PetscBool)(rel <= tol);
+   if (!pass) *ok = PETSC_FALSE;
+   PetscCall(PetscPrintf(PETSC_COMM_WORLD, "  balance, %s: lumped-mass sum of A psi - b against outflow - inflow, " \
+      "linear psi, per ordinate %.1e (tol %.0e)%s\n", where, (double)rel, (double)tol, pass ? "" : " FAILED"));
+
+   PetscCall(VecDestroy(&psi));
+   PetscCall(VecDestroy(&b));
+   PetscCall(VecDestroy(&y));
+   PetscCall(DestroyCG(p));
+
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
 // Check 4: the pure absorber on [0, 1]^2, inflow 1 on the left, reflective y
 // faces, cold right face, sigma 1, S4. The nodal scalar flux against the exact
 // SN solution (ExactSlabFlux), n = 8, 16, 32
@@ -730,6 +828,14 @@ int main(int argc, char **args) {
          if (have_tet) PetscCall(CheckConstant<SNQuadrature3D>("tets", tets, bcs_3d, void_3d, zeta, &ok));
       }
    }
+
+   // ~~~~~~~~~~
+   // 3b. The global balance - the weak boundary terms' scale
+   // ~~~~~~~~~~
+   PetscCall(CheckBalance<SNQuadrature2D>("quads", quads, &ok));
+   if (have_tri) PetscCall(CheckBalance<SNQuadrature2D>("triangles", tris, &ok));
+   PetscCall(CheckBalance<SNQuadrature3D>("hexes", hexes, &ok));
+   if (have_tet) PetscCall(CheckBalance<SNQuadrature3D>("tets", tets, &ok));
 
    // ~~~~~~~~~~
    // 4. Order
