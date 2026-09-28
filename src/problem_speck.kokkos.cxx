@@ -446,7 +446,7 @@ PetscErrorCode ProblemSpec::create(MPI_Comm comm, const char *problem_path)
    if (!mesh_unstructured) {
       // Name the missing "type" rather than calling the key a typo - these
       // are real keys, just not for this backend
-      for (const char *k : {"file", "simplex", "order"}) {
+      for (const char *k : {"file", "simplex", "order", "discretisation", "supg_zeta"}) {
          PetscCheck(!mesh.contains(k), PETSC_COMM_SELF, PETSC_ERR_ARG_WRONG, \
             "%s: mesh \"%s\" is for an unstructured mesh only - add \"type\": \"unstructured\" " \
             "to \"mesh\"", problem_path, k);
@@ -455,20 +455,46 @@ PetscErrorCode ProblemSpec::create(MPI_Comm comm, const char *problem_path)
    }
    else {
       PetscCall(JsonCheckKeys(mesh, "\"mesh\"", problem_path, \
-         {"type", "n_cells", "lengths", "simplex", "file", "order"}));
+         {"type", "n_cells", "lengths", "simplex", "file", "order", "discretisation", "supg_zeta"}));
       PetscCheck(dimension >= 2, PETSC_COMM_SELF, PETSC_ERR_ARG_OUTOFRANGE, \
          "%s: an unstructured mesh must have dimension 2 or 3, was given %" PetscInt_FMT \
          " - the 1D backend is the structured slab, drop \"type\": \"unstructured\"", \
          problem_path, dimension);
    }
 
-   // The DG order of the unstructured backend: 0 (the default) or 1
+   // Which unstructured discretisation: upwind DG (the default) or
+   // continuous Galerkin with consistent SUPG
+   if (mesh_unstructured && mesh.contains("discretisation")) {
+      const json &t = mesh.at("discretisation");
+      PetscCheck(t.is_string() && (t.get<std::string>() == "dg" || t.get<std::string>() == "cg_supg"), \
+         PETSC_COMM_SELF, PETSC_ERR_ARG_WRONG, "%s: mesh \"discretisation\" must be \"dg\" (the default) " \
+         "or \"cg_supg\"", problem_path);
+      mesh_cg_supg = (t.get<std::string>() == "cg_supg") ? PETSC_TRUE : PETSC_FALSE;
+   }
+
+   // The order of the unstructured backend: DG 0 (the default) or 1; CG is
+   // linear only (P1/Q1), so 1 - its default - is the one value it takes
+   if (mesh_cg_supg) mesh_order = 1;
    if (mesh_unstructured && mesh.contains("order")) {
       const json &o = mesh.at("order");
       PetscCheck(o.is_number_integer() && (o.get<std::int64_t>() == 0 || o.get<std::int64_t>() == 1), \
          PETSC_COMM_SELF, PETSC_ERR_ARG_WRONG, "%s: mesh \"order\" must be 0 (DG0, the default) or 1 (DG1)", \
          problem_path);
       mesh_order = (PetscInt)o.get<std::int64_t>();
+      PetscCheck(!mesh_cg_supg || mesh_order == 1, PETSC_COMM_SELF, PETSC_ERR_ARG_WRONG, \
+         "%s: a \"cg_supg\" mesh is linear (P1/Q1) - \"order\" can only be 1 there, or left out", problem_path);
+   }
+
+   // The SUPG thin-cell parameter: tau = min(1 / sigma_t, h / zeta). It
+   // changes the solution, so it is the problem's, not a solver knob
+   if (mesh_unstructured && mesh.contains("supg_zeta")) {
+      PetscCheck(mesh_cg_supg, PETSC_COMM_SELF, PETSC_ERR_ARG_WRONG, \
+         "%s: mesh \"supg_zeta\" is for a \"cg_supg\" mesh only", problem_path);
+      PetscCheck(mesh.at("supg_zeta").is_number(), PETSC_COMM_SELF, PETSC_ERR_ARG_WRONG, \
+         "%s: mesh \"supg_zeta\" must be a number", problem_path);
+      supg_zeta = (PetscReal)mesh.at("supg_zeta").get<double>();
+      PetscCheck(supg_zeta > 0.0, PETSC_COMM_SELF, PETSC_ERR_ARG_OUTOFRANGE, \
+         "%s: mesh \"supg_zeta\" must be positive, was given %g", problem_path, (double)supg_zeta);
    }
 
    if (mesh_unstructured && mesh.contains("file")) {
@@ -551,6 +577,11 @@ PetscErrorCode ProblemSpec::create(MPI_Comm comm, const char *problem_path)
          "%s: vacuum_treatment must be \"dirichlet_cell\" or \"ghost_flux\", was \"%s\"", \
          problem_path, treatment.c_str());
    }
+   // CG-SUPG imposes every boundary condition weakly: there is no
+   // Dirichlet-cell row on a vertex shared by several faces' worth of angles
+   PetscCheck(!mesh_cg_supg || bcs.ghost_flux_vacuum(), PETSC_COMM_SELF, PETSC_ERR_ARG_WRONG, \
+      "%s: a \"cg_supg\" mesh imposes its boundary conditions weakly - \"vacuum_treatment\": " \
+      "\"dirichlet_cell\" does not apply, drop it", problem_path);
    PetscCheck(sn_order > 0 && sn_order % 2 == 0, PETSC_COMM_SELF, PETSC_ERR_ARG_OUTOFRANGE, \
       "%s: sn_order must be a positive even integer, was given %" PetscInt_FMT, problem_path, \
       sn_order);

@@ -48,8 +48,14 @@ public:
    PetscBool mesh_unstructured = PETSC_FALSE;
    // Unstructured box only: triangles/tets instead of quads/hexes
    PetscBool mesh_simplex = PETSC_FALSE;
-   // Unstructured only: the DG order, 0 (one dof per cell) or 1 (linear)
+   // Unstructured only: the DG order, 0 (one dof per cell) or 1 (linear).
+   // Always 1 on a cg_supg mesh (P1/Q1)
    PetscInt mesh_order = 0;
+   // Unstructured only: mesh.discretisation "cg_supg" - continuous Galerkin
+   // with consistent SUPG (UnstructuredCG) instead of upwind DG
+   PetscBool mesh_cg_supg = PETSC_FALSE;
+   // cg_supg only: the thin-cell SUPG parameter, tau = min(1 / sigma_t, h / zeta)
+   PetscReal supg_zeta = 0.5;
    // Unstructured only: a mesh file PETSc reads (Gmsh .msh, ...), resolved
    // relative to the problem file's directory exactly as a materials path is.
    // Empty = a box built in code, described by n_cells_* / length_* below;

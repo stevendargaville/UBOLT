@@ -22,6 +22,11 @@
 class PETSC_VISIBILITY_PUBLIC GroupXSections {
 public:
    PetscErrorCode create(const PhaseSpace &ps);
+   // Sized explicitly rather than off the phase space's local cells: the CG
+   // backend's rows are per vertex but its xsections per local ELEMENT
+   // (UnstructuredCG::n_local_elements()). create(ps) is create(ps.n_groups,
+   // ps.local_cells)
+   PetscErrorCode create(PetscInt n_groups, PetscInt n_entries);
 
    // Constant across the slab, for problems with a single material.
    // Spatially varying data comes in through set_from_materials, or fills the

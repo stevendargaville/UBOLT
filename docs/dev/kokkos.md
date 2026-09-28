@@ -146,6 +146,24 @@ fill runs on device (MATAIJKOKKOS dispatches `MatSetValuesCOO` to the GPU):
   is the identity) and the xsections are cell-constant; `UboltFillSource` writes basis 0
   only (a constant projects onto nothing else). Keep both true, or those terms stop
   being diagonal per node.
+- The CG-SUPG backend (`UnstructuredCG`) breaks both of the last point's
+  assumptions on purpose, so it does not use those terms at all: its rows are
+  (VERTEX, angle) and its xsections per ELEMENT (every local element, overlap
+  included - `GroupXSections::create(n_groups, n_entries)` sizes them), and the SUPG
+  weight couples a vertex to its whole star and depends on the angle. Its row is
+  `n_neighbours + n_reflective_axes + 1` slots - the star's other vertices in point
+  order, a mirror slot per reflective axis at the vertex (nulled for an angle no
+  reflective face on that axis lets in), the diagonal LAST - and every fill is a
+  row-parallel GATHER: one thread per row loops over the vertex's star elements and
+  their vertices, each (star entry, element vertex) pair carrying its slot inside the
+  row (`star_slot_d`), so there are no atomics and the fill is deterministic (which
+  is what makes `add_diagonal` bitwise the assembled diagonal). The element tables
+  (`mass_d`, `grad_d`, `stiff_d`, `centre_grad_d`) are flat rank-1 views,
+  `nv x nv (x 3 or 9)` per element. `SUPGTermCG` fills the operator;
+  `UnstructuredCG::add_weighted_load` is the one kernel the scatter, the source and
+  the group transfer share, reading a nodal field over the LOCAL vertices (a local
+  Vec of the backend's dof-1 vertex twin, refreshed by `nodal_global_to_local`) -
+  the scatter's one ghost exchange per apply, which the per-node terms never needed.
 - Terms address entries through the `CooPattern` slot maps — `row_slot_offset_d`
   (CSR-shaped COO slot ranges per row) and `diag_slot_d` (which slot is the diagonal) —
   never through raw COO positions. With more than one off-diagonal a term has to address

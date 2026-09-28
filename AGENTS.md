@@ -4,7 +4,8 @@ interface so assembly runs on device), apply scattering matrix-free (MatShell + 
 precondition with PCComposite = removal shell PC + PCAIR (pflare inverts streaming).
 Energy groups are solved one at a time in a group Gauss-Seidel sweep, so the sparsity is
 preallocated once and each group is a values-only refill of the same matrix.
-The discretisation is DM-backed (1D, 2D and 3D DMDAs, and a 2D/3D DMPlex): the DM owns the mesh (including its
+The discretisation is DM-backed (1D, 2D and 3D DMDAs, and a 2D/3D DMPlex - upwind DG
+or CG-SUPG on it): the DM owns the mesh (including its
 coordinates, set by the backend for output), the layout and the parallel decomposition,
 but deliberately creates no solver matrices or vectors itself.
 
@@ -52,6 +53,13 @@ Codebase map
   the void - and a residual on one side corrected on the other, where the mask gives
   zero). `tests/meshes/`: mesh files the problem
   files name (a hand-written Gmsh 2.2 `.msh` today).
+  `tests/verify_cgk.kokkos.cxx`: the CG-SUPG backend's check, serial and -n 2/4 — the
+  element tables (partition of unity, linear exactness) on every cell shape, the
+  layout, a constant exact to rounding through operator + rhs (voids, reflective
+  faces, zeta 0.5 and 2), second order against an exact SN solution, the two
+  literature slab benchmarks (the SAAF-LS void slab, arXiv 1605.05388, and Hammer/
+  Morel/Wang's thin/thick slab, arXiv 1902.08729) against the EXACT SN solution of
+  the same quadrature, and error paths.
   `tests/verify_quadraturek.kokkos.cxx`: the quadrature sets themselves, against the
   moment conditions that define them — needed because they are generated, not tabulated.
   `tests/baselines/`: captured
@@ -137,6 +145,24 @@ Codebase map
   as extra fields); `(n_faces + 1) * n_basis` slots per row, own block LAST; GHOST-FLUX
   ONLY and NO BC rows at all — a reflective face is a face coupling to the mirrored
   angle's trace in the same cell, mirrored over that face's own axis);
+  `UnstructuredCG` beside it (Phase 6b, `mesh.discretisation: "cg_supg"`: continuous
+  P1/Q1 at the VERTICES with CONSISTENT SUPG - the whole residual tested with
+  `v + tau Omega.grad v`, Wang's SAAF-tau from the first-order side - tau =
+  min(1/sigma_t, h_Omega/zeta) per (element, angle, group), zeta a create() argument,
+  0.5 by default, `mesh.supg_zeta`; rows (vertex, angle), so `ps.n_cells` is the global
+  VERTEX count and `ps.local_cells` the owned vertices, while xsections and material ids
+  are per LOCAL ELEMENT, overlap included - `GroupXSections::create(n_groups,
+  n_elements)`; FEM-closure overlap, so a vertex's whole star is local; element tables M,
+  G, K from PetscFE; weak boundary conditions with a lumped face mass and NO BC rows,
+  reflective faces a mirror slot per axis; the plex plumbing shared with the DG backend
+  in the internal `src/plex_commonk.hpp`). Its terms are siblings, not the generic ones,
+  because the SUPG weight couples a vertex's star and depends on the angle
+  (`include/ubolt/terms_cg.hpp`): `SUPGTermCG` (streaming + SUPG + removal + boundary,
+  assembled, group-dependent), `ScatteringTermCG`, `GroupTransferCG` and
+  `UboltFillSourceCG`, the last three through the backend's one weighted-load kernel;
+  output `UboltWriteScalarFluxVTKCG` (point data). The driver refuses
+  `-matfree_removal`/`-precon_stream`/`-precon_ref_shift`/`-check_matfree` (no
+  group-independent streaming matrix) and `-precon_dsa` (no CG diffusion operator yet);
   `OperatorTerm` and the `Streaming`/`Streaming2D`/`Streaming3D`/`StreamingDG0`/
   `StreamingDG1`/`Removal`/`Scattering` terms (`StreamingTermDG0/DG1::create(ps, disc)`
   take NO quadrature: they read the ordinates off the backend, so the two cannot
@@ -203,8 +229,9 @@ Codebase map
   the driver passes the group's `sigma_t` and its `source`, the latter expanded onto the
   cells by `UboltFillCellSource` — written through PETSc's VTK viewer onto a dof-1 twin
   of the backend's DM, dispatched on its type: `.vts`/`.vtr` on a DMDA, `.vtu` on a
-  DMPlex (owned cells only, via a "vtk" label); a problem file's `output.flux_vtk`, or
-  `-flux_vtk` as the override). `types.hpp` owns every Kokkos view typedef, `ubolt.hpp`
+  DMPlex (owned cells only, via a "vtk" label; on the CG backend its sibling
+  `UboltWriteScalarFluxVTKCG` writes the flux as point data, `scalar_flux.nodal`); a
+  problem file's `output.flux_vtk`, or `-flux_vtk` as the override). `types.hpp` owns every Kokkos view typedef, `ubolt.hpp`
   is the umbrella header. Every translation unit is a Kokkos one, named `Xk.kokkos.cxx`
   (the suffix triggers PETSc's Kokkos build rules). See `TODO.md` for the roadmap and
   current phase.

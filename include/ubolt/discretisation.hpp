@@ -38,8 +38,10 @@ public:
    // would see it. The DM supplies ownership and indices, not the matrix
    PetscErrorCode create_matrix(Mat *mat) const;
 
-   // The DM is the only PETSc handle a backend owns
-   PetscErrorCode destroy();
+   // The DM is the only PETSc handle most backends own. Virtual because one
+   // owns a second (UnstructuredCG's vertex twin) and the driver destroys
+   // through this base
+   virtual PetscErrorCode destroy();
 
    const CooPattern &coo_pattern() const { return pattern_; }
    const BoundaryInfo &boundary_info() const { return boundary_; }

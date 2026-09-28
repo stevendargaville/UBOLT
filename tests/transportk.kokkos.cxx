@@ -3,8 +3,9 @@
 // the command line - PETSc options (-ksp_*, -pc_*) plus the strategy and
 // verification knobs below. One driver for every dimension and any number of
 // groups: the file picks the backend (the structured DMDA ones by dimension,
-// or the unstructured DG one, order 0 or 1, on a DMPlex), and a single-group file IS the
-// single-group problem, so there is no separate driver for it
+// or on a DMPlex the unstructured DG one, order 0 or 1, or the CG-SUPG one),
+// and a single-group file IS the single-group problem, so there is no separate
+// driver for it
 //
 // Strategy knobs: -precon_stream (precondition with a streaming-only pmat),
 // -matfree_removal (apply the removal term matrix-free, so the assembled matrix
@@ -22,7 +23,18 @@
 // element-block-scaled pmat - the default on the DG backend, both orders, and
 // off on the structured ones), -diag_scale, and the verification ones,
 // -check_inf_medium, -check_matfree, -check_ref_shift and the -flux_vtk output
-// override
+// override. -supg_zeta overrides a cg_supg file's mesh.supg_zeta, for sweeps
+//
+// The CG-SUPG backend (mesh.discretisation "cg_supg") swaps the removal,
+// scatter, source and group transfer for its consistent-SUPG siblings
+// (terms_cg.hpp): tau depends on sigma_t, so its one assembled term refills per
+// group and there is no group-independent streaming matrix. So -matfree_removal,
+// -precon_stream, -precon_ref_shift, -precon_dsa, -check_matfree and
+// -check_ref_shift are refused on it; -check_inf_medium and -precon_block_scale
+// (point Jacobi at one dof per vertex, the default as on DG) work, and so does
+// -diag_scale - with the caveat it has everywhere, that the matrix-free
+// scatter goes unscaled: pathological with scattering (the DG0 box 7 -> 83),
+// and on CG it stalls
 //
 // Group Gauss-Seidel with downscatter only: groups are ordered high energy to
 // low, the within-group scatter stays on the lhs (matrix-free) and everything
@@ -377,6 +389,23 @@ int main(int argc, char **args) {
       const std::string flux_vtk = have_flux_cli ? std::string(flux_vtk_cli) : spec.flux_vtk;
       if (!have_block_scale) precon_block_scale = spec.mesh_unstructured ? PETSC_TRUE : PETSC_FALSE;
 
+      // The CG-SUPG backend's thin-cell parameter, and what it cannot do - see
+      // the header comment
+      PetscBool have_zeta = PETSC_FALSE;
+      PetscCall(PetscOptionsGetReal(NULL, NULL, "-supg_zeta", &spec.supg_zeta, &have_zeta));
+      PetscCheck(!have_zeta || spec.mesh_cg_supg, PETSC_COMM_WORLD, PETSC_ERR_ARG_INCOMP, \
+         "-supg_zeta is the CG-SUPG backend's: the problem file's mesh is not \"cg_supg\"");
+      if (spec.mesh_cg_supg) {
+         const char *why = "the CG-SUPG operator refills per group (tau depends on sigma_t), so there is no " \
+            "group-independent streaming matrix and no diagonal removal to take out of it";
+         PetscCheck(!matfree_removal, PETSC_COMM_WORLD, PETSC_ERR_SUP, "-matfree_removal on cg_supg: %s", why);
+         PetscCheck(!precon_stream, PETSC_COMM_WORLD, PETSC_ERR_SUP, "-precon_stream on cg_supg: %s", why);
+         PetscCheck(!precon_ref_shift, PETSC_COMM_WORLD, PETSC_ERR_SUP, "-precon_ref_shift on cg_supg: %s", why);
+         PetscCheck(!check_matfree, PETSC_COMM_WORLD, PETSC_ERR_SUP, "-check_matfree on cg_supg: %s", why);
+         PetscCheck(!precon_dsa, PETSC_COMM_WORLD, PETSC_ERR_SUP, "-precon_dsa on cg_supg: there is no CG " \
+            "diffusion operator yet (see TODO.md)");
+      }
+
       // The infinite-medium check needs nothing for the streaming term to do
       // and nowhere to leak: one uniform material, absorption in every group
       // so the constant is finite, and every face either reflective or a
@@ -425,6 +454,8 @@ int main(int argc, char **args) {
       UnstructuredDG disc_dg;
       StreamingTermDG0 streaming_dg0;
       StreamingTermDG1 streaming_dg1;
+      UnstructuredCG disc_cg;
+      SUPGTermCG supg_cg;
       const AngularQuadrature *quad = NULL;
       Discretisation *disc = NULL;
       OperatorTerm *streaming = NULL;
@@ -441,7 +472,44 @@ int main(int argc, char **args) {
       // never off n_cells_x * n_cells_y. Painting layers the file's "Cell
       // Sets" under the paint boxes when there are any - a generated box has
       // no "Cell Sets" label, so cell_sets on one is the backend's error
-      if (spec.mesh_unstructured) {
+      if (spec.mesh_unstructured && spec.mesh_cg_supg) {
+         // The CG-SUPG backend: the same two-stage construction, but the rows
+         // are per VERTEX, so the phase space is sized off the vertex count,
+         // and the materials are painted onto every local ELEMENT. Its
+         // assembled term is built below, once the xsections exist
+         PlexMeshSpec mesh_spec;
+         mesh_spec.dimension = spec.dimension;
+         mesh_spec.n_cells[0] = spec.n_cells_x;
+         mesh_spec.n_cells[1] = spec.n_cells_y;
+         mesh_spec.n_cells[2] = spec.n_cells_z;
+         mesh_spec.lengths[0] = spec.length_x;
+         mesh_spec.lengths[1] = spec.length_y;
+         mesh_spec.lengths[2] = spec.length_z;
+         mesh_spec.simplex = spec.mesh_simplex;
+         mesh_spec.file = spec.mesh_file;
+         if (spec.dimension == 2) {
+            PetscCall(quad_2d.create(spec.sn_order));
+            quad = &quad_2d;
+         }
+         else {
+            PetscCall(quad_3d.create(spec.sn_order));
+            quad = &quad_3d;
+         }
+         PetscCall(disc_cg.create_mesh(PETSC_COMM_WORLD, mesh_spec));
+         PetscCall(ps.create(PETSC_COMM_WORLD, disc_cg.n_global_vertices(), quad->n_angles(), n_groups));
+         if (spec.dimension == 2) PetscCall(disc_cg.create(ps, quad_2d, spec.bcs, spec.supg_zeta));
+         else PetscCall(disc_cg.create(ps, quad_3d, spec.bcs, spec.supg_zeta));
+         if (!spec.cell_sets.empty()) {
+            PetscCall(disc_cg.paint_cell_sets(bg, spec.cell_sets, mat_id_d));
+            if (spec.dimension == 2) PetscCall(disc_cg.paint_boxes_over(spec.boxes, mat_id_d));
+            else PetscCall(disc_cg.paint_boxes_over(spec.boxes_3d, mat_id_d));
+         }
+         else if (spec.dimension == 2) PetscCall(disc_cg.paint_boxes(bg, spec.boxes, mat_id_d));
+         else PetscCall(disc_cg.paint_boxes(bg, spec.boxes_3d, mat_id_d));
+         disc = &disc_cg;
+         streaming = &supg_cg;
+      }
+      else if (spec.mesh_unstructured) {
          PlexMeshSpec mesh_spec;
          mesh_spec.dimension = spec.dimension;
          mesh_spec.n_cells[0] = spec.n_cells_x;
@@ -527,7 +595,9 @@ int main(int argc, char **args) {
       // materials exist
       // ~~~~~~~~~~~~~
       GroupXSections xs;
-      PetscCall(xs.create(ps));
+      // Per local ELEMENT on the CG backend (its rows are per vertex)
+      if (spec.mesh_cg_supg) PetscCall(xs.create(n_groups, disc_cg.n_local_elements()));
+      else PetscCall(xs.create(ps));
       PetscCall(xs.set_from_materials(spec.materials, mat_id_d));
 
       // ~~~~~~~~~~~~~
@@ -573,19 +643,29 @@ int main(int argc, char **args) {
       // not care which side of it this call lands on
       // ~~~~~~~~~~~~~
       RemovalTerm removal;
-      PetscCall(removal.create(ps, *disc, xs.sigma_t(0)));
-      removal.set_matrix_free(matfree_removal);
       ScatteringTerm scattering;
-      PetscCall(scattering.create(ps, *disc, *quad, xs.sigma_s(0, 0)));
-
+      ScatteringTermCG scattering_cg;
       TransportOperator op;
-      PetscCall(op.create(PETSC_COMM_WORLD, ps, *disc));
-      PetscCall(op.add_term(streaming));
-      PetscCall(op.add_term(&removal));
-      PetscCall(op.add_term(&scattering));
-
       GroupTransfer transfer;
-      PetscCall(transfer.create(ps, *quad, xs, disc->boundary_info()));
+      GroupTransferCG transfer_cg;
+      PetscCall(op.create(PETSC_COMM_WORLD, ps, *disc));
+      if (spec.mesh_cg_supg) {
+         // Streaming, SUPG and removal in the one assembled term; the scatter
+         // and the transfer carry the SUPG weight too
+         PetscCall(supg_cg.create(ps, disc_cg, xs.sigma_t(0)));
+         PetscCall(scattering_cg.create(ps, disc_cg, *quad, xs.sigma_t(0), xs.sigma_s(0, 0)));
+         PetscCall(op.add_term(streaming));
+         PetscCall(op.add_term(&scattering_cg));
+         PetscCall(transfer_cg.create(ps, disc_cg, *quad, xs));
+      } else {
+         PetscCall(removal.create(ps, *disc, xs.sigma_t(0)));
+         removal.set_matrix_free(matfree_removal);
+         PetscCall(scattering.create(ps, *disc, *quad, xs.sigma_s(0, 0)));
+         PetscCall(op.add_term(streaming));
+         PetscCall(op.add_term(&removal));
+         PetscCall(op.add_term(&scattering));
+         PetscCall(transfer.create(ps, *quad, xs, disc->boundary_info()));
+      }
 
       // ~~~~~~~~~~~~~
       // One angular flux Vec per group, plus a single rhs we rebuild per group
@@ -657,8 +737,13 @@ int main(int argc, char **args) {
          // group's. Under -matfree_removal there is nothing to refill: both
          // re-pointed terms are matrix-free and read their xsections straight
          // through, so the pointer swaps above are the whole per-group update
-         removal.set_sigma_t(xs.sigma_t(g));
-         scattering.set_sigma_s(xs.sigma_s(g, g));
+         if (spec.mesh_cg_supg) {
+            supg_cg.set_sigma_t(xs.sigma_t(g));
+            scattering_cg.set_group(xs.sigma_t(g), xs.sigma_s(g, g));
+         } else {
+            removal.set_sigma_t(xs.sigma_t(g));
+            scattering.set_sigma_s(xs.sigma_s(g, g));
+         }
          if (!matfree_removal) PetscCall(op.assemble());
          // The diffusion operator is built from the same two xsections, so it
          // is refilled here rather than in TransportSolver::refresh() - the
@@ -674,10 +759,13 @@ int main(int argc, char **args) {
          // (add_source skips every BC row on its own)
          PetscCall(VecSet(b, 0.0));
          PetscCall(UboltFillInflow(disc->boundary_info(), b));
-         PetscCall(UboltFillSource(ps, disc->boundary_info(), *quad, spec.materials, mat_id_d, g, b));
+         if (spec.mesh_cg_supg) PetscCall(UboltFillSourceCG(disc_cg, *quad, spec.materials, mat_id_d, \
+            xs.sigma_t(g), g, b));
+         else PetscCall(UboltFillSource(ps, disc->boundary_info(), *quad, spec.materials, mat_id_d, g, b));
          PetscCall(UboltZeroReflectRows(disc->boundary_info(), b));
          for (PetscInt g_from = 0; g_from < g; g_from++) {
-            PetscCall(transfer.add_source(g_from, g, b));
+            if (spec.mesh_cg_supg) PetscCall(transfer_cg.add_source(g_from, g, b));
+            else PetscCall(transfer.add_source(g_from, g, b));
          }
 
          // Diagonally scale this group's assembled operator and rhs - AFTER
@@ -714,7 +802,8 @@ int main(int argc, char **args) {
 
          // This group's scalar flux is fixed now, and every group below it
          // scatters from it. Integrate once here rather than once per target
-         PetscCall(transfer.set_scalar_flux(g, psi[g]));
+         if (spec.mesh_cg_supg) PetscCall(transfer_cg.set_scalar_flux(g, psi[g]));
+         else PetscCall(transfer.set_scalar_flux(g, psi[g]));
       }
 
       // The infinite-medium check: uniform source, uniform xsections and no
@@ -768,7 +857,8 @@ int main(int argc, char **args) {
          const size_t base_len = dot ? (size_t)(dot - flux_vtk.c_str()) : flux_vtk.size();
          // The source is expanded onto the cells for output only, so one buffer
          // refilled per group rather than a table kept over the sweep
-         PetscScalarKokkosView cell_source_d("cell_source_d", ps.local_cells);
+         PetscScalarKokkosView cell_source_d("cell_source_d", \
+            spec.mesh_cg_supg ? disc_cg.n_local_elements() : ps.local_cells);
 
          for (PetscInt g = 0; g < n_groups; g++) {
             char fname[PETSC_MAX_PATH_LEN];
@@ -776,17 +866,22 @@ int main(int argc, char **args) {
             else PetscCall(PetscSNPrintf(fname, sizeof(fname), "%.*s_g%" PetscInt_FMT "%s", \
                (int)base_len, flux_vtk.c_str(), g, dot ? dot : ""));
 
-            PetscCall(UboltFillCellSource(ps, spec.materials, mat_id_d, g, cell_source_d));
+            if (spec.mesh_cg_supg) PetscCall(UboltFillElementSource(spec.materials, mat_id_d, g, cell_source_d));
+            else PetscCall(UboltFillCellSource(ps, spec.materials, mat_id_d, g, cell_source_d));
             std::vector<UboltCellField> extra = {{"sigma_t", xs.sigma_t(g)}, {"source", cell_source_d}};
             // DG1: scalar_flux is the cell average, so the slope rides along
             // and the file carries the whole linear solution
             std::vector<PetscScalarKokkosView> grad;
-            if (spec.mesh_unstructured && spec.mesh_order == 1) {
+            if (spec.mesh_unstructured && !spec.mesh_cg_supg && spec.mesh_order == 1) {
                static const char *grad_names[3] = {"scalar_flux_grad_x", "scalar_flux_grad_y", "scalar_flux_grad_z"};
                PetscCall(disc_dg.scalar_flux_gradient(psi[g], *quad, grad));
                for (size_t d = 0; d < grad.size(); d++) extra.push_back({grad_names[d], grad[d]});
             }
-            PetscCall(UboltWriteScalarFluxVTK(ps, *disc, *quad, psi[g], (PetscInt)extra.size(), extra.data(), \
+            // The CG backend's flux lives on vertices: point data, the extras
+            // per element as cell data
+            if (spec.mesh_cg_supg) PetscCall(UboltWriteScalarFluxVTKCG(ps, disc_cg, *quad, psi[g], \
+               (PetscInt)extra.size(), extra.data(), fname));
+            else PetscCall(UboltWriteScalarFluxVTK(ps, *disc, *quad, psi[g], (PetscInt)extra.size(), extra.data(), \
                fname));
          }
       }
@@ -797,6 +892,8 @@ int main(int argc, char **args) {
       // Same order for the pmats the solvers were built on
       PetscCall(ref_shift.destroy());
       PetscCall(op.destroy());
+      PetscCall(scattering_cg.destroy());
+      PetscCall(transfer_cg.destroy());
       PetscCall(disc->destroy());
       PetscCall(MatDestroy(&streaming_mat));
       PetscCall(VecDestroy(&b));

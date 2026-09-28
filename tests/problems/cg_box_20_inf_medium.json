@@ -1,0 +1,31 @@
+{
+ "_comment": "CG-SUPG on a 20x20 QUAD box (S4), the infinite-medium material with reflective left + bottom and vacuum right + top whose inflow is the infinite-medium flux (inflow / sum_weights = Source / sum_weights / (Sigma_t - Sigma_s), so inflow = 2): consistent SUPG reproduces the constant exactly, checked by -check_inf_medium.",
+ "dimension": 2,
+ "mesh": {
+  "type": "unstructured",
+  "discretisation": "cg_supg",
+  "n_cells": [20, 20],
+  "lengths": [1.0, 1.0]
+ },
+ "sn_order": 4,
+ "materials": {
+  "n_groups": 1,
+  "materials": [
+   {
+    "id": 0,
+    "name": "m",
+    "Sigma_t": [1.0],
+    "Sigma_s": [
+     [0.5]
+    ],
+    "Source": [1.0]
+   }
+  ]
+ },
+ "boundary_conditions": {
+  "left": "reflect",
+  "right": {"type": "vacuum", "inflow": 2.0},
+  "bottom": "reflect",
+  "top": {"type": "vacuum", "inflow": 2.0}
+ }
+}

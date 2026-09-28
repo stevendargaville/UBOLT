@@ -44,7 +44,8 @@ convert, it just trusts you to be consistent).
 #### Structured or unstructured?
 `mesh.type` is `"structured"` by default: the DMDA finite-difference backends,
 a box of equal cells per axis. `"unstructured"` is the upwind DG backend on a
-DMPlex, DG0 by default or linear DG with `"order": 1` (2D and 3D only; schema in `docs/problem_files.md`, "Unstructured
+DMPlex, DG0 by default or linear DG with `"order": 1`, or continuous Galerkin
+with `"discretisation": "cg_supg"` (below) (2D and 3D only; schema in `docs/problem_files.md`, "Unstructured
 meshes"). Reach for it when the geometry is not a box of boxes:
 - **the geometry needs a mesh file** — curved or slanted material interfaces,
   a domain that is not a rectangle, a mesh from Gmsh with its physical groups
@@ -69,6 +70,23 @@ through its discretisation-consistent D; the DG1 penalty constant is
 `-dsa_mip_penalty`, 4, and rarely worth touching). And reflective faces must be
 axis-aligned: a mesh file can only reflect on the straight x/y/z parts of its
 boundary.
+
+The third choice on an unstructured mesh is `"discretisation": "cg_supg"`:
+continuous Galerkin at the vertices with consistent SUPG (Wang's SAAF-tau) -
+**second order** with ONE unknown per vertex and ordinate, so on the same mesh
+it is the cheapest second-order option (about the vertex count, where DG1 is
+`dimension + 1` per cell). It is the one to try when the diffusion limit
+matters without paying for DG1: tau becomes `1 / Sigma_t` in thick cells,
+which is SAAF's diffusion limit. The costs: weak boundary conditions only, no
+`-precon_dsa` yet (so a thick, highly scattering problem is iteration-bound, as
+DG is without DSA), `-matfree_removal` and `-precon_ref_shift` refused (the
+operator depends on the group through tau), and a flux that is continuous
+across material interfaces, so a sharp interface layer is smeared over one
+element until the mesh resolves it (a thin/thick interface at a coarse mesh
+dips the flux at the interface by about a third at a coarse mesh, verify_cgk
+check 6). The thin-cell parameter `mesh.supg_zeta` (default 0.5) is rarely worth
+moving: 2 measured slightly worse on the thin/thick slab and no different on the
+void slab.
 
 Converting is one line: a structured 2D/3D problem becomes its unstructured
 twin by adding `"type": "unstructured"` to `mesh` — the face names are the
@@ -284,4 +302,6 @@ your machine.
 | Unstructured triangles / tets on a box | `plex_tri_30_st2.json` (2D), `plex_tet_6_st2.json` (3D) |
 | Unstructured mesh file, Cell Sets materials, integer-keyed BCs | `plex_square_msh.json` (+ `../meshes/square_2x2_tri.msh`) |
 | A void region in a diffusive problem (DSA void bridging / masking) | `box_void_channel.json` (2D), `slab_void_gap.json` (1D), `cube_void_duct.json` (3D), `plex_box_void_channel.json` / `_dg1.json` (plex) |
+| CG-SUPG twin of an unstructured problem (one more line in `mesh`) | `cg_box_50_st2.json` (and every `cg_*.json` beside its `plex_*` twin) |
+| A quasi-1D slab on the unstructured backend (a 1-cell strip, reflective y faces) | `cg_slab_saaf_ls_void.json`, `cg_slab_thin_thick.json` |
 | Multigroup voids, one void in every group and one in the top group only (`-precon_ref_shift`) | `slab_decades4_void.json` (1D, the every-group void only), `box_decades4_void.json` (2D), `plex_decades4_void.json` (plex) |

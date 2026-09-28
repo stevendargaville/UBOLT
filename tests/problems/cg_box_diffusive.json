@@ -1,0 +1,31 @@
+{
+ "_comment": "The CG-SUPG twin of plex_box_diffusive.json - the same problem, discretised as mesh.discretisation cg_supg (zeta 0.5). The unstructured DG0 twin of box_diffusive.json: the same 50x50 quad box, ten mean free paths per cell at a scattering ratio of 0.99, only \"type\": \"unstructured\" added. The plex DSA's two-point-flux operator is the structured star times the cell volume on this mesh, so the -precon_dsa count pins against the structured one.",
+ "dimension": 2,
+ "mesh": {
+  "type": "unstructured",
+  "discretisation": "cg_supg",
+  "n_cells": [50, 50],
+  "lengths": [5.0, 5.0]
+ },
+ "sn_order": 4,
+ "materials": {
+  "n_groups": 1,
+  "materials": [
+   {
+    "id": 0,
+    "name": "diffusive",
+    "Sigma_t": [100.0],
+    "Sigma_s": [
+     [99.0]
+    ],
+    "Source": [1.0]
+   }
+  ]
+ },
+ "boundary_conditions": {
+  "left": {"type": "vacuum", "inflow": 12.566370614359172},
+  "right": {"type": "vacuum", "inflow": 12.566370614359172},
+  "bottom": {"type": "vacuum", "inflow": 12.566370614359172},
+  "top": {"type": "vacuum", "inflow": 12.566370614359172}
+ }
+}
