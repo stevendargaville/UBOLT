@@ -5,7 +5,11 @@ Each phase is a reviewable unit with its own verification. Do not start a phase 
 previous one's verification has passed and been reviewed.
 
 ## Current state (updated 2026-09-28)
-Last landed: **CG-SUPG** (`UnstructuredCG`, Phase 6b - the Phase 6 item); before it,
+Last landed: **the CG DSA** (`-precon_dsa` on `cg_supg`: a P1/Q1 diffusion operator
+on the transport's vertices, exactly the SUPG operator restricted onto an isotropic
+flux in thick cells; every diffusive CG problem 35-48 -> 5-6 as its DG0 twin, the
+void channel 47 -> 8 - see the Phase 6 item); before it, **CG-SUPG** (`UnstructuredCG`,
+Phase 6b - the Phase 6 item); before it,
 **`-precon_ref_shift` on voids** (`RefShiftPmats` sorts the groups by
 their void cells, one reference per pattern, zero in the void, so a void cell's pmat
 row is the bare streaming row the operator has there; exact coverage stays the full
@@ -45,8 +49,9 @@ hex cube, triangles and tets go 34 / 32 / 40 / 43 -> 6 / 7 / 8 / 9 (DG0+DSA now 
 5 on all four meshes' DG0 twins, through the consistent D). 6b CG-SUPG landed 28 Sep
 2026 (the Phase 6 item: `mesh.discretisation: "cg_supg"`, consistent SUPG = SAAF-tau,
 verified against the SAAF-LS void slab and the thin/thick slab benchmarks; its
-follow-ups - a CG DSA first - are under it; its two iteration gaps against DG0 and
-Wang's cell size were investigated 28 Sep 2026, no code change). Next up: a CG DSA, or one of the open questions carried as checkboxes since 27 Sep 2026: per-group
+follow-ups are under it; its two iteration gaps against DG0 and
+Wang's cell size were investigated 28 Sep 2026, no code change, and the CG DSA
+closed the diffusive one the same day). Next up: one of the open questions carried as checkboxes since 27 Sep 2026: per-group
 cached Mat/KSP for the DSA (in the Phase 4 postscript 5 DSA notes; void masking, the
 other, is done), and the follow-ups the 27 Sep 2026 round left (the simplex +1 - a
 stronger cheap DSA inner solve was looked at and closed with no change; the list at the end of Phase 6 - the void-bridging
@@ -650,12 +655,22 @@ now direct and tested (see that item).
       else. Counts: the DG0 twins' except the diffusive quad box (39 vs 29) and the
       void channel (47 vs 26), investigated below. Tables in
       docs/dev/testing.md, "CG-SUPG verification and iteration counts".
-  - [ ] DSA for CG-SUPG. `-precon_dsa` is refused on the backend today. Candidates:
-    Wang's consistent DSA for SAAF-tau (P0-projected, NSE 176, 2014), or a
-    continuous P1 diffusion operator on the same vertices (restriction/prolongation
-    would then be the identity in space). The diffusive CG recipes (39/35) show the
-    same scattering-dominated need DG0 had before its DSA; the 39 against DG0's 29 is
-    PCAIR's (item below), which is what the DSA should close.
+  - [x] DSA for CG-SUPG. DONE 28 Sep 2026: `DSAPrecon`'s `UnstructuredCG` overload, a
+    continuous P1/Q1 diffusion operator on the same vertices (restriction/prolongation
+    the identity in space, the moment scaled by the lumped mass). It is EXACTLY the
+    SUPG operator restricted onto an isotropic flux, `m R A P`, in thick cells
+    (verify_cgk checks it to 4e-16): the SUPG term restricts to `(1/W) sum w tau Omega
+    Omega^T : K` = `1/(3 sigma_t) K` when tau = 1/sigma_t, the vacuum face to the
+    half-range current times the lumped face mass. D = 1/(3 sigma_t) per element
+    (the SUPG tensor everywhere was worse in thin cells, 7 against 5 on the box;
+    Marshak's 1/2 on vacuum faces costs 1-2); voids bridged by the chord L / 3 like
+    every other backend (the SUPG tensor there degrades 7 / 9 / 11 with refinement,
+    the chord holds 8). Every diffusive CG problem 35-48 -> 5-6, the DG0 twins' DSA
+    counts; decades4 41 -> 5; the void channel 47 -> 8 against DG0's 6 - with both
+    inner solves exact the channel is 7 against 4, so what is left is the diffusion
+    model with SUPG in the void (no fixed void D does better). Wang's P0-projected
+    DSA was not tried: the vertex operator already takes the DG0 counts and is the
+    transport's own restriction. Tables in docs/dev/testing.md, "CG-SUPG".
   - [ ] `-matfree_removal`, `-precon_stream` and `-precon_ref_shift` on CG. All three
     assume a group-independent streaming matrix; with tau = min(1/sigma_t, h/zeta) the
     SUPG streaming part depends on the group. A sigma-independent tau (h/zeta only)
@@ -677,8 +692,9 @@ now direct and tested (see that item).
       diffusion in the thin cells - any channel with sigma_t <= 1 behaves the same, and
       the LU count follows tau = h/zeta there: zeta 0.125 / 0.5 / 2 / 8 / 32 give LU
       45 / 38 / 27 / 24 / 23, AIR 52 / 47 / 41 / 53 / diverges (AIR needs the
-      stabilisation the outer iteration pays for). Candidates, not tried: a void tau
-      not scaled by h/zeta, the CG DSA (Wang's cell size tried, below: 46 against 47).
+      stabilisation the outer iteration pays for). The CG DSA (above) takes it to 8
+      (DG0 + DSA: 6); a void tau not scaled by h/zeta is not tried (Wang's cell size
+      tried, below: 46 against 47).
   - [ ] SUPG is not adjoint-consistent: no `A^T = P A P` on this backend, so the
     half-quadrature transposed PC (blocked on PFLARE anyway) would not carry over.
   - [x] h_Omega is the Tezduyar/Shakib element length along Omega; Wang's SAAF-tau uses

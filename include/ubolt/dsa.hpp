@@ -10,6 +10,7 @@
 #include "ubolt/structured_fd_2d.hpp"
 #include "ubolt/structured_fd_3d.hpp"
 #include "ubolt/unstructured_dg.hpp"
+#include "ubolt/unstructured_cg.hpp"
 #include <petscksp.h>
 #include <vector>
 
@@ -114,6 +115,34 @@
 // rows are, which is what the cell-average operator this replaced lacked
 // (measured Sep 2026: that one took the quad box_diffusive twin 34 -> 34)
 //
+// On the CG-SUPG backend (UnstructuredCG) the diffusion unknown lives where
+// the transport's does, one per VERTEX, and D_diff is the continuous P1/Q1
+// weak form on the backend's own element tables,
+//    a(u, v) = sum_e int_e D_e grad u . grad v + sigma_a u v + sum_{vacuum f} m_f int_f u v
+// with the CONSISTENT mass M, the face mass lumped the way the transport's
+// weak boundary is, m_f the face's half-range current (the quadrature's, ~1/4)
+// and nothing on a reflective face. That is the transport operator restricted
+// onto an isotropic flux, m R A P, exactly (verify_cgk checks it to rounding):
+// every odd-in-Omega part of A cancels over the symmetric quadrature, the SUPG
+// term leaves (1/W) sum_a w_a tau_a Omega_a Omega_a^T : K, which is
+// 1/(3 sigma_t) I wherever tau = 1/sigma_t, the removal less the scatter
+// sigma_a M, and the weak inflow m_f. So D_e = 1/(3 sigma_t) - the thick
+// limit of SUPG IS the physical diffusion, there is no numerical diffusion to
+// blend in (-dsa_consistent_d does nothing here), and in a thin cell the
+// physical D beats the SUPG tensor (measured Sep 2026: the quad box 7 against
+// 5, the rest tied); Marshak's 1/2 in place of m_f costs 1-2 on the diffusive
+// problems. The transport rows are divided by the lumped mass m_i and these
+// are the weak form, so the restricted moment is scaled by m_i; the
+// prolongation is the isotropic broadcast, per vertex. D_diff is SPD, and
+// every element touching an owned vertex is local, so each row is complete on
+// its rank. Voids are per ELEMENT and bridged as below, over the elements'
+// faces; unbridged (-dsa_void_bridge 0) a void keeps the SUPG tensor - the
+// only D defined there - and nothing is masked on this backend: the vertex a
+// void shares with the material is the material's too. Measured: every
+// diffusive CG problem 35-48 -> 5-6, as its DG0 twin's DSA; the void channel
+// 47 -> 8 bridged, flat from 50^2 to 200^2 cells, where the SUPG tensor goes
+// 7 / 9 / 11 because h / zeta shrinks with the mesh
+//
 // VOIDS. D = 1/(3 sigma_t) is not defined where sigma_t = 0. A cell whose
 // group Sigma_t is at or below -dsa_void_sigma_t (0 by default: only a true
 // void) is a void, and the correction either BRIDGES the voids (the default,
@@ -212,6 +241,13 @@ public:
    PetscErrorCode create(MPI_Comm comm, const PhaseSpace &ps, const UnstructuredDG &disc, \
       const AngularQuadrature &quad, const BCSpec &bcs);
 
+   // The CG-SUPG backend: a continuous P1/Q1 diffusion operator on the SAME
+   // vertices the transport rows live on, so the restriction and the
+   // prolongation are the identity in space (see the header). set_group()
+   // then takes the per-ELEMENT xsections the CG terms do
+   PetscErrorCode create(MPI_Comm comm, const PhaseSpace &ps, const UnstructuredCG &disc, \
+      const AngularQuadrature &quad, const BCSpec &bcs);
+
    // Point at this group's cross sections and refill the diffusion matrix
    // (values-only after the first call - the sparsity is the grid's). The
    // views are NOT owned, exactly like RemovalTerm::set_sigma_t
@@ -259,6 +295,7 @@ private:
    // rank; 0 when no face ends a flight
    PetscErrorCode void_chord_length(const PetscInt *is_void, PetscReal *chord);
    PetscErrorCode assemble_plex(const PetscScalar *sigma_t_h, const PetscScalar *sigma_s_h, const PetscInt *void_h);
+   PetscErrorCode assemble_cg(const PetscScalar *sigma_t_h, const PetscScalar *sigma_s_h);
    PetscErrorCode assemble_plex_dg1(const PetscScalar *sigma_t_h, const PetscScalar *sigma_s_h, \
       const PetscInt *void_h);
 
@@ -343,6 +380,31 @@ private:
    // Not owned - the group's xsection slices, as handed over by set_group()
    PetscScalarKokkosView sigma_t_d_;
    PetscScalarKokkosView sigma_s_d_;
+
+   // ~~~~~~~~~~ CG-SUPG only (cg_ true, plex_ false, da_ NULL) ~~~~~~~~~~
+   // Per local element, the COO entries of its owned vertices' rows run in
+   // (element, owned li, j) order; then one diagonal entry per owned vertex
+   // carrying its vacuum faces. cg_entry_li_/_j_ say which element-matrix
+   // entry each element entry is, cg_entry_elem_ which element
+   PetscBool cg_ = PETSC_FALSE;
+   PetscInt cg_nv_ = 0;
+   PetscInt cg_n_elem_ = 0;
+   std::vector<PetscInt> cg_entry_elem_, cg_entry_li_, cg_entry_j_;
+   std::vector<PetscScalar> cg_mass_, cg_stiff_;
+   // Per owned vertex, sum over its vacuum boundary faces of the face's
+   // half-range current times m^f_i
+   std::vector<PetscReal> cg_vacuum_weight_;
+   // What the SUPG D in an unbridged void needs: the backend's ordinates,
+   // centroid gradients and zeta (the views are reference-counted copies)
+   PetscScalarKokkosView cg_omega_d_, cg_centre_grad_d_;
+   PetscReal cg_zeta_ = 0.5;
+   // For the voids' mean chord, per OWNED element: its volume, and its faces
+   // [cg_face_offset_[k], cg_face_offset_[k + 1]) - the local element across
+   // each (-1 on the boundary), the area, and whether a boundary face is
+   // vacuum. cg_owned_elem_ is the owned elements' local indices
+   std::vector<PetscInt> cg_owned_elem_, cg_face_offset_, cg_face_nb_;
+   std::vector<PetscReal> cg_elem_volume_, cg_face_area_;
+   std::vector<PetscBool> cg_face_vacuum_;
 
    // The voids (see the header): Sigma_t <= void_sigma_t_ is a void. The
    // mask is one flag per local cell, refilled per group by assemble(), read

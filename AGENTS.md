@@ -59,7 +59,10 @@ Codebase map
   faces, zeta 0.5 and 2), second order against an exact SN solution, the two
   literature slab benchmarks (the SAAF-LS void slab, arXiv 1605.05388, and Hammer/
   Morel/Wang's thin/thick slab, arXiv 1902.08729) against the EXACT SN solution of
-  the same quadrature, and error paths.
+  the same quadrature, error paths, and the CG DSA: its diffusion matrix = the
+  transport restricted onto an isotropic flux, `m R A P`, to rounding (thick material +
+  an unbridged void), the bridged voids' chord against closed forms, and the
+  singular all-reflective case refused.
   `tests/verify_quadraturek.kokkos.cxx`: the quadrature sets themselves, against the
   moment conditions that define them — needed because they are generated, not tabulated.
   `tests/baselines/`: captured
@@ -162,7 +165,7 @@ Codebase map
   `UboltFillSourceCG`, the last three through the backend's one weighted-load kernel;
   output `UboltWriteScalarFluxVTKCG` (point data). The driver refuses
   `-matfree_removal`/`-precon_stream`/`-precon_ref_shift`/`-check_matfree` (no
-  group-independent streaming matrix) and `-precon_dsa` (no CG diffusion operator yet);
+  group-independent streaming matrix); `-precon_dsa` works (`DSAPrecon`'s CG overload);
   `OperatorTerm` and the `Streaming`/`Streaming2D`/`Streaming3D`/`StreamingDG0`/
   `StreamingDG1`/`Removal`/`Scattering` terms (`StreamingTermDG0/DG1::create(ps, disc)`
   take NO quadrature: they read the ordinates off the backend, so the two cannot
@@ -188,12 +191,22 @@ Codebase map
   unknown is DG1 too: the MIP interior penalty form (Wang & Ragusa) on the backend's
   modal basis, one unknown per (cell, basis) node, block size n_basis for GAMG, every
   node restricted and corrected; penalty constant `-dsa_mip_penalty`, 4 by default.
+  On `UnstructuredCG` the diffusion unknown is per VERTEX, the transport's: a
+  continuous P1/Q1 weak form on the backend's element tables (consistent mass, the
+  lumped face mass times the half-range current on vacuum faces, per-ELEMENT
+  `D = 1/(3 sigma_t)`), which is EXACTLY `m R A P` of the SUPG operator on an
+  isotropic flux in thick cells — so no consistent-D blend there; the restricted
+  moment is scaled by the lumped mass m_i, and restriction/prolongation are the
+  identity in space.
   VOIDS (a cell with group `Sigma_t <= -dsa_void_sigma_t`, 0 by default) are BRIDGED
   by default, every backend and order: kept in the operator with no absorption and the
   free-flight `D = L / 3`, `L = 4 V / S` the voids' mean chord (one per group, summed
   over ranks; S = faces onto material or vacuum, not reflective ones), so the
   correction couples the regions a void separates; at DG1 a face touching a void takes
   the harmonic-D weighted interior penalty (plain MIP welds the material to the void).
+  (On CG the voids are per element and bridged the same way; `-dsa_void_bridge 0`
+  keeps the SUPG operator's own tensor `(1/W) sum_a w_a tau_a Omega_a Omega_a^T`
+  there instead of masking, which degrades as h / zeta shrinks with the mesh.)
   `-dsa_void_bridge 0` MASKS them instead (an identity row, times V on the plex,
   restricted and corrected to zero, a face into it the (consistent-D) Marshak or MIP
   vacuum face for its neighbour), and an all-void or would-be-singular group falls back

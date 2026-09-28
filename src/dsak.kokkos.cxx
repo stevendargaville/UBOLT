@@ -1,6 +1,7 @@
 #include "ubolt/dsa.hpp"
 #include "petsc_kokkos.hpp"
 #include <petscdmda.h>
+#include <petscdmplex.h>
 
 // The kernels below are file-static free functions taking value copies of the
 // views, never `this` - a member access inside a KOKKOS_LAMBDA would
@@ -70,6 +71,34 @@ static void ProlongKernel(PetscScalarConstKokkosView node_d, PetscScalarKokkosVi
 
          y_d(r) = (is_bc_row_d(r) || void_cell_d(r / rows_per_cell)) ? (PetscScalar)0.0 : \
             node_d(r / n_angles) / sum_weights;
+      });
+}
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+// The CG-SUPG operator's own diffusion tensor per element: an isotropic flux
+// phi / W through the SUPG term tau Omega Omega : K, summed over the
+// ordinates, is (1/W) sum_a w_a tau_a Omega_a Omega_a^T : K phi (the Galerkin
+// streaming and the tau Omega . G^T removal and scatter terms are odd in
+// Omega, and tau is even, so they cancel). In a thick cell tau = 1/sigma_t and
+// this IS 1/(3 sigma_t) I; in a thin one it is the streamline diffusion.
+// On the device so it is UboltSUPGTau's own arithmetic. d_e is 9 per element
+static void CGSupgDKernel(PetscScalarKokkosView sigma_t_e, PetscScalarKokkosView omega_d, \
+   PetscScalarKokkosView centre_grad_d, PetscScalar2DKokkosView w_d, PetscInt n_angles, PetscInt nv, \
+   PetscReal zeta, PetscScalar sum_weights, PetscInt n_elem, PetscScalarKokkosView d_e)
+{
+   Kokkos::parallel_for(
+      Kokkos::RangePolicy<>(0, n_elem), KOKKOS_LAMBDA(PetscInt e) {
+
+         PetscScalar acc[9] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+         for (PetscInt a = 0; a < n_angles; a++) {
+            const PetscScalar tau = UboltSUPGTau(centre_grad_d, omega_d, e, a, nv, sigma_t_e(e), zeta);
+            const PetscScalar wt = w_d(a, 0) * tau / sum_weights;
+            for (PetscInt d = 0; d < 3; d++) {
+               for (PetscInt dd = 0; dd < 3; dd++) acc[3 * d + dd] += wt * omega_d(3 * a + d) * omega_d(3 * a + dd);
+            }
+         }
+         for (PetscInt i = 0; i < 9; i++) d_e(9 * e + i) = acc[i];
       });
 }
 
@@ -388,6 +417,167 @@ PetscErrorCode DSAPrecon::create(MPI_Comm comm, const PhaseSpace &ps, const Unst
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
+// The CG-SUPG backend: one diffusion unknown per owned VERTEX, the same
+// global numbering as the transport rows over n_angles, so the restriction is
+// a lumped-mass-weighted angular moment and the prolongation the isotropic
+// broadcast, both per vertex. The operator is the continuous weak form
+//    sum_e int_e D_e grad u . grad v + sigma_a u v  +  sum_{vacuum f} c_f int_f u v
+// with the element tables the transport assembles from (so M is consistent)
+// and the face mass lumped the way the transport's weak boundary is. Every
+// element touching an owned vertex is local (FEM overlap), so each owned row
+// is complete on its rank
+PetscErrorCode DSAPrecon::create(MPI_Comm comm, const PhaseSpace &ps, const UnstructuredCG &disc, \
+   const AngularQuadrature &quad, const BCSpec &bcs)
+{
+   PetscInt any_vacuum = 0;
+
+   PetscFunctionBeginUser;
+
+   PetscCall(PetscKokkosInitializeCheck());
+
+   PetscCall(ps.check_decomposed());
+   PetscCheck(quad.n_angles() == ps.n_angles, comm, PETSC_ERR_ARG_INCOMP, \
+      "quadrature has %" PetscInt_FMT " angles but the phase space has %" PetscInt_FMT, \
+      quad.n_angles(), ps.n_angles);
+
+   comm_ = comm;
+   cg_ = PETSC_TRUE;
+   dim_ = disc.dimension();
+   n_angles_ = ps.n_angles;
+   n_basis_ = 1;
+   local_cells_ = ps.local_cells;
+   sum_weights_ = quad.sum_weights();
+   w_d_ = quad.w_d();
+   is_bc_row_d_ = disc.boundary_info().is_bc_row_d;
+   cg_nv_ = disc.n_element_vertices();
+   cg_n_elem_ = disc.n_local_elements();
+   cg_omega_d_ = disc.omega_d();
+   cg_centre_grad_d_ = disc.centre_grad_d();
+   cg_zeta_ = disc.zeta();
+   cg_mass_ = disc.mass_host();
+   cg_stiff_ = disc.stiff_host();
+   const PetscInt nv = cg_nv_;
+
+   const std::vector<PetscInt> &elem_vertex = disc.elem_vertex_host();
+   const std::vector<PetscInt> &lv_owned = disc.local_to_owned_host();
+   const std::vector<PetscInt> &lv_global = disc.local_vertex_global_host();
+
+   // The element entries: every (element, li, j) whose row vertex li is owned
+   std::vector<PetscInt> coo_i, coo_j;
+   for (PetscInt e = 0; e < cg_n_elem_; e++) {
+      for (PetscInt li = 0; li < nv; li++) {
+         const PetscInt lv = elem_vertex[e * nv + li];
+         if (lv_owned[lv] < 0) continue;
+         for (PetscInt j = 0; j < nv; j++) {
+            coo_i.push_back(lv_global[lv]);
+            coo_j.push_back(lv_global[elem_vertex[e * nv + j]]);
+            cg_entry_elem_.push_back(e);
+            cg_entry_li_.push_back(li);
+            cg_entry_j_.push_back(j);
+         }
+      }
+   }
+
+   // The vacuum faces, per owned vertex: the face's half-range current of an
+   // isotropic flux (the weak inflow term restricted, sum over the incoming
+   // ordinates of w |Omega . n| / W) times the lumped face mass m^f_i =
+   // A_f / n_face_vertices, which the backend stores as m^f_i / (m_i A_f).
+   // A reflective face restricts to nothing (its diagonal and mirror terms
+   // cancel on an isotropic flux): zero Neumann
+   const std::vector<PetscInt> &bf_offset = disc.bface_offset_host();
+   const std::vector<PetscScalar> &bf_nA = disc.bface_nA_host();
+   const std::vector<PetscScalar> &bf_mass = disc.bface_mass_host();
+   const std::vector<PetscInt> &bf_slot = disc.bface_slot_host();
+   const std::vector<PetscReal> &lumped = disc.lumped_mass_host();
+   auto omega_h = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), disc.omega_d());
+   std::vector<PetscReal> cos_h(n_angles_);
+   cg_vacuum_weight_.assign(local_cells_, 0.0);
+   for (PetscInt k = 0; k < local_cells_; k++) {
+      for (PetscInt f = bf_offset[k]; f < bf_offset[k + 1]; f++) {
+         if (bf_slot[f] >= 0) continue;
+         any_vacuum = 1;
+         PetscReal area = 0.0;
+         for (PetscInt d = 0; d < 3; d++) area += PetscRealPart(bf_nA[3 * f + d] * bf_nA[3 * f + d]);
+         area = PetscSqrtReal(area);
+         for (PetscInt a = 0; a < n_angles_; a++) {
+            PetscReal dot = 0.0;
+            for (PetscInt d = 0; d < 3; d++) dot += PetscRealPart(omega_h(3 * a + d) * bf_nA[3 * f + d]);
+            // The INCOMING half-range: the ordinates with Omega . n < 0
+            cos_h[a] = -dot / area;
+         }
+         PetscReal m = 0.0;
+         PetscCall(HalfRangeCurrent(quad, cos_h, &m));
+         cg_vacuum_weight_[k] += m * PetscRealPart(bf_mass[f]) * lumped[k] * area;
+      }
+      coo_i.push_back(lv_global[disc.owned_local_vertex_host()[k]]);
+      coo_j.push_back(coo_i.back());
+   }
+   coo_v_.assign(coo_i.size(), 0.0);
+
+   // The owned elements' faces, for the voids' mean chord. An owned element
+   // is inside the one-cell overlap, so a face of it with one local cell is
+   // the domain boundary
+   {
+      DM dm = disc.dm();
+      DMLabel face_sets = NULL;
+      PetscInt c_start = 0, c_end = 0;
+      PetscCall(DMPlexGetHeightStratum(dm, 0, &c_start, &c_end));
+      PetscCall(DMGetLabel(dm, "Face Sets", &face_sets));
+      const std::vector<PetscInt> &owned = disc.element_owned_host();
+      const std::vector<PetscReal> &volume = disc.element_volume_host();
+      cg_face_offset_.assign(1, 0);
+      for (PetscInt e = 0; e < cg_n_elem_; e++) {
+         if (!owned[e]) continue;
+         cg_owned_elem_.push_back(e);
+         cg_elem_volume_.push_back(volume[e]);
+         PetscInt n_cone = 0;
+         const PetscInt *cone = nullptr;
+         PetscCall(DMPlexGetConeSize(dm, c_start + e, &n_cone));
+         PetscCall(DMPlexGetCone(dm, c_start + e, &cone));
+         for (PetscInt f = 0; f < n_cone; f++) {
+            PetscReal area = 0.0;
+            PetscInt n_support = 0, label = -1;
+            const PetscInt *support = nullptr;
+            PetscCall(DMPlexComputeCellGeometryFVM(dm, cone[f], &area, NULL, NULL));
+            PetscCall(DMPlexGetSupportSize(dm, cone[f], &n_support));
+            PetscCall(DMPlexGetSupport(dm, cone[f], &support));
+            PetscInt nb = -1;
+            if (n_support == 2) nb = (support[0] == c_start + e ? support[1] : support[0]) - c_start;
+            else if (face_sets) PetscCall(DMLabelGetValue(face_sets, cone[f], &label));
+            cg_face_nb_.push_back(nb);
+            cg_face_area_.push_back(area);
+            cg_face_vacuum_.push_back((PetscBool)(nb < 0 && bcs.type(label) == BCType::VACUUM));
+         }
+         cg_face_offset_.push_back((PetscInt)cg_face_nb_.size());
+      }
+   }
+   PetscCallMPI(MPIU_Allreduce(MPI_IN_PLACE, &any_vacuum, 1, MPIU_INT, MPI_MAX, comm_));
+   any_vacuum_ = (PetscBool)(any_vacuum != 0);
+
+   PetscCall(MatCreate(comm_, &diff_mat_));
+   PetscCall(MatSetSizes(diff_mat_, local_cells_, local_cells_, PETSC_DETERMINE, PETSC_DETERMINE));
+   PetscCall(MatSetType(diff_mat_, MATAIJKOKKOS));
+   PetscCall(MatSetPreallocationCOO(diff_mat_, (PetscCount)coo_i.size(), coo_i.data(), coo_j.data()));
+   PetscCall(MatSetOption(diff_mat_, MAT_SPD, PETSC_TRUE));
+   PetscCall(MatCreateVecs(diff_mat_, &sol_, &rhs_));
+
+   // The transport rows are divided by the lumped mass, the diffusion rows
+   // are the weak form: the restricted moment is scaled by m_i to match
+   PetscCall(VecDuplicate(rhs_, &volume_vec_));
+   {
+      PetscScalar *v = nullptr;
+      PetscCall(VecGetArrayWrite(volume_vec_, &v));
+      for (PetscInt k = 0; k < local_cells_; k++) v[k] = lumped[k];
+      PetscCall(VecRestoreArrayWrite(volume_vec_, &v));
+   }
+
+   PetscCall(create_ksp());
+
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
 PetscErrorCode DSAPrecon::create_common(MPI_Comm comm, const PhaseSpace &ps, \
    const Discretisation &disc, const AngularQuadrature &quad)
 {
@@ -520,6 +710,29 @@ PetscErrorCode DSAPrecon::assemble()
    PetscInt n_void = 0;
 
    PetscFunctionBeginUser;
+
+   // The CG backend's xsections are per local ELEMENT, not per row unit
+   if (cg_) {
+      PetscCheck(sigma_t_d_.extent(0) == (size_t)cg_n_elem_ && sigma_s_d_.extent(0) == (size_t)cg_n_elem_, \
+         comm_, PETSC_ERR_ARG_INCOMP, "the group xsections cover %" PetscInt_FMT " and %" PetscInt_FMT \
+         " elements but there are %" PetscInt_FMT " local elements", (PetscInt)sigma_t_d_.extent(0), \
+         (PetscInt)sigma_s_d_.extent(0), cg_n_elem_);
+      auto sigma_t_h = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), sigma_t_d_);
+      auto sigma_s_h = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), sigma_s_d_);
+      for (PetscInt e = 0; e < cg_n_elem_; e++) max_sigma_a = PetscMax(max_sigma_a, PetscRealPart(sigma_t_h(e) - sigma_s_h(e)));
+      for (const PetscInt e : cg_owned_elem_) {
+         if (PetscRealPart(sigma_t_h(e)) <= void_sigma_t_) n_void++;
+      }
+      PetscCallMPI(MPIU_Allreduce(MPI_IN_PLACE, &max_sigma_a, 1, MPIU_REAL, MPIU_MAX, comm_));
+      PetscCallMPI(MPIU_Allreduce(MPI_IN_PLACE, &n_void, 1, MPIU_INT, MPI_SUM, comm_));
+      n_void_cells_ = n_void;
+      PetscCheck(any_vacuum_ || max_sigma_a > 0.0, comm_, PETSC_ERR_ARG_WRONGSTATE, \
+         "the DSA diffusion operator is singular: every face is reflective (pure Neumann) and " \
+         "Sigma_a = Sigma_t - Sigma_s is zero everywhere in this group. Leave one face vacuum, or give " \
+         "the material absorption");
+      PetscCall(assemble_cg(sigma_t_h.data(), sigma_s_h.data()));
+      PetscFunctionReturn(PETSC_SUCCESS);
+   }
 
    PetscCheck(sigma_t_d_.extent(0) == (size_t)local_cells_ && \
       sigma_s_d_.extent(0) == (size_t)local_cells_, comm_, PETSC_ERR_ARG_INCOMP, \
@@ -1049,6 +1262,70 @@ PetscErrorCode DSAPrecon::assemble_plex_dg1(const PetscScalar *sigma_t_h, const 
    }
 
    PetscCall(VecRestoreArrayRead(d_nb_, &d_nb_a));
+   PetscCall(MatSetValuesCOO(diff_mat_, coo_v_.data(), INSERT_VALUES));
+
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+// The CG weak form, element by element into the owned rows (see the header)
+PetscErrorCode DSAPrecon::assemble_cg(const PetscScalar *sigma_t_h, const PetscScalar *sigma_s_h)
+{
+   const PetscInt nv = cg_nv_;
+
+   PetscFunctionBeginUser;
+
+   // The voids' mean chord, 4 V / S over the owned elements: V the void
+   // elements' volume, S their faces onto a non-void element or a vacuum
+   // boundary (a reflective face does not end a flight). Bridged when asked
+   // and there is a face to end one; otherwise the void keeps the SUPG tensor
+   bridged_ = PETSC_FALSE;
+   void_chord_ = 0.0;
+   if (void_bridge_ && n_void_cells_ > 0) {
+      PetscReal vs[2] = {0.0, 0.0};
+      for (size_t k = 0; k < cg_owned_elem_.size(); k++) {
+         const PetscInt e = cg_owned_elem_[k];
+         if (PetscRealPart(sigma_t_h[e]) > void_sigma_t_) continue;
+         vs[0] += cg_elem_volume_[k];
+         for (PetscInt f = cg_face_offset_[k]; f < cg_face_offset_[k + 1]; f++) {
+            const PetscInt nb = cg_face_nb_[f];
+            if (nb >= 0 ? PetscRealPart(sigma_t_h[nb]) > void_sigma_t_ : cg_face_vacuum_[f]) vs[1] += cg_face_area_[f];
+         }
+      }
+      PetscCallMPI(MPIU_Allreduce(MPI_IN_PLACE, vs, 2, MPIU_REAL, MPIU_SUM, comm_));
+      if (vs[1] > 0.0) {
+         void_chord_ = 4.0 * vs[0] / vs[1];
+         bridged_ = PETSC_TRUE;
+      }
+   }
+
+   // D per element: 1/(3 sigma_t); in a bridged void the free-flight D of
+   // the header, 1 / (3 (sigma_t + 1 / L)) or -dsa_void_d; in an unbridged
+   // one the SUPG operator's own tensor, the only D defined there
+   PetscScalarKokkosView d_e_d("dsa_cg_d", 9 * cg_n_elem_);
+   if (n_void_cells_ > 0 && !bridged_) CGSupgDKernel(sigma_t_d_, cg_omega_d_, cg_centre_grad_d_, w_d_, \
+      n_angles_, nv, cg_zeta_, sum_weights_, cg_n_elem_, d_e_d);
+   auto d_e = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), d_e_d);
+   for (PetscInt e = 0; e < cg_n_elem_; e++) {
+      const PetscReal sigma_t = PetscRealPart(sigma_t_h[e]);
+      PetscReal d = 0.0;
+      if (sigma_t > void_sigma_t_) d = 1.0 / (3.0 * sigma_t);
+      else if (bridged_) d = void_d_ > 0.0 ? void_d_ : 1.0 / (3.0 * (PetscMax(sigma_t, 0.0) + 1.0 / void_chord_));
+      else continue;
+      for (PetscInt i = 0; i < 9; i++) d_e(9 * e + i) = (i % 4 == 0) ? d : 0.0;
+   }
+
+   const PetscInt n_entries = (PetscInt)cg_entry_elem_.size();
+   for (PetscInt q = 0; q < n_entries; q++) {
+      const PetscInt e = cg_entry_elem_[q];
+      const PetscInt ij = (e * nv + cg_entry_li_[q]) * nv + cg_entry_j_[q];
+      PetscScalar v = (sigma_t_h[e] - sigma_s_h[e]) * cg_mass_[ij];
+      for (PetscInt dd = 0; dd < 9; dd++) v += d_e(9 * e + dd) * cg_stiff_[9 * ij + dd];
+      coo_v_[q] = v;
+   }
+   for (PetscInt k = 0; k < local_cells_; k++) coo_v_[n_entries + k] = cg_vacuum_weight_[k];
+
    PetscCall(MatSetValuesCOO(diff_mat_, coo_v_.data(), INSERT_VALUES));
 
    PetscFunctionReturn(PETSC_SUCCESS);

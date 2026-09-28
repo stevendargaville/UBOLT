@@ -29,9 +29,10 @@
 // scatter, source and group transfer for its consistent-SUPG siblings
 // (terms_cg.hpp): tau depends on sigma_t, so its one assembled term refills per
 // group and there is no group-independent streaming matrix. So -matfree_removal,
-// -precon_stream, -precon_ref_shift, -precon_dsa, -check_matfree and
-// -check_ref_shift are refused on it; -check_inf_medium and -precon_block_scale
-// (point Jacobi at one dof per vertex, the default as on DG) work, and so does
+// -precon_stream, -precon_ref_shift, -check_matfree and -check_ref_shift are
+// refused on it; -precon_dsa (a P1/Q1 diffusion operator on the same
+// vertices), -check_inf_medium and -precon_block_scale (point Jacobi at one
+// dof per vertex, the default as on DG) work, and so does
 // -diag_scale - with the caveat it has everywhere, that the matrix-free
 // scatter goes unscaled: pathological with scattering (the DG0 box 7 -> 83),
 // and on CG it stalls
@@ -402,8 +403,6 @@ int main(int argc, char **args) {
          PetscCheck(!precon_stream, PETSC_COMM_WORLD, PETSC_ERR_SUP, "-precon_stream on cg_supg: %s", why);
          PetscCheck(!precon_ref_shift, PETSC_COMM_WORLD, PETSC_ERR_SUP, "-precon_ref_shift on cg_supg: %s", why);
          PetscCheck(!check_matfree, PETSC_COMM_WORLD, PETSC_ERR_SUP, "-check_matfree on cg_supg: %s", why);
-         PetscCheck(!precon_dsa, PETSC_COMM_WORLD, PETSC_ERR_SUP, "-precon_dsa on cg_supg: there is no CG " \
-            "diffusion operator yet (see TODO.md)");
       }
 
       // The infinite-medium check needs nothing for the streaming term to do
@@ -613,7 +612,8 @@ int main(int argc, char **args) {
       // ~~~~~~~~~~~~~
       DSAPrecon dsa;
       if (precon_dsa) {
-         if (spec.mesh_unstructured) PetscCall(dsa.create(PETSC_COMM_WORLD, ps, disc_dg, \
+         if (spec.mesh_cg_supg) PetscCall(dsa.create(PETSC_COMM_WORLD, ps, disc_cg, *quad, spec.bcs));
+         else if (spec.mesh_unstructured) PetscCall(dsa.create(PETSC_COMM_WORLD, ps, disc_dg, \
             *quad, spec.bcs));
          else if (spec.dimension == 1) PetscCall(dsa.create(PETSC_COMM_WORLD, ps, disc_1d, \
             *quad, spec.bcs));

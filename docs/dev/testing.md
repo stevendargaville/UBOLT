@@ -1129,6 +1129,14 @@ ranks (28 Sep 2026, opt arch).
    problem's error at every mesh, so it is the default.
 7. **Error paths**: `dirichlet_cell`, zeta 0 and -1, an unknown "Face Sets" id and a
    reflective slanted face (`meshes/tri_slanted.msh`, set 12) all rejected.
+8. **The DSA** (`DSAPrecon`'s CG overload): the diffusion matrix against the
+   transport restricted onto an isotropic flux, `D phi = m R A P phi` for a random
+   phi, in a thick material (Sigma_t 50, so tau = 1/sigma_t everywhere) with an
+   UNBRIDGED painted void (the SUPG tensor there) and reflective faces on one
+   corner: <= 4.6e-16 on all four shapes at 1, 2 and 4 ranks (tol 1e-12). The
+   bridged voids' chord `4 V / S` against closed forms, to 1e-12: an interior block
+   of quads, the same block on the reflective left face (that side not in S), and a
+   hex block on the vacuum top (in S). All-reflective with no absorption refused.
 
 **Iteration counts** (28 Sep 2026, opt arch, default rtol; each `cg_*.json` is the
 twin of the `plex_*.json` of the same name). `-precon_block_scale` keeps its
@@ -1208,6 +1216,43 @@ which splits each count into what the discretisation costs and what AIR costs:
   agree to within a few percent, and the slab counts go up at zeta 2 (up to 14
   against 9). The diameter sits between the two. One iteration on the channel does
   not pay for that, so h_Omega stays.
+
+**The CG DSA** (28 Sep 2026, opt arch; `-precon_dsa`, one GAMG V-cycle; identical at
+1, 2 and 4 ranks on the diffusive boxes, tets, hex cube, decades4, reflect_lb and the
+void channel). "LU" is `-dsa_pc_type lu`; the last columns are variants measured and
+not adopted - the SUPG operator's own tensor as D everywhere, and Marshak's 1/2 in
+place of the half-range current on the vacuum faces:
+
+| recipe | none | DSA | DSA LU | DG0 twin DSA | SUPG-tensor D | Marshak 1/2 |
+|---|---|---|---|---|---|---|
+| `cg_box_50_st2` | 7 | 5 | 5 | 5 | 7 | 6 |
+| `cg_box_50_reflect_lb` | 6 | 4 | 4 | - | 5 | 4 |
+| `cg_tri_30_st2` | 5 | 4 | 4 | - | 4 | 4 |
+| `cg_cube_10_st2` | 6 | 5 | 5 | - | 5 | 5 |
+| `cg_tet_6_st2` | 5 | 4 | 4 | - | 4 | 4 |
+| `cg_square_msh` | 4 | 3 | 3 | - | 3 | 3 |
+| `cg_decades4` (per group) | 4, 7, 16, 41 | 4, 4, 5, 5 | 4, 4, 5, 4 | 4, 4, 5, 5 | 4, 4, 5, 5 | 4, 5, 5, 6 |
+| `cg_box_diffusive` | 39 | 5 | 4 | 5 | 5 | 6 |
+| `cg_tri_diffusive` | 35 | 5 | 4 | 5 | 5 | 7 |
+| `cg_cube_diffusive` | 48 (49 on the CI images) | 6 | 5 | 5 | 6 | - |
+| `cg_tet_diffusive` | 39 | 5 | 4 | 5 | 5 | - |
+| `cg_box_void_channel` | 47 | 8 | 8 | 6 | 7 | 8 |
+| `cg_slab_saaf_ls_void` | 4 | 4 | 4 | - | 4 | 4 |
+| `cg_slab_thin_thick` | 4 | 4 | 4 | - | 4 | 4 |
+
+(The Marshak and SUPG-tensor columns on the void channel were measured before the
+void bridge, with the SUPG tensor in the void.) With both inner solves exact
+(`-dsa_pc_type lu -precon_block_scale 0 -sub_1_pc_type lu`) CG ties DG0 on the
+diffusive boxes, triangles, cube and thin box (4 / 4 / 4 / 5 each) - the DSA is
+the transport's own restricted operator, so this was expected - but not on the
+void channel, 7 against 4: the gap there is the diffusion model with SUPG in
+the void, not an inner solve. Refining the diffusive boxes at fixed physics (25 /
+50 / 100 / 200 cells a side): quads 5 / 5 / 6 / 6, triangles 5 / 5 / 6 / 6 (no
+DSA 32-46). The void channel, unbridged (the SUPG tensor in the void), goes
+6 / 7 / 9 / 11 because h / zeta shrinks with the mesh; BRIDGED (the default, D =
+L / 3) it is 7 / 8 / 8 / 8. No fixed void D does better than 8 from 100 cells on
+(scanned 0.05-1, and the SUPG tensor plus a fixed D), so the chord stays - it is
+mesh-independent and the other backends' rule.
 
 `-diag_scale` on a scattering
 problem stalls (`cg_box_50_st2` does not converge in 500; the DG0 twin goes 7 ->

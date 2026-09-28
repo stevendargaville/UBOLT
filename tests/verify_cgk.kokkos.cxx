@@ -35,6 +35,12 @@
 //      printed at zeta 0.5 and 2
 //   7. Error paths: dirichlet_cell, a slanted reflective face, an unknown
 //      "Face Sets" id, zeta <= 0
+//   8. The DSA (DSAPrecon on this backend): its diffusion matrix is the
+//      transport operator restricted onto an isotropic flux, D phi = m R A P
+//      phi, to rounding (thick material + an unbridged void, where that is
+//      exactly the DSA's D), on every cell shape; the bridged voids' mean
+//      chord 4 V / S against closed forms (a reflective face not in S, a
+//      vacuum one in it); and all-reflective with no absorption refused
 //
 // Currently run with: make build_tests && ./verify_cgk
 
@@ -753,6 +759,175 @@ static PetscErrorCode CheckErrorPaths(PetscBool *ok)
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
+// Check 8a: the DSA diffusion matrix IS the transport operator restricted onto
+// an isotropic flux, D_diff phi = m R A P phi (P phi = phi / W on every
+// ordinate, R the weighted angular sum, m the lumped masses, A the whole
+// operator, scatter included), to rounding. Every odd-in-Omega part of A
+// cancels over the symmetric quadrature, the SUPG term leaves
+// (1/W) sum_a w_a tau_a Omega_a Omega_a^T : K, the removal minus the scatter
+// sigma_a M, the weak inflow the half-range current on the vacuum faces and
+// the reflective faces nothing. So it holds exactly where the DSA's D is that
+// tensor: in a material thick enough that tau = 1/sigma_t on every (element,
+// angle) - then it is 1/(3 sigma_t) I - and in an UNBRIDGED void, which keeps
+// the SUPG tensor (-dsa_void_bridge 0, set here)
+template <class Quad, class Box>
+static PetscErrorCode CheckDSAConsistency(const char *where, const PlexMeshSpec &mesh, const BCSpec &bcs, \
+   const std::vector<Box> &void_box, PetscBool *ok)
+{
+   CGProblem<Quad> p;
+   MaterialSpec mats;
+   DSAPrecon dsa;
+   Mat diff = NULL;
+   Vec phi = NULL, d_phi = NULL, psi = NULL, a_psi = NULL;
+   PetscRandom rand = NULL;
+   const PetscReal tol = 1e-12;
+
+   PetscFunctionBeginUser;
+
+   // tau = min(1 / sigma_t, h_Omega / zeta), h_Omega >= the smallest edge
+   // (1/6 x 0.7 on the quads, 1/3 on the hexes): sigma_t 50 is thick at
+   // zeta 0.5 on every mesh here
+   PetscCall(mats.create(2, 1));
+   PetscCall(mats.set_sigma_t(0, 0, 50.0));
+   PetscCall(mats.set_sigma_s(0, 0, 0, 30.0));
+   PetscCall(BuildCG(mesh, 4, bcs, 0.5, mats, void_box, p));
+
+   PetscCall(PetscOptionsSetValue(NULL, "-dsa_void_bridge", "0"));
+   PetscCall(dsa.create(PETSC_COMM_WORLD, p.ps, p.disc, p.quad, bcs));
+   PetscCall(PetscOptionsClearValue(NULL, "-dsa_void_bridge"));
+   PetscCall(dsa.set_group(p.xs.sigma_t(0), p.xs.sigma_s(0, 0)));
+   PetscCall(KSPGetOperators(dsa.ksp(), &diff, NULL));
+
+   PetscCall(MatCreateVecs(diff, &phi, &d_phi));
+   PetscCall(PetscRandomCreate(PETSC_COMM_WORLD, &rand));
+   PetscCall(PetscRandomSetInterval(rand, 0.5, 1.5));
+   PetscCall(VecSetRandom(phi, rand));
+   PetscCall(MatMult(diff, phi, d_phi));
+
+   // P phi, A P phi, and back through m R on the host
+   PetscCall(MatCreateVecs(p.op.assembled_mat(), &psi, &a_psi));
+   const PetscInt n_angles = p.quad.n_angles();
+   const PetscReal sum_w = PetscRealPart(p.quad.sum_weights());
+   auto w_h = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), p.quad.w_d());
+   {
+      const PetscScalar *phi_a = nullptr;
+      PetscScalar *psi_a = nullptr;
+      PetscCall(VecGetArrayRead(phi, &phi_a));
+      PetscCall(VecGetArrayWrite(psi, &psi_a));
+      for (PetscInt k = 0; k < p.ps.local_cells; k++) {
+         for (PetscInt a = 0; a < n_angles; a++) psi_a[k * n_angles + a] = phi_a[k] / sum_w;
+      }
+      PetscCall(VecRestoreArrayWrite(psi, &psi_a));
+      PetscCall(VecRestoreArrayRead(phi, &phi_a));
+   }
+   PetscCall(MatMult(p.op.mat(), psi, a_psi));
+   PetscReal err = 0.0, scale = 0.0;
+   {
+      const PetscScalar *a_psi_a = nullptr, *d_phi_a = nullptr;
+      PetscCall(VecGetArrayRead(a_psi, &a_psi_a));
+      PetscCall(VecGetArrayRead(d_phi, &d_phi_a));
+      const std::vector<PetscReal> &m = p.disc.lumped_mass_host();
+      for (PetscInt k = 0; k < p.ps.local_cells; k++) {
+         PetscScalar r = 0.0;
+         for (PetscInt a = 0; a < n_angles; a++) r += w_h(a, 0) * a_psi_a[k * n_angles + a];
+         err = PetscMax(err, PetscAbsScalar(m[k] * r - d_phi_a[k]));
+         scale = PetscMax(scale, PetscAbsScalar(d_phi_a[k]));
+      }
+      PetscCall(VecRestoreArrayRead(d_phi, &d_phi_a));
+      PetscCall(VecRestoreArrayRead(a_psi, &a_psi_a));
+   }
+   PetscCallMPI(MPIU_Allreduce(MPI_IN_PLACE, &err, 1, MPIU_REAL, MPIU_MAX, PETSC_COMM_WORLD));
+   PetscCallMPI(MPIU_Allreduce(MPI_IN_PLACE, &scale, 1, MPIU_REAL, MPIU_MAX, PETSC_COMM_WORLD));
+   const PetscReal rel = err / scale;
+
+   const PetscBool pass = (PetscBool)(rel <= tol && dsa.n_void_cells() > 0 && !dsa.bridged());
+   if (!pass) *ok = PETSC_FALSE;
+   PetscCall(PetscPrintf(PETSC_COMM_WORLD, "  DSA = m R A P, %s (%" PetscInt_FMT " void elements, unbridged): " \
+      "%.1e (tol %.0e)%s\n", where, dsa.n_void_cells(), (double)rel, (double)tol, pass ? "" : " FAILED"));
+
+   PetscCall(PetscRandomDestroy(&rand));
+   PetscCall(VecDestroy(&phi));
+   PetscCall(VecDestroy(&d_phi));
+   PetscCall(VecDestroy(&psi));
+   PetscCall(VecDestroy(&a_psi));
+   PetscCall(dsa.destroy());
+   PetscCall(DestroyCG(p));
+
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+// Check 8b: the bridged voids' mean chord, 4 V / S, against a painted block of
+// elements whose V and S are known in closed form - S over the faces onto
+// material and the VACUUM boundary only, never a reflective one. And the
+// singularity guard: all-reflective with no absorption is refused
+template <class Quad, class Box>
+static PetscErrorCode CheckDSAChord(const char *where, const PlexMeshSpec &mesh, const BCSpec &bcs, \
+   const std::vector<Box> &void_box, PetscReal expected, PetscBool *ok)
+{
+   CGProblem<Quad> p;
+   MaterialSpec mats;
+   DSAPrecon dsa;
+
+   PetscFunctionBeginUser;
+
+   PetscCall(mats.create(2, 1));
+   PetscCall(mats.set_sigma_t(0, 0, 2.0));
+   PetscCall(mats.set_sigma_s(0, 0, 0, 1.5));
+   PetscCall(BuildCG(mesh, 4, bcs, 0.5, mats, void_box, p));
+   PetscCall(dsa.create(PETSC_COMM_WORLD, p.ps, p.disc, p.quad, bcs));
+   PetscCall(dsa.set_group(p.xs.sigma_t(0), p.xs.sigma_s(0, 0)));
+
+   const PetscReal rel = PetscAbsReal(dsa.void_chord() - expected) / expected;
+   const PetscBool pass = (PetscBool)(dsa.bridged() && rel <= 1e-12);
+   if (!pass) *ok = PETSC_FALSE;
+   PetscCall(PetscPrintf(PETSC_COMM_WORLD, "  DSA void chord, %s: L %.6f against %.6f%s\n", where, \
+      (double)dsa.void_chord(), (double)expected, pass ? "" : " FAILED"));
+
+   PetscCall(dsa.destroy());
+   PetscCall(DestroyCG(p));
+
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+static PetscErrorCode CheckDSASingular(PetscBool *ok)
+{
+   CGProblem<SNQuadrature2D> p;
+   MaterialSpec mats;
+   DSAPrecon dsa;
+   BCSpec bcs;
+   PetscErrorCode ierr;
+
+   PetscFunctionBeginUser;
+
+   PlexMeshSpec box;
+   box.dimension = 2;
+   box.n_cells[0] = box.n_cells[1] = 3;
+   box.lengths[0] = box.lengths[1] = 1.0;
+   for (PetscInt f = 1; f <= 4; f++) bcs.set(f, BCType::REFLECT);
+   PetscCall(mats.create(1, 1));
+   PetscCall(mats.set_sigma_t(0, 0, 1.0));
+   PetscCall(mats.set_sigma_s(0, 0, 0, 1.0));
+   PetscCall(BuildCG(box, 2, bcs, 0.5, mats, std::vector<MaterialBox2D>(), p));
+   PetscCall(dsa.create(PETSC_COMM_WORLD, p.ps, p.disc, p.quad, bcs));
+   PetscCall(PetscPushErrorHandler(PetscReturnErrorHandler, NULL));
+   ierr = dsa.set_group(p.xs.sigma_t(0), p.xs.sigma_s(0, 0));
+   PetscCall(PetscPopErrorHandler());
+
+   const PetscBool pass = (PetscBool)(ierr != 0);
+   if (!pass) *ok = PETSC_FALSE;
+   PetscCall(PetscPrintf(PETSC_COMM_WORLD, "  DSA all-reflective, no absorption: %s%s\n", \
+      pass ? "rejected" : "accepted", pass ? "" : " FAILED"));
+
+   PetscCall(dsa.destroy());
+   PetscCall(DestroyCG(p));
+
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
 int main(int argc, char **args) {
 
    PetscBool ok = PETSC_TRUE;
@@ -872,6 +1047,58 @@ int main(int argc, char **args) {
    // 7. Error paths
    // ~~~~~~~~~~
    PetscCall(CheckErrorPaths(&ok));
+
+   // ~~~~~~~~~~
+   // 8. The DSA: m R A P, the void chord, the singular configuration
+   // ~~~~~~~~~~
+   {
+      BCSpec bcs_2d;
+      bcs_2d.set(StructuredFD2D::FACE_LEFT, BCType::REFLECT);
+      bcs_2d.set(StructuredFD2D::FACE_BOTTOM, BCType::REFLECT);
+      BCSpec bcs_3d;
+      bcs_3d.set(StructuredFD3D::FACE_LEFT, BCType::REFLECT);
+      bcs_3d.set(StructuredFD3D::FACE_FRONT, BCType::REFLECT);
+      bcs_3d.set(StructuredFD3D::FACE_BOTTOM, BCType::REFLECT);
+      // The quads are 1/6 x 0.7/6: this box paints the 2 x 2 elements of
+      // [1/3, 2/3] x [0.7/3, 0.7 * 2/3], all inside
+      std::vector<MaterialBox2D> void_2d(1);
+      void_2d[0].x0 = 0.3;
+      void_2d[0].x1 = 0.7;
+      void_2d[0].y0 = 0.2;
+      void_2d[0].y1 = 0.5;
+      void_2d[0].material = 1;
+      // The same block slid onto the reflective left face: [0, 1/3] x the
+      // same y, so the left side is not in S
+      std::vector<MaterialBox2D> void_2d_wall = void_2d;
+      void_2d_wall[0].x0 = 0.0;
+      void_2d_wall[0].x1 = 0.4;
+      // The hexes are 1/3 x 0.4 x 1.4/3: this box paints the 1 x 1 x 2
+      // elements of [1/3, 2/3] x [0.4, 0.8] x [1.4/3, 1.4], whose top is the
+      // (vacuum) top face - in S
+      std::vector<MaterialBox3D> void_3d(1);
+      void_3d[0].x0 = 0.3;
+      void_3d[0].x1 = 0.8;
+      void_3d[0].y0 = 0.3;
+      void_3d[0].y1 = 0.9;
+      void_3d[0].z0 = 0.5;
+      void_3d[0].z1 = 1.5;
+      void_3d[0].material = 1;
+
+      PetscCall(CheckDSAConsistency<SNQuadrature2D>("quads", quads, bcs_2d, void_2d, &ok));
+      if (have_tri) PetscCall(CheckDSAConsistency<SNQuadrature2D>("triangles", tris, bcs_2d, void_2d, &ok));
+      PetscCall(CheckDSAConsistency<SNQuadrature3D>("hexes", hexes, bcs_3d, void_3d, &ok));
+      if (have_tet) PetscCall(CheckDSAConsistency<SNQuadrature3D>("tets", tets, bcs_3d, void_3d, &ok));
+
+      const PetscReal a = 1.0 / 3.0, b = 0.7 / 3.0;
+      PetscCall(CheckDSAChord<SNQuadrature2D>("quads, interior block", quads, bcs_2d, void_2d, \
+         4.0 * a * b / (2.0 * (a + b)), &ok));
+      PetscCall(CheckDSAChord<SNQuadrature2D>("quads, block on a reflective face", quads, bcs_2d, void_2d_wall, \
+         4.0 * a * b / (2.0 * a + b), &ok));
+      const PetscReal x = 1.0 / 3.0, y = 0.4, z = 2.0 * 1.4 / 3.0;
+      PetscCall(CheckDSAChord<SNQuadrature3D>("hexes, block on the vacuum top", hexes, bcs_3d, void_3d, \
+         4.0 * x * y * z / (2.0 * (x * y + y * z + z * x)), &ok));
+      PetscCall(CheckDSASingular(&ok));
+   }
 
    if (!ok) PetscCall(PetscFPrintf(PETSC_COMM_WORLD, stderr, "CG-SUPG verification FAILED\n"));
    PetscCall(PetscFinalize());
