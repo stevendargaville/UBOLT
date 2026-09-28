@@ -5,6 +5,8 @@
 #include "ubolt/dsa.hpp"
 #include <petscksp.h>
 
+struct RemovalPCCtx;
+
 // KSP + the transport preconditioner: a multiplicative composite of a shell
 // preconditioner for the removal term (index 0: the inverse element blocks of
 // the operator - the point diagonal at n_basis 1, the cell-local block at
@@ -33,25 +35,19 @@ public:
    // applied matrix-free (and therefore absent from the assembled matrix) is
    // still in the blocks being inverted - see RemovalPCFillContext
    //
-   // dsa is optional and CALLER-OWNED: it must outlive the solver, and passing
-   // nullptr (the default) is exactly the preconditioner UBOLT had before DSA
-   // existed. Whoever passes one also drives it - DSAPrecon::set_group() is a
-   // per-group call the solver has no context to make, see refresh() below
+   // dsa is optional and CALLER-OWNED (nullptr: no DSA stage): it must outlive
+   // the solver, and whoever passes one also drives it - DSAPrecon::set_group()
+   // is a per-group call the solver has no context to make
    //
    // block_scale wraps the streaming stage (index 1) in the element-block
    // inverse: PCAIR is built on D^{-1} pmat and applied to D^{-1} x, D the
    // n_basis x n_basis (cell, angle) blocks of pmat (see ElementBlockInverse).
-   // It is a left scaling of what the multigrid sees and nothing else - the
-   // operator, the rhs, the residuals the KSP monitors and the other composite
-   // stages are all unchanged - so it is purely a preconditioner choice. What
-   // it buys: at DG1 the cell-local block has off-diagonals as large as the
-   // diagonal (the volume term), which PCAIR's strength of connection reads
-   // as strong couplings, and its coarsening stalls; once the blocks are the
-   // identity, the only couplings left are the upwind ones, as at DG0. At
-   // n_basis 1 D is pmat's diagonal, which makes PCAIR's view of pmat
-   // independent of any per-row scaling - a DG0 row's 1 / V_c included - and
-   // is the same code, so both DG orders take it. The inner PC keeps the
-   // sub_1_ prefix
+   // A left scaling of what the multigrid sees only - operator, rhs, monitored
+   // residuals and the other stages are unchanged. At DG1 the cell-local block
+   // has off-diagonals as large as its diagonal, which PCAIR's strength of
+   // connection reads as strong and its coarsening stalls on; scaled, only the
+   // upwind couplings are left, as at DG0. At n_basis 1 D is the diagonal. The
+   // inner PC keeps the sub_1_ prefix
    PetscErrorCode create(MPI_Comm comm, const TransportOperator &op, Mat pmat, \
       DSAPrecon *dsa = nullptr, PetscBool block_scale = PETSC_FALSE);
    PetscErrorCode destroy();
@@ -66,7 +62,8 @@ public:
    // pmat there is nothing to redo, since streaming does not depend on the
    // group). Neither does the DSA shell: its per-group refill is
    // DSAPrecon::set_group(), which needs the group's xsections and so belongs
-   // where the terms are re-pointed
+   // where the terms are re-pointed. With one solver per pmat (ref-shift bins)
+   // only the solver about to solve needs it
    PetscErrorCode refresh();
 
    PetscErrorCode solve(Vec b, Vec x);
@@ -79,6 +76,9 @@ private:
    // Not owned, and it must outlive the solver: the operator the removal PC
    // takes its blocks from, per group
    const TransportOperator *op_ = nullptr;
+   // The removal stage's context, kept so refresh() need not find it in the
+   // composite. Owned (and freed) by that stage's PC
+   RemovalPCCtx *removal_ = nullptr;
    KSPConvergedReason reason_ = KSP_CONVERGED_ITERATING;
 };
 

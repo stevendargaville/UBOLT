@@ -21,6 +21,13 @@ PetscErrorCode SUPGTermCG::create(const PhaseSpace &ps, const UnstructuredCG &di
    PetscFunctionReturn(PETSC_SUCCESS);
 }
 
+PetscErrorCode SUPGTermCG::set_group(const GroupXSections &xs, PetscInt g)
+{
+   PetscFunctionBeginUser;
+   set_sigma_t(xs.sigma_t(g));
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 // A free function rather than a local lambda (see docs/dev/kokkos.md). One
@@ -39,7 +46,7 @@ static void SUPGFillKernel(PetscScalarKokkosView out_d, bool diag_only, PetscSca
    PetscInt local_rows)
 {
    Kokkos::parallel_for(
-      Kokkos::RangePolicy<>(0, local_rows), KOKKOS_LAMBDA(PetscInt r) {
+      Kokkos::RangePolicy<>(PetscGetKokkosExecutionSpace(), 0, local_rows), KOKKOS_LAMBDA(PetscInt r) {
 
          const PetscInt k = r / n_angles;
          const PetscInt a = r % n_angles;
@@ -91,7 +98,7 @@ static void SUPGFillKernel(PetscScalarKokkosView out_d, bool diag_only, PetscSca
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 // This happens entirely on the device
-PetscErrorCode SUPGTermCG::assemble_add(PetscScalarKokkosView &coo_v_d) const
+PetscErrorCode SUPGTermCG::assemble_add(const PetscScalarKokkosView &coo_v_d) const
 {
    const UnstructuredCG &d = *disc_;
 
@@ -132,19 +139,19 @@ PetscErrorCode SUPGTermCG::add_diagonal(Vec diag) const
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 // The nodal scalar flux of the owned vertices into a nodal global Vec (its
-// local part is indexed by owned vertex, see UnstructuredCG)
-static PetscErrorCode NodalFromScalarFlux(const PetscScalar2DKokkosView &phi_d, PetscScalar scale, Vec nodal)
+// local part is indexed by owned vertex, see UnstructuredCG). Overwrites it all
+static PetscErrorCode NodalFromScalarFlux(const PetscScalar2DKokkosView &phi_d, Vec nodal)
 {
    PetscFunctionBeginUser;
 
    PetscScalarKokkosView n_d;
-   PetscCall(VecGetKokkosView(nodal, &n_d));
+   PetscCall(VecGetKokkosViewWrite(nodal, &n_d));
    const PetscInt n = (PetscInt)n_d.extent(0);
    PetscCheck(n == (PetscInt)phi_d.extent(0), PETSC_COMM_SELF, PETSC_ERR_ARG_INCOMP, \
       "a nodal Vec of %" PetscInt_FMT " vertices for %" PetscInt_FMT " owned vertices", n, (PetscInt)phi_d.extent(0));
    Kokkos::parallel_for(
-      Kokkos::RangePolicy<>(0, n), KOKKOS_LAMBDA(PetscInt i) { n_d(i) = scale * phi_d(i, 0); });
-   PetscCall(VecRestoreKokkosView(nodal, &n_d));
+      Kokkos::RangePolicy<>(PetscGetKokkosExecutionSpace(), 0, n), KOKKOS_LAMBDA(PetscInt i) { n_d(i) = phi_d(i, 0); });
+   PetscCall(VecRestoreKokkosViewWrite(nodal, &n_d));
 
    PetscFunctionReturn(PETSC_SUCCESS);
 }
@@ -161,6 +168,9 @@ PetscErrorCode ScatteringTermCG::create(const PhaseSpace &ps, const Unstructured
    // We allocate device memory below, and PETSc brings Kokkos up lazily
    PetscCall(PetscKokkosInitializeCheck());
    PetscCall(ps.check_decomposed());
+   PetscCheck(quad.n_angles() == ps.n_angles, PETSC_COMM_SELF, PETSC_ERR_ARG_INCOMP, \
+      "the quadrature has %" PetscInt_FMT " angles but the phase space has %" PetscInt_FMT, \
+      quad.n_angles(), ps.n_angles);
 
    disc_ = &disc;
    n_angles_ = ps.n_angles;
@@ -171,6 +181,13 @@ PetscErrorCode ScatteringTermCG::create(const PhaseSpace &ps, const Unstructured
    scalar_flux_d_ = PetscScalar2DKokkosView("scalar_flux_d", ps.local_nodes(), 1);
    PetscCall(disc.create_nodal_vecs(&phi_global_, &phi_local_));
 
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+PetscErrorCode ScatteringTermCG::set_group(const GroupXSections &xs, PetscInt g)
+{
+   PetscFunctionBeginUser;
+   set_group(xs.sigma_t(g), xs.sigma_s(g, g));
    PetscFunctionReturn(PETSC_SUCCESS);
 }
 
@@ -192,38 +209,48 @@ PetscErrorCode ScatteringTermCG::apply_add(Vec x, Vec y) const
    PetscFunctionBeginUser;
 
    PetscCall(UboltAngularIntegral(x, n_angles_, w_d_, scalar_flux_d_));
-   PetscCall(NodalFromScalarFlux(scalar_flux_d_, 1.0, phi_global_));
+   PetscCall(NodalFromScalarFlux(scalar_flux_d_, phi_global_));
    PetscCall(disc_->nodal_global_to_local(phi_global_, phi_local_));
    PetscCall(disc_->add_weighted_load(sigma_t_e_, sigma_s_e_, phi_local_, -1.0 / sum_weights_, y));
 
    PetscFunctionReturn(PETSC_SUCCESS);
 }
 
+
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 // GroupTransferCG
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 PetscErrorCode GroupTransferCG::create(const PhaseSpace &ps, const UnstructuredCG &disc, \
-   const AngularQuadrature &quad, const GroupXSections &xs)
+   const AngularQuadrature &quad, const GroupXSections &xs, const MaterialSpec &mats, \
+   const PetscIntKokkosView &mat_id_d)
 {
-   Vec unused_global = NULL;
+   Vec unused_local = NULL;
 
    PetscFunctionBeginUser;
 
    // We allocate device memory below, and PETSc brings Kokkos up lazily
    PetscCall(PetscKokkosInitializeCheck());
    PetscCall(ps.check_decomposed());
+   PetscCheck(quad.n_angles() == ps.n_angles, PETSC_COMM_SELF, PETSC_ERR_ARG_INCOMP, \
+      "the quadrature has %" PetscInt_FMT " angles but the phase space has %" PetscInt_FMT, \
+      quad.n_angles(), ps.n_angles);
+   PetscCheck((PetscInt)mat_id_d.extent(0) == disc.n_local_elements(), PETSC_COMM_SELF, PETSC_ERR_ARG_INCOMP, \
+      "material ids cover %" PetscInt_FMT " elements but there are %" PetscInt_FMT " local elements", \
+      (PetscInt)mat_id_d.extent(0), disc.n_local_elements());
 
    disc_ = &disc;
    xs_ = &xs;
    n_angles_ = ps.n_angles;
    sum_weights_ = quad.sum_weights();
    w_d_ = quad.w_d();
+   PetscCall(source_.create(mats, mat_id_d));
+   q_e_ = PetscScalarKokkosView("q_e", disc.n_local_elements());
    scalar_flux_d_ = PetscScalar2DKokkosView("scalar_flux_d", ps.local_nodes(), 1);
+   PetscCall(disc.create_nodal_vecs(&phi_global_, &unused_local));
+   PetscCall(VecDestroy(&unused_local));
    phi_.assign(ps.n_groups, NULL);
    phi_set_.assign(ps.n_groups, PETSC_FALSE);
-   PetscCall(disc.create_nodal_vecs(&unused_global, &phi_local_));
-   PetscCall(VecDestroy(&unused_global));
 
    PetscFunctionReturn(PETSC_SUCCESS);
 }
@@ -233,14 +260,25 @@ PetscErrorCode GroupTransferCG::destroy()
    PetscFunctionBeginUser;
 
    for (auto &v : phi_) PetscCall(VecDestroy(&v));
-   PetscCall(VecDestroy(&phi_local_));
+   PetscCall(VecDestroy(&phi_global_));
+
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+// Per group: two kernel launches, into persistent scratch
+PetscErrorCode GroupTransferCG::add_external(PetscInt g, Vec b) const
+{
+   PetscFunctionBeginUser;
+
+   PetscCall(source_.fill_entries(g, q_e_));
+   PetscCall(disc_->add_weighted_load(xs_->sigma_t(g), q_e_, NULL, 1.0 / sum_weights_, b));
 
    PetscFunctionReturn(PETSC_SUCCESS);
 }
 
 PetscErrorCode GroupTransferCG::set_scalar_flux(PetscInt g, Vec psi_g)
 {
-   Vec unused_local = NULL;
+   Vec unused_global = NULL;
 
    PetscFunctionBeginUser;
 
@@ -248,17 +286,18 @@ PetscErrorCode GroupTransferCG::set_scalar_flux(PetscInt g, Vec psi_g)
       "group %" PetscInt_FMT " out of range, n_groups is %" PetscInt_FMT, g, (PetscInt)phi_.size());
 
    if (!phi_[g]) {
-      PetscCall(disc_->create_nodal_vecs(&phi_[g], &unused_local));
-      PetscCall(VecDestroy(&unused_local));
+      PetscCall(disc_->create_nodal_vecs(&unused_global, &phi_[g]));
+      PetscCall(VecDestroy(&unused_global));
    }
    PetscCall(UboltAngularIntegral(psi_g, n_angles_, w_d_, scalar_flux_d_));
-   PetscCall(NodalFromScalarFlux(scalar_flux_d_, 1.0, phi_[g]));
+   PetscCall(NodalFromScalarFlux(scalar_flux_d_, phi_global_));
+   PetscCall(disc_->nodal_global_to_local(phi_global_, phi_[g]));
    phi_set_[g] = PETSC_TRUE;
 
    PetscFunctionReturn(PETSC_SUCCESS);
 }
 
-PetscErrorCode GroupTransferCG::add_source(PetscInt g_from, PetscInt g_to, Vec b) const
+PetscErrorCode GroupTransferCG::add_transfer(PetscInt g_from, PetscInt g_to, Vec b) const
 {
    PetscFunctionBeginUser;
 
@@ -269,67 +308,27 @@ PetscErrorCode GroupTransferCG::add_source(PetscInt g_from, PetscInt g_to, Vec b
       "no scalar flux cached for group %" PetscInt_FMT " - set_scalar_flux() must be called " \
       "when that group is solved, before anything scatters out of it", g_from);
 
-   PetscCall(disc_->nodal_global_to_local(phi_[g_from], phi_local_));
-   PetscCall(disc_->add_weighted_load(xs_->sigma_t(g_to), xs_->sigma_s(g_from, g_to), phi_local_, \
+   PetscCall(disc_->add_weighted_load(xs_->sigma_t(g_to), xs_->sigma_s(g_from, g_to), phi_[g_from], \
       1.0 / sum_weights_, b));
 
    PetscFunctionReturn(PETSC_SUCCESS);
 }
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-// The external source
+// The one-shot external source
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-static void FillElementSourceKernel(PetscScalarKokkosView q_e, PetscScalarKokkosView source_tab_d, \
-   PetscIntKokkosView mat_id_d, PetscInt n_groups, PetscInt g, PetscInt n_elem)
-{
-   Kokkos::parallel_for(
-      Kokkos::RangePolicy<>(0, n_elem), KOKKOS_LAMBDA(PetscInt e) {
-         q_e(e) = source_tab_d(mat_id_d(e) * n_groups + g);
-      });
-}
-
-PetscErrorCode UboltFillElementSource(const MaterialSpec &mats, const PetscIntKokkosView &mat_id_d, PetscInt g, \
-   PetscScalarKokkosView q_e)
-{
-   PetscFunctionBeginUser;
-
-   // We allocate device memory below, and PETSc brings Kokkos up lazily
-   PetscCall(PetscKokkosInitializeCheck());
-
-   PetscCheck(g >= 0 && g < mats.n_groups(), PETSC_COMM_SELF, PETSC_ERR_ARG_OUTOFRANGE, \
-      "group %" PetscInt_FMT " out of range, n_groups is %" PetscInt_FMT, g, mats.n_groups());
-   PetscCheck(q_e.extent(0) == mat_id_d.extent(0), PETSC_COMM_SELF, PETSC_ERR_ARG_INCOMP, \
-      "the destination holds %" PetscInt_FMT " elements but the material ids %" PetscInt_FMT, \
-      (PetscInt)q_e.extent(0), (PetscInt)mat_id_d.extent(0));
-
-   // The painted ids index the table, so check them against it
-   PetscIntKokkosView::host_mirror_type ids_h = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), mat_id_d);
-   for (size_t e = 0; e < ids_h.extent(0); e++) {
-      PetscCheck(ids_h(e) >= 0 && ids_h(e) < mats.n_materials(), PETSC_COMM_SELF, PETSC_ERR_ARG_OUTOFRANGE, \
-         "painted material index %" PetscInt_FMT " but the spec has %" PetscInt_FMT " materials", ids_h(e), \
-         mats.n_materials());
-   }
-
-   const std::vector<PetscScalar> &tab = mats.source_host();
-   PetscScalarKokkosView source_tab_d("source_tab_d", tab.size());
-   if (!tab.empty()) {
-      PetscScalarKokkosViewHostUnmanaged tab_h(const_cast<PetscScalar *>(tab.data()), tab.size());
-      Kokkos::deep_copy(source_tab_d, tab_h);
-   }
-   FillElementSourceKernel(q_e, source_tab_d, mat_id_d, mats.n_groups(), g, (PetscInt)q_e.extent(0));
-
-   PetscFunctionReturn(PETSC_SUCCESS);
-}
 
 PetscErrorCode UboltFillSourceCG(const UnstructuredCG &disc, const AngularQuadrature &quad, \
    const MaterialSpec &mats, const PetscIntKokkosView &mat_id_d, const PetscScalarKokkosView &sigma_t_e, \
    PetscInt g, Vec b)
 {
+   MaterialSourceTable table;
+
    PetscFunctionBeginUser;
 
+   PetscCall(table.create(mats, mat_id_d));
    PetscScalarKokkosView q_e("q_e", disc.n_local_elements());
-   PetscCall(UboltFillElementSource(mats, mat_id_d, g, q_e));
+   PetscCall(table.fill_entries(g, q_e));
    PetscCall(disc.add_weighted_load(sigma_t_e, q_e, NULL, 1.0 / quad.sum_weights(), b));
 
    PetscFunctionReturn(PETSC_SUCCESS);

@@ -1215,12 +1215,13 @@ run_tests_parallel:
 # Only do this deliberately - see ../docs/dev/testing.md
 # The full matrix: {default pc, precon_stream} x {sigma_t 0, 2}
 #                  x {np 1, 2} x {diag_scale off, on}
-# Capped at 200 iterations: ALL FOUR st=2 diag_scale configs are pathological
-# (they hit the cap or break down) and a 200-iteration residual history is a
-# strong enough fingerprint for refactor comparison
+# Capped at 200 iterations: the four st=2 diag_scale configs are slow or
+# pathological, and a 200-iteration residual history is a strong enough
+# fingerprint for refactor comparison
 #
-# None of those four converges, so the driver exits 1 on them by design - they
-# get a || true so the capture runs to completion
+# The default-pc pair converges (174 / 173 iterations); the precon_stream pair
+# hits the cap, so the driver exits 1 on it by design. All four lines carry a
+# || true so the capture runs to completion either way
 # ~~~~~~~~~~~
 BASE := -ksp_monitor -ksp_converged_reason -ksp_max_it 200
 capture_baselines:

@@ -13,15 +13,27 @@
 class PETSC_VISIBILITY_PUBLIC TransportOperator {
 public:
    // Any discretisation backend: everything used here (the slot maps, the
-   // Dirichlet mask, the preallocated matrices) is dimension-independent
-   PetscErrorCode create(MPI_Comm comm, const PhaseSpace &ps, const Discretisation &disc);
+   // Dirichlet mask, the preallocated matrices) is dimension-independent. The
+   // communicator and the phase space are the backend's. disc must outlive
+   // the operator
+   PetscErrorCode create(const Discretisation &disc);
    PetscErrorCode destroy();
 
    // A term's assembled()/matrix_free() answer is NOT read here - assemble()
    // partitions the terms every time it runs. So a term that can be either
    // (RemovalTerm::set_matrix_free) may be switched before or after it is
    // added, as long as it is before the first assemble()
+   //
+   // A term added through a const pointer is never re-pointed by set_group()
+   // - fine for one that does not depend on the group (streaming), and the
+   // caller's job otherwise
+   PetscErrorCode add_term(OperatorTerm *term);
    PetscErrorCode add_term(const OperatorTerm *term);
+
+   // Point every (non-const) term at group g's xsections - see
+   // OperatorTerm::set_group. Host-side pointer swaps only: an assembled
+   // term's new values land at the next assemble()
+   PetscErrorCode set_group(const GroupXSections &xs, PetscInt g);
 
    // Fill the assembled matrix from every assembled term and build the shell.
    // Values-only: the sparsity is preallocated once by the discretisation, so
@@ -63,6 +75,8 @@ private:
    PhaseSpace ps_;
    const Discretisation *disc_ = nullptr;
    std::vector<const OperatorTerm *> terms_;
+   // The terms added non-const, which set_group() reaches
+   std::vector<OperatorTerm *> group_terms_;
    // Rebuilt by every assemble(), never by add_term - see above
    std::vector<const OperatorTerm *> matrix_free_;
    // Shared COO values - every assembled term adds into this one array

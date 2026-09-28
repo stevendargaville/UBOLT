@@ -1,23 +1,26 @@
 #ifndef UBOLT_PLEX_COMMON_HPP
 #define UBOLT_PLEX_COMMON_HPP
 
-// The DMPlex plumbing the two unstructured backends share - UnstructuredDG
-// (cell dofs) and UnstructuredCG (vertex dofs): building and distributing the
-// mesh, reading point ownership and global offsets, the collective failure
-// idiom, the face helpers and the box painting kernel
+// The DMPlex helpers the two unstructured backends (and their PlexDiscretisation
+// base) share: building and distributing the mesh, point ownership, global
+// offsets and the layout check, the collective failure idiom, boundary-face
+// geometry and BC validation, and the painting kernels. Anything both plex
+// backends need belongs here
 //
-// INTERNAL: it lives under src/ so it can never enter the public include tree
-// (it is not a library interface, just two translation units' shared code).
-// Everything here is static inline (no unused-function warning in the TU that
-// skips a helper), so each TU gets its own copy; the Makefile
-// declares the two objects' dependency on it by hand
+// INTERNAL: it lives under src/ so it can never enter the public include tree.
+// Everything is static inline (no unused-function warning in a TU that skips
+// a helper), so each TU gets its own copy; the Makefile declares the objects'
+// dependency on it by hand
 
 #include "ubolt/types.hpp"
 #include "ubolt/bc_spec.hpp"
-#include "ubolt/unstructured_dg.hpp"
+#include "ubolt/phase_space.hpp"
+#include "ubolt/plex_discretisation.hpp"
 #include "petsc_kokkos.hpp"
 #include <petscdmplex.h>
 #include <petscsf.h>
+#include <cstdarg>
+#include <map>
 #include <vector>
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -26,8 +29,7 @@
 // that is not a leaf of the point SF. After a distribution with overlap the
 // local mesh also holds the neighbouring ranks' points across the partition
 // boundary, and those are the SF's leaves. An SF with no graph (one rank,
-// never distributed) has no leaves at all. Works on any stratum - cells for
-// the DG backend, vertices for the CG one
+// never distributed) has no leaves at all. Works on any stratum
 static inline PetscErrorCode MarkOwnedPoints(DM dm, PetscInt start, PetscInt end, std::vector<PetscInt> &owned)
 {
    PetscSF sf = NULL;
@@ -49,6 +51,21 @@ static inline PetscErrorCode MarkOwnedPoints(DM dm, PetscInt start, PetscInt end
    PetscFunctionReturn(PETSC_SUCCESS);
 }
 
+// The number of points in [start, end) owned over all ranks - collective
+static inline PetscErrorCode CountOwnedPoints(DM dm, MPI_Comm comm, PetscInt start, PetscInt end, PetscInt *n_global)
+{
+   std::vector<PetscInt> owned;
+   PetscInt n_owned = 0;
+
+   PetscFunctionBeginUser;
+
+   PetscCall(MarkOwnedPoints(dm, start, end, owned));
+   for (const PetscInt o : owned) n_owned += o;
+   PetscCallMPI(MPI_Allreduce(&n_owned, n_global, 1, MPIU_INT, MPI_SUM, comm));
+
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 // Build (or read) the mesh and distribute it with a one-cell overlap, under
@@ -60,8 +77,7 @@ static inline PetscErrorCode MarkOwnedPoints(DM dm, PetscInt start, PetscInt end
 //
 // As in the DMDA backends we deliberately do NOT call DMSetFromOptions: it
 // would expose -dm_plex_box_faces, -dm_refine and friends, any of which could
-// resize the mesh out from under the PhaseSpace that every other object is
-// about to be sized from
+// resize the mesh out from under the PhaseSpace
 static inline PetscErrorCode UboltCreatePlexMesh(MPI_Comm comm, const PlexMeshSpec &mesh, PetscBool use_cone, \
    PetscBool use_closure, DM *dm_out)
 {
@@ -160,16 +176,88 @@ static inline PetscErrorCode GlobalPointOffset(PetscSection gsec, PetscInt p, Pe
    PetscFunctionReturn(PETSC_SUCCESS);
 }
 
+// Check the DM's layout on one stratum (cells for DG, vertices for CG) is the
+// one everything downstream is written against - the sibling of the DMDA
+// backends' CheckDALayout, asserted rather than assumed:
+//   (i)   every point carries dof_per_point dof, and the global section agrees
+//         with the point SF about which points are owned,
+//   (ii)  walking the owned points in increasing POINT order, their offsets
+//         are rstart + k * dof_per_point - contiguous, dof inside a point
+//         in the section's order,
+//   (iii) the owned points over all ranks number n_global_expected.
+// (ii) is what makes "local unit k = the k-th owned point in point order" the
+// indexing every per-row kernel uses. PETSc builds the global section in point
+// order today; this is what stops a change there from surfacing as a wrong
+// answer
+static inline PetscErrorCode CheckPlexStratumLayout(DM dm, PetscSection gsec, PetscInt p_start, PetscInt p_end, \
+   const std::vector<PetscInt> &owned, PetscInt dof_per_point, PetscInt n_global_expected, const char *what, \
+   PetscInt *rstart_out)
+{
+   MPI_Comm comm = PetscObjectComm((PetscObject)dm);
+   PetscInt rstart = 0, rend = 0, n_global = 0, k = 0;
+   Vec gv = NULL;
+
+   PetscFunctionBeginUser;
+
+   // A transient global vector, only to read the ownership range - it never
+   // reaches the solve (see docs/dev/kokkos.md)
+   PetscCall(DMCreateGlobalVector(dm, &gv));
+   PetscCall(VecGetOwnershipRange(gv, &rstart, &rend));
+   PetscCall(VecDestroy(&gv));
+
+   for (PetscInt p = p_start; p < p_end; p++) {
+      PetscInt g = 0, dof = 0;
+      PetscBool is_owned = PETSC_FALSE;
+      PetscCall(GlobalPointOffset(gsec, p, &g, &is_owned));
+      PetscCall(PetscSectionGetDof(gsec, p, &dof));
+      // A ghost's dof is encoded as -(dof + 1) in a global section too
+      if (dof < 0) dof = -(dof + 1);
+      PetscCheck(dof == dof_per_point, PETSC_COMM_SELF, PETSC_ERR_PLIB, "%s %" PetscInt_FMT " carries %" \
+         PetscInt_FMT " dof, not %" PetscInt_FMT, what, p, dof, dof_per_point);
+      PetscCheck(is_owned == (PetscBool)(owned[p - p_start] != 0), PETSC_COMM_SELF, PETSC_ERR_PLIB, \
+         "the global section and the point SF disagree about who owns %s %" PetscInt_FMT, what, p);
+      if (!is_owned) continue;
+      PetscCheck(g == rstart + k * dof_per_point, PETSC_COMM_SELF, PETSC_ERR_PLIB, "owned %s %" PetscInt_FMT \
+         " (local %" PetscInt_FMT ") starts at global row %" PetscInt_FMT ", not the point-ordered %" PetscInt_FMT, \
+         what, p, k, g, rstart + k * dof_per_point);
+      k++;
+   }
+
+   PetscCheck(rend - rstart == k * dof_per_point, PETSC_COMM_SELF, PETSC_ERR_PLIB, "the DM owns %" PetscInt_FMT \
+      " rows but %" PetscInt_FMT " owned %s points x %" PetscInt_FMT " dof", rend - rstart, k, what, dof_per_point);
+   PetscCallMPI(MPI_Allreduce(&k, &n_global, 1, MPIU_INT, MPI_SUM, comm));
+   PetscCheck(n_global == n_global_expected, comm, PETSC_ERR_PLIB, "the mesh has %" PetscInt_FMT " %s points, " \
+      "the phase space %" PetscInt_FMT, n_global, what, n_global_expected);
+
+   if (rstart_out) *rstart_out = rstart;
+
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-// A boundary configuration create() cannot build (a reflective face that is
-// not axis-aligned, a reflection partner that is itself a boundary row, a
-// window of the wrong shape) is found by whichever rank owns the offending
-// point - but create() is collective, and a rank that returned early would
-// leave the others waiting in the next collective call. So the failure is
-// recorded, create() carries on to this point on every rank, and everybody
-// errors together: the rank that found it with its message, the rest pointing
-// at it
+// A configuration create() cannot build (a bad cell, a reflective face that is
+// not axis-aligned, a window of the wrong shape) is found by whichever rank
+// owns the offending point - but create() is collective, and a rank that
+// returned early would leave the others waiting in the next collective call.
+// So the first failure is recorded, create() carries on to a CollectiveFailure
+// on every rank, and everybody errors together: the rank that found it with
+// its message, the rest pointing at it
+static inline PetscErrorCode RecordFailure(PetscBool *failed, char *message, size_t len, const char *format, ...)
+{
+   va_list args;
+
+   PetscFunctionBeginUser;
+
+   if (*failed) PetscFunctionReturn(PETSC_SUCCESS);
+   *failed = PETSC_TRUE;
+   va_start(args, format);
+   PetscCall(PetscVSNPrintf(message, len, format, NULL, args));
+   va_end(args);
+
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
 static inline PetscErrorCode CollectiveFailure(MPI_Comm comm, PetscBool local_fail, const char *message)
 {
    PetscMPIInt local = local_fail ? 1 : 0, any = 0;
@@ -178,12 +266,14 @@ static inline PetscErrorCode CollectiveFailure(MPI_Comm comm, PetscBool local_fa
 
    PetscCallMPI(MPI_Allreduce(&local, &any, 1, MPI_INT, MPI_MAX, comm));
    PetscCheck(!local_fail, PETSC_COMM_SELF, PETSC_ERR_SUP, "%s", message);
-   PetscCheck(!any, comm, PETSC_ERR_SUP, "the unstructured backend cannot build this boundary " \
+   PetscCheck(!any, comm, PETSC_ERR_SUP, "the unstructured backend cannot build this mesh or boundary " \
       "configuration - another rank's error says why");
 
    PetscFunctionReturn(PETSC_SUCCESS);
 }
 
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+// Boundary faces
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 // The dominant axis of a face normal: the one its largest component is on,
@@ -198,6 +288,24 @@ static inline PetscInt DominantAxis(const PetscScalar *n, PetscInt dim)
    return best;
 }
 
+// The outward area-weighted normal nA of a face (area, centroid fcen and
+// PETSc's normal, whose sign is the mesh orientation) seen from a cell with
+// centroid cen: pointed out of the cell by the centroid test. False if the
+// normal is zero
+static inline bool OutwardAreaNormal(PetscInt dim, PetscReal area, const PetscReal normal[3], \
+   const PetscReal fcen[3], const PetscReal cen[3], PetscScalar nA[3])
+{
+   PetscReal norm = 0.0, outward = 0.0;
+   for (PetscInt d = 0; d < dim; d++) norm += normal[d] * normal[d];
+   norm = PetscSqrtReal(norm);
+   for (PetscInt d = 0; d < dim; d++) outward += normal[d] * (fcen[d] - cen[d]);
+   const PetscReal sign = (outward < 0.0) ? -1.0 : 1.0;
+   for (PetscInt d = 0; d < 3; d++) nA[d] = 0.0;
+   if (!(norm > 0.0)) return false;
+   for (PetscInt d = 0; d < dim; d++) nA[d] = sign * area * normal[d] / norm;
+   return true;
+}
+
 // Omega_a . nA_f - the upwind test. Written with the same terms in the same
 // order as the kernels in StreamingTermDG0, so the host classification and the
 // device fill agree on the sign; where they could not (|s| at rounding level on
@@ -206,6 +314,60 @@ static inline PetscInt DominantAxis(const PetscScalar *n, PetscInt dim)
 static inline PetscScalar FaceFlux(const PetscScalar *omega, PetscInt a, const PetscScalar *nA, PetscInt k)
 {
    return omega[3 * a] * nA[3 * k] + omega[3 * a + 1] * nA[3 * k + 1] + omega[3 * a + 2] * nA[3 * k + 2];
+}
+
+// A boundary face's BC must fit it: a window of dim - 1 tangential pairs (or
+// none), and a reflective face must be AXIS-ALIGNED - the mirror of an
+// ordinate in a general plane is not an ordinate of the set. Rank-local, so a
+// failure is recorded (see RecordFailure)
+static inline PetscErrorCode CheckBoundaryFaceBC(const BCSpec &bcs, PetscInt dim, PetscInt label, \
+   const PetscScalar nA[3], PetscInt axis, PetscReal area, PetscInt face_point, PetscBool *failed, char *message, \
+   size_t len)
+{
+   PetscFunctionBeginUser;
+
+   const BCFace bc = bcs.face(label);
+   if (bc.n_window_pairs != 0 && bc.n_window_pairs != dim - 1) PetscCall(RecordFailure(failed, message, len, \
+      "a %" PetscInt_FMT "D face takes %" PetscInt_FMT " tangential [lo, hi] window pairs, face set %" PetscInt_FMT \
+      " was given %" PetscInt_FMT, dim, dim - 1, label, bc.n_window_pairs));
+   if (bc.type == BCType::REFLECT && PetscAbsScalar(nA[axis]) < (1.0 - 1e-10) * area) \
+      PetscCall(RecordFailure(failed, message, len, "face %" PetscInt_FMT " (face set %" PetscInt_FMT ") is " \
+      "reflective but not axis-aligned - reflection maps an ordinate onto an ordinate only across a face normal " \
+      "to x, y or z", face_point, label));
+
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+// Every label the BCSpec names has to be on some boundary face of the mesh,
+// somewhere: a boundary condition on a "Face Sets" value no face carries is a
+// mistyped id that would otherwise leave a face silently cold. Collective - a
+// rank may see no boundary faces at all
+static inline PetscErrorCode CheckBCLabelsSeen(MPI_Comm comm, const BCSpec &bcs, const std::vector<PetscInt> &labels)
+{
+   PetscFunctionBeginUser;
+
+   for (const auto &entry : bcs.faces()) {
+      PetscMPIInt seen = 0, any = 0;
+      for (const PetscInt value : labels) {
+         if (value == entry.first) seen = 1;
+      }
+      PetscCallMPI(MPI_Allreduce(&seen, &any, 1, MPI_INT, MPI_MAX, comm));
+      PetscCheck(any, comm, PETSC_ERR_ARG_WRONG, "a boundary condition was given for \"Face Sets\" value %" \
+         PetscInt_FMT " but no boundary face of the mesh carries it", entry.first);
+   }
+
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+// A face centroid's coordinates along the axes other than the face's
+// (dominant) one, ascending - what its window is tested on. Returns how many
+static inline PetscInt FaceWindowCoords(const PetscReal *centroid, PetscInt axis, PetscInt dim, PetscReal t[2])
+{
+   PetscInt n_t = 0;
+   for (PetscInt d = 0; d < dim; d++) {
+      if (d != axis) t[n_t++] = centroid[d];
+   }
+   return n_t;
 }
 
 // Does a face whose centroid has these tangential coordinates let this face
@@ -227,15 +389,14 @@ static inline bool InWindow(const BCFace &face, const PetscReal *t, PetscInt n_t
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 // A free function rather than a local lambda: an extended device lambda can't
-// be defined inside another lambda. The boxes ride along as flat views -
-// 2 * dim (lo, hi) values per box, axis by axis - because a view of structs is
-// not one of the typedefs types.hpp allows
+// be defined inside another lambda. The boxes ride along flat
+// (UboltFlattenBoxes)
 static inline void PaintBoxesKernel(PetscIntKokkosView mat_id_d, PetscScalarKokkosView centroid_d, \
    PetscScalarKokkosView box_lohi_d, PetscIntKokkosView box_material_d, PetscInt n_boxes, \
    PetscInt dim, PetscInt n_cells)
 {
    Kokkos::parallel_for(
-      Kokkos::RangePolicy<>(0, n_cells), KOKKOS_LAMBDA(PetscInt c) {
+      Kokkos::RangePolicy<>(PetscGetKokkosExecutionSpace(), 0, n_cells), KOKKOS_LAMBDA(PetscInt c) {
 
          PetscInt m = mat_id_d(c);
          for (PetscInt b = 0; b < n_boxes; b++) {
@@ -280,46 +441,15 @@ static inline PetscErrorCode PaintFlatBoxes(MPI_Comm comm, PetscInt dim, PetscIn
    if (n_boxes > 0) {
       PetscScalarKokkosViewHostUnmanaged box_lohi_h(const_cast<PetscScalar *>(box_lohi.data()), 2 * dim * n_boxes);
       PetscIntKokkosViewHostUnmanaged box_material_h(const_cast<PetscInt *>(box_material.data()), n_boxes);
-      Kokkos::deep_copy(box_lohi_d, box_lohi_h);
-      Kokkos::deep_copy(box_material_d, box_material_h);
+      Kokkos::deep_copy(PetscGetKokkosExecutionSpace(), box_lohi_d, box_lohi_h);
+      Kokkos::deep_copy(PetscGetKokkosExecutionSpace(), box_material_d, box_material_h);
+      // The copies are asynchronous and the host boxes are the caller's
+      PetscGetKokkosExecutionSpace().fence();
    }
 
    PaintBoxesKernel(mat_id_d, centroid_d, box_lohi_d, box_material_d, n_boxes, dim, n_cells);
 
    PetscFunctionReturn(PETSC_SUCCESS);
-}
-
-// The boxes, flattened to 2 * dim (lo, hi) pairs per box, axis by axis
-static inline void FlattenBoxes(const std::vector<MaterialBox2D> &boxes, std::vector<PetscScalar> &box_lohi, \
-   std::vector<PetscInt> &box_material)
-{
-   const PetscInt n_boxes = (PetscInt)boxes.size();
-   box_lohi.resize(4 * n_boxes);
-   box_material.resize(n_boxes);
-   for (PetscInt b = 0; b < n_boxes; b++) {
-      box_lohi[4 * b]     = boxes[b].x0;
-      box_lohi[4 * b + 1] = boxes[b].x1;
-      box_lohi[4 * b + 2] = boxes[b].y0;
-      box_lohi[4 * b + 3] = boxes[b].y1;
-      box_material[b] = boxes[b].material;
-   }
-}
-
-static inline void FlattenBoxes(const std::vector<MaterialBox3D> &boxes, std::vector<PetscScalar> &box_lohi, \
-   std::vector<PetscInt> &box_material)
-{
-   const PetscInt n_boxes = (PetscInt)boxes.size();
-   box_lohi.resize(6 * n_boxes);
-   box_material.resize(n_boxes);
-   for (PetscInt b = 0; b < n_boxes; b++) {
-      box_lohi[6 * b]     = boxes[b].x0;
-      box_lohi[6 * b + 1] = boxes[b].x1;
-      box_lohi[6 * b + 2] = boxes[b].y0;
-      box_lohi[6 * b + 3] = boxes[b].y1;
-      box_lohi[6 * b + 4] = boxes[b].z0;
-      box_lohi[6 * b + 5] = boxes[b].z1;
-      box_material[b] = boxes[b].material;
-   }
 }
 
 // "Cell Sets" label value -> material, over the given cell points (any
@@ -361,7 +491,9 @@ static inline PetscErrorCode PaintCellSets(DM dm, MPI_Comm comm, PetscInt backgr
 
    mat_id_d = PetscIntKokkosView("mat_id_d", n_cells);
    PetscIntKokkosViewHostUnmanaged mat_id_h(mat_id.data(), n_cells);
-   Kokkos::deep_copy(mat_id_d, mat_id_h);
+   Kokkos::deep_copy(PetscGetKokkosExecutionSpace(), mat_id_d, mat_id_h);
+   // The copy is asynchronous and mat_id dies here
+   PetscGetKokkosExecutionSpace().fence();
 
    PetscFunctionReturn(PETSC_SUCCESS);
 }

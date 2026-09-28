@@ -1,219 +1,9 @@
 #include "ubolt/structured_fd_2d.hpp"
-#include "petsc_kokkos.hpp"
-#include <petscdmda.h>
+#include "structured_fd_commonk.hpp"
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-// Build a 2D DMDA over the cells: one dof per angle, star stencil of width 1
-// because the upwind operator reaches one neighbour per axis and never a corner
-//
-// As in 1D we deliberately do NOT call DMSetFromOptions - it would expose
-// -da_grid_x/-da_grid_y, which could resize the mesh out from under the
-// PhaseSpace that every other object has already been sized from
-//
-// The DM chooses the 2D processor decomposition (m = n = PETSC_DECIDE) as well
-// as the split within it, and the PhaseSpace is told what it decided
-static PetscErrorCode CreateDA(MPI_Comm comm, const PhaseSpace &ps, PetscInt n_cells_x, PetscInt n_cells_y, DM *da)
-{
-   PetscFunctionBeginUser;
-
-   PetscCall(DMDACreate2d(comm, DM_BOUNDARY_NONE, DM_BOUNDARY_NONE, DMDA_STENCIL_STAR, \
-      n_cells_x, n_cells_y, PETSC_DECIDE, PETSC_DECIDE, ps.n_angles, 1, NULL, NULL, da));
-   PetscCall(DMSetUp(*da));
-
-   PetscFunctionReturn(PETSC_SUCCESS);
-}
-
-// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-// Where a ghosted local node's dof sits in the DM's GLOBAL numbering
-//
-// This is the piece 1D did not need. A 1D DMDA numbers globally in the natural
-// order, so the row of (cell, angle) was arithmetic. A 2D DMDA does not: it
-// numbers each rank's patch contiguously, lexicographically WITHIN the patch,
-// so the natural (j * n_cells_x + i) ordering is wrong the moment there is more
-// than one rank in a direction. The local-to-global map is the authority, and
-// it covers the ghost nodes too, which is what lets a column point into a
-// neighbouring rank's patch
-//
-// (i, j) are GLOBAL grid coordinates and must lie in the ghosted patch
-static inline PetscInt GlobalDof(const PetscInt *ltog, PetscInt i, PetscInt j, PetscInt a, \
-   PetscInt gxs, PetscInt gys, PetscInt gxm, PetscInt dof)
-{
-   return ltog[((j - gys) * gxm + (i - gxs)) * dof + a];
-}
-
-// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-// Check the DM's layout is the one everything downstream is written against
-//
-// Not a copy of the 1D check: the property that holds in 2D is weaker. What we
-// need, and what this asserts, is
-//   (i)  the sizes agree with the phase space,
-//   (ii) the dof of a node are contiguous and angle-fastest,
-//   (iii) this rank's owned nodes are numbered contiguously from its rstart in
-//         the PATCH's OWN lexicographic order.
-// (iii) is what makes "local cell index = (j - ys) * xm + (i - xs)" true, which
-// is the indexing the per-cell xsection views and RemovalTerm's r / n_angles
-// both rely on. It is NOT the global natural ordering, and asserting it here is
-// what stops that difference from surfacing as a wrong answer
-static PetscErrorCode CheckDALayout(DM da, const PhaseSpace &ps, const PetscInt *ltog, \
-   PetscInt xs, PetscInt ys, PetscInt xm, PetscInt ym, PetscInt gxs, PetscInt gys, PetscInt gxm)
-{
-   const PetscInt dof = ps.n_angles;
-   PetscInt dm_x = 0, dm_y = 0, dm_dof = 0, rstart = 0, rend = 0;
-   Vec gv;
-
-   PetscFunctionBeginUser;
-
-   PetscCall(DMDAGetInfo(da, NULL, &dm_x, &dm_y, NULL, NULL, NULL, NULL, &dm_dof, \
-      NULL, NULL, NULL, NULL, NULL));
-   PetscCheck(dm_x * dm_y == ps.n_cells && dm_dof == ps.n_angles, PetscObjectComm((PetscObject)da), \
-      PETSC_ERR_PLIB, "DMDA is %" PetscInt_FMT " x %" PetscInt_FMT " cells x %" PetscInt_FMT \
-      " dof, phase space is %" PetscInt_FMT " cells x %" PetscInt_FMT, dm_x, dm_y, dm_dof, \
-      ps.n_cells, ps.n_angles);
-
-   PetscCall(DMCreateGlobalVector(da, &gv));
-   PetscCall(VecGetOwnershipRange(gv, &rstart, &rend));
-   PetscCall(VecDestroy(&gv));
-   PetscCheck(rend - rstart == xm * ym * dof, PetscObjectComm((PetscObject)da), PETSC_ERR_PLIB, \
-      "DMDA owns %" PetscInt_FMT " rows but its corners say %" PetscInt_FMT " nodes x %" \
-      PetscInt_FMT " dof", rend - rstart, xm * ym, dof);
-
-   // Walk the owned patch in the order we are about to call local cell order
-   for (PetscInt j = ys; j < ys + ym; j++) {
-      for (PetscInt i = xs; i < xs + xm; i++) {
-         const PetscInt local_cell = (j - ys) * xm + (i - xs);
-         for (PetscInt a = 0; a < dof; a++) {
-            const PetscInt expected = rstart + local_cell * dof + a;
-            const PetscInt got = GlobalDof(ltog, i, j, a, gxs, gys, gxm, dof);
-            PetscCheck(got == expected, PetscObjectComm((PetscObject)da), PETSC_ERR_PLIB, \
-               "DMDA numbers node (%" PetscInt_FMT ", %" PetscInt_FMT ") angle %" PetscInt_FMT \
-               " globally as %" PetscInt_FMT ", not the patch-lexicographic angle-fastest %" \
-               PetscInt_FMT, i, j, a, got, expected);
-         }
-      }
-   }
-
-   PetscFunctionReturn(PETSC_SUCCESS);
-}
-
-// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-// GHOST is the VacuumTreatment::GHOST_FLUX counterpart of DIRICHLET and
-// REFLECT: the same rows, but kept as ordinary unknowns. Each outside-pointing
-// upwind slot takes the ghost value its face supplies - nulled with the inflow
-// moved to the rhs on a vacuum face, pointed at the mirrored angle in the same
-// cell on a reflective one - face by face, so a mixed corner needs no
-// precedence rule
-enum class RowKind { INTERIOR, DIRICHLET, REFLECT, GHOST };
-
-// The upwind neighbour is behind the direction on each axis: to the left/below
-// for a positive cosine, to the right/above for a negative one. A zero cosine
-// has no upwind neighbour on that axis at all
-struct Upwind {
-   PetscInt upwind_i = 0;
-   PetscInt upwind_j = 0;
-   PetscBool has_x = PETSC_FALSE;
-   PetscBool has_y = PETSC_FALSE;
-};
-
-// Classify one (node, angle) row - filling in its upwind neighbours as the
-// side product, so the sign convention above is stated once - and for a
-// reflective row say which angle it couples to, for a Dirichlet one which face
-// it came in through
-//
-// The label decides only which BC family each face belongs to; whether a row
-// is a boundary row at all is the physics - the existing upwind test, which is
-// the sign of the direction against the face. A direction incoming through no
-// face is an interior unknown. If ANY incoming face is vacuum the row is
-// Dirichlet - vacuum wins at mixed corners - else the direction reflects in
-// every incoming axis: a corner between two reflective faces flips both
-// cosines, which is still one partner angle and so one column
-//
-// At a corner incoming through TWO vacuum faces the winning face - the one
-// whose inflow and window the rhs takes - is the x face, the first vacuum
-// incoming face in the axis order this function already checks
-//
-// Under ghost-flux every row incoming through any face is GHOST, and per
-// outside axis ghost_face says which vacuum face supplies the inflow or
-// ghost_mirror which angle a reflective face mirrors it to (-1 otherwise)
-static RowKind ClassifyRow(PetscInt i, PetscInt j, PetscInt a, \
-   const PetscScalar *mu, const PetscScalar *eta, PetscInt n_cells_x, PetscInt n_cells_y, \
-   BCType left, BCType right, BCType bottom, BCType top, \
-   const PetscInt *reflect_mu, const PetscInt *reflect_eta, Upwind *upwind, PetscInt *partner, \
-   PetscInt *dirichlet_face, PetscBool ghost = PETSC_FALSE, PetscInt *ghost_face = nullptr, \
-   PetscInt *ghost_mirror = nullptr)
-{
-   upwind->upwind_i = (mu[a] > 0) ? i - 1 : ((mu[a] < 0) ? i + 1 : i);
-   upwind->upwind_j = (eta[a] > 0) ? j - 1 : ((eta[a] < 0) ? j + 1 : j);
-   upwind->has_x = (PetscBool)(mu[a] != 0.0);
-   upwind->has_y = (PetscBool)(eta[a] != 0.0);
-   const PetscBool x_outside = (PetscBool)(upwind->has_x && \
-      (upwind->upwind_i < 0 || upwind->upwind_i >= n_cells_x));
-   const PetscBool y_outside = (PetscBool)(upwind->has_y && \
-      (upwind->upwind_j < 0 || upwind->upwind_j >= n_cells_y));
-
-   *partner = -1;
-   *dirichlet_face = -1;
-   if (ghost_face) { ghost_face[0] = -1; ghost_face[1] = -1; }
-   if (ghost_mirror) { ghost_mirror[0] = -1; ghost_mirror[1] = -1; }
-   if (!x_outside && !y_outside) return RowKind::INTERIOR;
-
-   // Which face the direction comes in through on each outside axis
-   const BCType x_bc = (mu[a] > 0) ? left : right;
-   const BCType y_bc = (eta[a] > 0) ? bottom : top;
-
-   // Under the ghost-flux treatment each incoming face supplies its own ghost
-   // value - the inflow on a vacuum face, the mirrored angle in this cell on a
-   // reflective one - so a mixed corner takes both: the old "reflect wins"
-   // precedence mirrored such a row over the vacuum axis too, and the corner
-   // cell never saw that face's inflow, an O(1) error that did not shrink
-   // with h
-   if (ghost) {
-      if (x_outside) {
-         if (x_bc == BCType::REFLECT) { if (ghost_mirror) ghost_mirror[0] = reflect_mu[a]; }
-         else if (ghost_face) ghost_face[0] = (mu[a] > 0) ? StructuredFD2D::FACE_LEFT : \
-            StructuredFD2D::FACE_RIGHT;
-      }
-      if (y_outside) {
-         if (y_bc == BCType::REFLECT) { if (ghost_mirror) ghost_mirror[1] = reflect_eta[a]; }
-         else if (ghost_face) ghost_face[1] = (eta[a] > 0) ? StructuredFD2D::FACE_BOTTOM : \
-            StructuredFD2D::FACE_TOP;
-      }
-      return RowKind::GHOST;
-   }
-   if (x_outside && x_bc == BCType::VACUUM) {
-      *dirichlet_face = (mu[a] > 0) ? StructuredFD2D::FACE_LEFT : StructuredFD2D::FACE_RIGHT;
-      return RowKind::DIRICHLET;
-   }
-   if (y_outside && y_bc == BCType::VACUUM) {
-      *dirichlet_face = (eta[a] > 0) ? StructuredFD2D::FACE_BOTTOM : StructuredFD2D::FACE_TOP;
-      return RowKind::DIRICHLET;
-   }
-
-   PetscInt ap = a;
-   if (x_outside) ap = reflect_mu[ap];
-   if (y_outside) ap = reflect_eta[ap];
-   *partner = ap;
-   return RowKind::REFLECT;
-}
-
-// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-// Does a boundary cell whose centre sits at tangential coordinate t let this
-// face's inflow in? An unwindowed face lets it in everywhere; a windowed one
-// is inclusive at both ends, the same membership test PaintBoxesKernel uses
-static inline bool InWindow(const BCFace &face, PetscScalar t)
-{
-   return face.n_window_pairs == 0 || \
-      (PetscRealPart(t) >= face.window[0] && PetscRealPart(t) <= face.window[1]);
-}
-
-// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-// Build the COO sparsity and the slot maps
-// This happens on the host but we only need to do it once
+// Build the DMDA, the COO sparsity and the slot maps - on the host, once
 PetscErrorCode StructuredFD2D::create(MPI_Comm comm, PhaseSpace &ps, PetscInt n_cells_x, PetscInt n_cells_y, \
    PetscReal length_x, PetscReal length_y, const SNQuadrature2D &quad, const BCSpec &bcs)
 {
@@ -239,298 +29,65 @@ PetscErrorCode StructuredFD2D::create(MPI_Comm comm, PhaseSpace &ps, PetscInt n_
    dx_ = length_x / n_cells_x;
    dy_ = length_y / n_cells_y;
 
-   const PetscInt n_angles = ps.n_angles;
-   const PetscScalar *mu = quad.mu_host();
-   const PetscScalar *eta = quad.eta_host();
+   // One dof per angle, star stencil of width 1 (one neighbour per axis). No
+   // DMSetFromOptions: -da_grid_x/y could resize the mesh out from under the
+   // PhaseSpace. The DM chooses the processor decomposition and the
+   // PhaseSpace is told what it decided
+   PetscCall(DMDACreate2d(comm, DM_BOUNDARY_NONE, DM_BOUNDARY_NONE, DMDA_STENCIL_STAR, \
+      n_cells_x, n_cells_y, PETSC_DECIDE, PETSC_DECIDE, ps.n_angles, 1, NULL, NULL, &dm_));
+   PetscCall(DMSetUp(dm_));
 
-   // The DM decides the parallel decomposition, so building it has to come
-   // before anything that reads local_cells - starting with the PhaseSpace,
-   // which we fill in rather than read
-   PetscInt xs = 0, ys = 0, xm = 0, ym = 0;
-   PetscInt gxs = 0, gys = 0, gxm = 0;
-   PetscCall(CreateDA(comm, ps, n_cells_x, n_cells_y, &dm_));
-   // DMDAGetCorners divides the dof back out, so these come out in cells
-   PetscCall(DMDAGetCorners(dm_, &xs, &ys, NULL, &xm, &ym, NULL));
-   // The ghosted patch is what the local-to-global map is indexed over. With
-   // DM_BOUNDARY_NONE it is clipped at the physical boundary, so a node just
-   // outside the box is not in it at all - which is fine: a Dirichlet row
-   // never asks for a column, and the column a reflective row asks for is its
-   // own cell's mirrored angle, an owned node
-   PetscCall(DMDAGetGhostCorners(dm_, &gxs, &gys, NULL, &gxm, NULL, NULL));
-   cell_start_x_ = xs;
-   cell_start_y_ = ys;
-   local_cells_x_ = xm;
-   local_cells_y_ = ym;
-   ps.local_cells = xm * ym;
+   const PetscInt n[2] = {n_cells_x, n_cells_y};
+   DAPatch<2> patch;
+   PetscCall(GetDAPatch<2>(dm_, n, &patch));
+   cell_start_x_ = patch.start[0];
+   cell_start_y_ = patch.start[1];
+   local_cells_x_ = patch.m[0];
+   local_cells_y_ = patch.m[1];
+   ps.local_cells = patch.local_cells();
 
-   // The DM owns the mesh, so it carries the node positions too: node (i, j)
-   // sits at (i dx, j dy), the same convention the closed-form check in
-   // tests/verify_2dk.kokkos.cxx uses. Nothing in the solve reads these - they
-   // are for output (the scalar flux VTK writer picks them up). A direction
-   // with a single node has no spacing to define and PETSc would divide by
-   // n - 1, so that degenerate grid keeps no coordinates
+   // Node (i, j) sits at (i dx, j dy), for output only (the VTK writer). A
+   // single-node direction has no spacing (PETSc would divide by n - 1), so
+   // that degenerate grid keeps no coordinates
    if (n_cells_x > 1 && n_cells_y > 1) PetscCall(DMDASetUniformCoordinates(dm_, \
       0.0, length_x - length_x / n_cells_x, 0.0, length_y - length_y / n_cells_y, 0.0, 0.0));
 
    PetscCall(DMGetLocalToGlobalMapping(dm_, &ltog_map));
    PetscCall(ISLocalToGlobalMappingGetIndices(ltog_map, &ltog));
-   PetscCall(CheckDALayout(dm_, ps, ltog, xs, ys, xm, ym, gxs, gys, gxm));
+   PetscCall(CheckDALayout<2>(dm_, ps, ltog, patch));
 
    ps_ = ps;
-   const PetscInt local_rows = ps.local_rows();
 
-   // ~~~~~~~~~~
-   // COO coordinates - three entries per row, in slot order
-   // upwind-x, upwind-y, diagonal
-   // ~~~~~~~~~~
-   // A -1 row/col index in the COO format says just ignore this entry. Rows
-   // that should not have one of these entries - a Dirichlet boundary row, or
-   // a direction with no component along that axis - keep the slot and hand
-   // the preallocation a -1, so the value fills never branch. A reflective
-   // boundary row instead repurposes its first slot for the coupling to the
-   // mirrored angle
-   oor_.assign(3 * local_rows, 0);
-   ooc_.assign(3 * local_rows, 0);
-   std::vector<PetscInt> is_bc_row(local_rows, 0);
-   std::vector<PetscInt> reflect_slot(local_rows, -1);
-   std::vector<PetscScalar> dirichlet_value(local_rows, 0.0);
-   std::vector<PetscScalar> ghost_inflow(local_rows, 0.0);
-   const PetscBool ghost = bcs.ghost_flux_vacuum();
-
-   // A 2D face is a line, so it takes one tangential [lo, hi] pair. The
-   // per-angle rhs value is the face's angle-integrated inflow shared out over
-   // the ordinates, exactly as UboltFillSource shares a material's Source, so
-   // the same number means the same physics in any dimension
-   const BCFace face_of[4] = {bcs.face(FACE_LEFT), bcs.face(FACE_RIGHT), \
-                              bcs.face(FACE_BOTTOM), bcs.face(FACE_TOP)};
-   const PetscInt face_id[4] = {FACE_LEFT, FACE_RIGHT, FACE_BOTTOM, FACE_TOP};
-   PetscScalar face_value[4];
-   for (PetscInt f = 0; f < 4; f++) {
-      PetscCheck(face_of[f].n_window_pairs == 0 || face_of[f].n_window_pairs == 1, comm_, \
-         PETSC_ERR_ARG_WRONG, "a 2D face takes one tangential [lo, hi] window pair, face %" \
-         PetscInt_FMT " was given %" PetscInt_FMT, face_id[f], face_of[f].n_window_pairs);
-      face_value[f] = (PetscScalar)face_of[f].inflow / quad.sum_weights();
-   }
-
-   const BCType left   = face_of[0].type;
-   const BCType right  = face_of[1].type;
-   const BCType bottom = face_of[2].type;
-   const BCType top    = face_of[3].type;
-   const PetscInt *reflect_mu = quad.reflect_mu_host();
-   const PetscInt *reflect_eta = quad.reflect_eta_host();
-
-   for (PetscInt j = ys; j < ys + ym; j++) {
-      for (PetscInt i = xs; i < xs + xm; i++) {
-
-         const PetscInt local_cell = (j - ys) * xm + (i - xs);
-
-         for (PetscInt a = 0; a < n_angles; a++) {
-
-            const PetscInt r = local_cell * n_angles + a;
-            const PetscInt row = GlobalDof(ltog, i, j, a, gxs, gys, gxm, n_angles);
-
-            // An inflow row - this direction enters the box through a face
-            // this node is on - has its equation replaced by the boundary
-            // condition: the identity on a Dirichlet (vacuum) row, the
-            // reflection condition psi(a) - psi(partner) = 0 on a reflective
-            // one. Corner nodes classify through either axis
-            Upwind upwind;
-            PetscInt partner = -1, dirichlet_face = -1, ghost_face[2] = {-1, -1}, ghost_mirror[2] = {-1, -1};
-            const RowKind kind = ClassifyRow(i, j, a, mu, eta, n_cells_x, n_cells_y, \
-               left, right, bottom, top, reflect_mu, reflect_eta, &upwind, &partner, \
-               &dirichlet_face, ghost, ghost_face, ghost_mirror);
-            // A GHOST row is an ordinary unknown - it carries no boundary
-            // condition in the matrix, only a nulled or mirrored slot per
-            // outside axis
-            if (kind != RowKind::INTERIOR && kind != RowKind::GHOST) is_bc_row[r] = 1;
-
-            if (kind == RowKind::GHOST)
-            {
-               // One rhs contribution per vacuum face this direction enters
-               // through - a corner cell gets both - each the axis coefficient
-               // |cosine| / h times that face's per-angle inflow, windowed by
-               // the cell's tangential centre coordinate the same way a
-               // Dirichlet row's is
-               const PetscScalar coef[2] = {PetscAbsScalar(mu[a]) / dx_, \
-                                            PetscAbsScalar(eta[a]) / dy_};
-               for (PetscInt axis = 0; axis < 2; axis++) {
-                  if (ghost_face[axis] < 0) continue;
-                  for (PetscInt f = 0; f < 4; f++) {
-                     if (face_id[f] != ghost_face[axis]) continue;
-                     const PetscScalar t = (axis == 0) ? ((PetscScalar)j + 0.5) * dy_ \
-                                                       : ((PetscScalar)i + 0.5) * dx_;
-                     if (InWindow(face_of[f], t)) ghost_inflow[r] += coef[axis] * face_value[f];
-                  }
-               }
-            }
-
-            if (kind == RowKind::DIRICHLET)
-            {
-               // The rhs takes the winning face's inflow, restricted to its
-               // window by the boundary cell's tangential centre coordinate -
-               // node (i, j) sits at (i dx, j dy), the same centre formula
-               // PaintBoxesKernel uses
-               for (PetscInt f = 0; f < 4; f++) {
-                  if (face_id[f] != dirichlet_face) continue;
-                  const PetscScalar t = (dirichlet_face == FACE_LEFT || dirichlet_face == FACE_RIGHT) ? \
-                     ((PetscScalar)j + 0.5) * dy_ : ((PetscScalar)i + 0.5) * dx_;
-                  dirichlet_value[r] = InWindow(face_of[f], t) ? face_value[f] : (PetscScalar)0.0;
-               }
-            }
-
-            if (kind == RowKind::REFLECT)
-            {
-               // The partner is outgoing through every face this direction
-               // came in through, so its row is a real unknown - unless a
-               // direction of the grid is a single cell wide and the opposite
-               // face catches it, which there is no sensible matrix for
-               Upwind upwind2;
-               PetscInt partner2 = -1, dirichlet_face2 = -1;
-               PetscCheck(ClassifyRow(i, j, partner, mu, eta, n_cells_x, n_cells_y, \
-                  left, right, bottom, top, reflect_mu, reflect_eta, &upwind2, &partner2, \
-                  &dirichlet_face2) == RowKind::INTERIOR, \
-                  comm, PETSC_ERR_SUP, "the reflection partner of node (%" PetscInt_FMT ", %" \
-                  PetscInt_FMT ") angle %" PetscInt_FMT " is itself a boundary row - a reflective " \
-                  "face on a single-cell-wide direction is not supported", i, j, a);
-
-               // Same cell, mirrored angle - an owned node, so always in the
-               // ltog map and always rank-local
-               oor_[3 * r] = row;
-               ooc_[3 * r] = GlobalDof(ltog, i, j, partner, gxs, gys, gxm, n_angles);
-               reflect_slot[r] = 3 * r;
-
-               oor_[3 * r + 1] = -1;
-               ooc_[3 * r + 1] = -1;
-            }
-            else
-            {
-               // A Dirichlet row keeps only its diagonal. A GHOST row keeps
-               // every slot whose upwind neighbour is inside the domain; one
-               // that points out through a vacuum face is nulled - exactly
-               // the slot whose coefficient moved to the rhs above - and one
-               // that points out through a reflective face is repointed at
-               // the mirrored angle in this cell (owned, so rank-local)
-               const PetscBool x_out = (PetscBool)(upwind.has_x && \
-                  (upwind.upwind_i < 0 || upwind.upwind_i >= n_cells_x));
-               const PetscBool y_out = (PetscBool)(upwind.has_y && \
-                  (upwind.upwind_j < 0 || upwind.upwind_j >= n_cells_y));
-               const PetscBool null_x = (PetscBool)(kind == RowKind::DIRICHLET || !upwind.has_x || \
-                  (kind == RowKind::GHOST && x_out && ghost_mirror[0] < 0));
-               const PetscBool null_y = (PetscBool)(kind == RowKind::DIRICHLET || !upwind.has_y || \
-                  (kind == RowKind::GHOST && y_out && ghost_mirror[1] < 0));
-
-               oor_[3 * r]     = null_x ? -1 : row;
-               ooc_[3 * r]     = null_x ? -1 : (x_out ? \
-                  GlobalDof(ltog, i, j, ghost_mirror[0], gxs, gys, gxm, n_angles) : \
-                  GlobalDof(ltog, upwind.upwind_i, j, a, gxs, gys, gxm, n_angles));
-
-               oor_[3 * r + 1] = null_y ? -1 : row;
-               ooc_[3 * r + 1] = null_y ? -1 : (y_out ? \
-                  GlobalDof(ltog, i, j, ghost_mirror[1], gxs, gys, gxm, n_angles) : \
-                  GlobalDof(ltog, i, upwind.upwind_j, a, gxs, gys, gxm, n_angles));
-            }
-
-            oor_[3 * r + 2] = row;
-            ooc_[3 * r + 2] = row;
-
-            // A ghost node the star stencil does not communicate carries a -1
-            // in the map. We only ever ask for face neighbours or an owned
-            // node, so this cannot fire - but a stray -1 column would silently
-            // drop a coefficient rather than fail, so say it out loud. A slot
-            // that was deliberately nulled has its ROW index at -1 too, which
-            // is what separates it from a lookup that failed
-            PetscCheck(ooc_[3 * r] >= 0 || oor_[3 * r] == -1, comm, PETSC_ERR_PLIB, \
-               "no global index for the x-upwind neighbour of node (%" PetscInt_FMT ", %" PetscInt_FMT ")", i, j);
-            PetscCheck(ooc_[3 * r + 1] >= 0 || oor_[3 * r + 1] == -1, comm, PETSC_ERR_PLIB, \
-               "no global index for the y-upwind neighbour of node (%" PetscInt_FMT ", %" PetscInt_FMT ")", i, j);
-         }
-      }
-   }
+   // Slot order upwind-x, upwind-y, diagonal
+   const PetscInt face_id[2][2] = {{FACE_LEFT, FACE_RIGHT}, {FACE_BOTTOM, FACE_TOP}};
+   AxisBC axis_bc[2];
+   PetscCall(BuildAxisBC<2>(comm_, bcs, face_id, quad.sum_weights(), axis_bc));
+   const PetscScalar h[2] = {dx_, dy_};
+   const PetscScalar *const cosine[2] = {quad.mu_host(), quad.eta_host()};
+   const PetscInt *const reflect[2] = {quad.reflect_mu_host(), quad.reflect_eta_host()};
+   BoundaryRows rows;
+   PetscCall(BuildStructuredCOO<2>(comm_, patch, ltog, ps.n_angles, h, cosine, reflect, axis_bc, \
+      bcs.ghost_flux_vacuum(), oor_, ooc_, rows));
 
    PetscCall(ISLocalToGlobalMappingRestoreIndices(ltog_map, &ltog));
 
-   // Slot maps - row r owns COO slots 3r (upwind-x), 3r + 1 (upwind-y) and
-   // 3r + 2 (diagonal)
-   PetscCall(set_uniform_pattern(3, is_bc_row, reflect_slot, dirichlet_value, ghost_inflow, ghost));
+   PetscCall(set_uniform_pattern(3, rows));
 
    PetscFunctionReturn(PETSC_SUCCESS);
 }
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-// A free function rather than a local lambda: an extended device lambda can't
-// be defined inside another lambda. The box list rides along as flat views -
-// coordinates as (x0, x1, y0, y1) quadruples - because a view of structs is
-// not one of the typedefs types.hpp allows
-static void PaintBoxesKernel(PetscIntKokkosView mat_id_d, PetscInt background_material, \
-   PetscScalarKokkosView box_xy_d, PetscIntKokkosView box_material_d, PetscInt n_boxes, \
-   PetscInt cell_start_x, PetscInt cell_start_y, PetscInt local_cells_x, \
-   PetscScalar dx, PetscScalar dy, PetscInt local_cells)
-{
-   Kokkos::parallel_for(
-      Kokkos::RangePolicy<>(0, local_cells), KOKKOS_LAMBDA(PetscInt c) {
-
-         // The centre of local cell c - the local ordering is the patch's own
-         // lexicographic one, and node (i, j) sits at (i dx, j dy)
-         const PetscScalar xc = ((PetscScalar)(cell_start_x + c % local_cells_x) + 0.5) * dx;
-         const PetscScalar yc = ((PetscScalar)(cell_start_y + c / local_cells_x) + 0.5) * dy;
-
-         PetscInt m = background_material;
-         for (PetscInt b = 0; b < n_boxes; b++) {
-            if (xc >= box_xy_d(4 * b) && xc <= box_xy_d(4 * b + 1) && \
-                yc >= box_xy_d(4 * b + 2) && yc <= box_xy_d(4 * b + 3)) m = box_material_d(b);
-         }
-         mat_id_d(c) = m;
-      });
-}
-
-// See the declaration for the painting rules (background, later boxes win,
-// membership by cell centre)
 PetscErrorCode StructuredFD2D::paint_boxes(PetscInt background_material, \
    const std::vector<MaterialBox2D> &boxes, PetscIntKokkosView &mat_id_d) const
 {
-   const PetscInt n_boxes = (PetscInt)boxes.size();
-
    PetscFunctionBeginUser;
 
-   // We allocate device memory below, and PETSc brings Kokkos up lazily
-   PetscCall(PetscKokkosInitializeCheck());
-
    PetscCall(ps_.check_decomposed());
-
-   PetscCheck(background_material >= 0, comm_, PETSC_ERR_ARG_OUTOFRANGE, \
-      "background material index %" PetscInt_FMT " is negative", background_material);
-   for (PetscInt b = 0; b < n_boxes; b++) {
-      PetscCheck(boxes[b].material >= 0, comm_, PETSC_ERR_ARG_OUTOFRANGE, \
-         "box %" PetscInt_FMT "'s material index %" PetscInt_FMT " is negative", b, boxes[b].material);
-      PetscCheck(boxes[b].x0 <= boxes[b].x1 && boxes[b].y0 <= boxes[b].y1, comm_, \
-         PETSC_ERR_ARG_OUTOFRANGE, "box %" PetscInt_FMT " is inside out - give it as x0,x1,y0,y1 " \
-         "with x0 <= x1 and y0 <= y1", b);
-   }
-
-   // Flatten the boxes for the device
-   std::vector<PetscScalar> box_xy(4 * n_boxes);
-   std::vector<PetscInt> box_material(n_boxes);
-   for (PetscInt b = 0; b < n_boxes; b++) {
-      box_xy[4 * b]     = boxes[b].x0;
-      box_xy[4 * b + 1] = boxes[b].x1;
-      box_xy[4 * b + 2] = boxes[b].y0;
-      box_xy[4 * b + 3] = boxes[b].y1;
-      box_material[b] = boxes[b].material;
-   }
-
-   PetscScalarKokkosView box_xy_d("box_xy_d", 4 * n_boxes);
-   PetscIntKokkosView box_material_d("box_material_d", n_boxes);
-   if (n_boxes > 0) {
-      PetscScalarKokkosViewHostUnmanaged box_xy_h(box_xy.data(), 4 * n_boxes);
-      PetscIntKokkosViewHostUnmanaged box_material_h(box_material.data(), n_boxes);
-      Kokkos::deep_copy(box_xy_d, box_xy_h);
-      Kokkos::deep_copy(box_material_d, box_material_h);
-   }
-
-   mat_id_d = PetscIntKokkosView("mat_id_d", ps_.local_cells);
-   PaintBoxesKernel(mat_id_d, background_material, box_xy_d, box_material_d, n_boxes, \
-      cell_start_x_, cell_start_y_, local_cells_x_, dx_, dy_, ps_.local_cells);
+   const PetscInt start[3] = {cell_start_x_, cell_start_y_, 0};
+   const PetscInt m[3] = {local_cells_x_, local_cells_y_, 1};
+   const PetscScalar h[3] = {dx_, dy_, 0.0};
+   PetscCall(PaintStructuredBoxes(comm_, background_material, boxes, start, m, h, ps_.local_cells, mat_id_d));
 
    PetscFunctionReturn(PETSC_SUCCESS);
 }

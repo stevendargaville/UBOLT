@@ -1,6 +1,5 @@
 #include "ubolt/structured_fd_1d.hpp"
-#include "petsc_kokkos.hpp"
-#include <petscdmda.h>
+#include "structured_fd_commonk.hpp"
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -12,10 +11,8 @@
 // object has already been sized from. The sizes come from the PhaseSpace, which
 // the drivers already expose as -n_cells/-n_angles
 //
-// The DM chooses the distribution and the PhaseSpace is told what it decided.
-// PETSc's default 1D DMDA split is M/size + ((M % size) > rank), which is the
-// same formula PetscSplitOwnership uses, so this is the same decomposition
-// UBOLT had before the DM owned it (Phase 3a verified that bitwise)
+// The DM chooses the distribution and the PhaseSpace is told what it decided:
+// PETSc's default 1D DMDA split, M/size + ((M % size) > rank)
 static PetscErrorCode CreateDA(MPI_Comm comm, const PhaseSpace &ps, DM *da)
 {
    PetscFunctionBeginUser;
@@ -158,10 +155,6 @@ PetscErrorCode StructuredFD1D::create(MPI_Comm comm, PhaseSpace &ps, PetscReal l
    // over the ordinates, exactly as UboltFillSource shares a material's
    // Source - so the same number means the same physics in any dimension. A 1D
    // face is a point, so no window can restrict it
-   std::vector<PetscInt> is_bc_row(local_rows, 0);
-   std::vector<PetscInt> reflect_slot(local_rows, -1);
-   std::vector<PetscScalar> dirichlet_value(local_rows, 0.0);
-   std::vector<PetscScalar> ghost_inflow(local_rows, 0.0);
    const PetscInt *reflect_mu = quad.reflect_mu_host();
    // Under the ghost-flux treatment a vacuum inflow row is NOT a boundary row:
    // it keeps the full stencil, its upwind slot is nulled because the
@@ -171,7 +164,10 @@ PetscErrorCode StructuredFD1D::create(MPI_Comm comm, PhaseSpace &ps, PetscReal l
    // angle in the same cell, the ghost value a reflective face supplies - see
    // the header
    const PetscBool ghost = bcs.ghost_flux_vacuum();
+   BoundaryRows rows;
+   rows.reset(local_rows, ghost);
 
+   PetscCall(CheckStructuredFaceIds(comm_, bcs, 1));
    const BCFace left_face = bcs.face(FACE_LEFT);
    const BCFace right_face = bcs.face(FACE_RIGHT);
    PetscCheck(left_face.n_window_pairs == 0 && right_face.n_window_pairs == 0, comm_, \
@@ -192,7 +188,7 @@ PetscErrorCode StructuredFD1D::create(MPI_Comm comm, PhaseSpace &ps, PetscReal l
                // upwind slot and move its coefficient to the rhs
                oor_[a * 2] = -1;
                ooc_[a * 2] = -1;
-               ghost_inflow[a] = PetscAbsScalar(mu[a]) / dx_ * left_value;
+               rows.ghost_inflow[a] = PetscAbsScalar(mu[a]) / dx_ * left_value;
                continue;
             }
             if (ghost)
@@ -205,7 +201,7 @@ PetscErrorCode StructuredFD1D::create(MPI_Comm comm, PhaseSpace &ps, PetscReal l
                ooc_[a * 2] = reflect_mu[a] + global_row_start;
                continue;
             }
-            is_bc_row[a] = 1;
+            rows.is_bc_row[a] = 1;
             if (left_bc == BCType::REFLECT)
             {
                // The mirrored angle is outgoing here, so its row is a real
@@ -215,13 +211,13 @@ PetscErrorCode StructuredFD1D::create(MPI_Comm comm, PhaseSpace &ps, PetscReal l
                   "a reflective face on a single-cell slab couples two boundary rows");
                oor_[a * 2] = a + global_row_start;
                ooc_[a * 2] = reflect_mu[a] + global_row_start;
-               reflect_slot[a] = a * 2;
+               rows.reflect_slot[a] = a * 2;
             }
             else
             {
                oor_[a * 2] = -1;
                ooc_[a * 2] = -1;
-               dirichlet_value[a] = left_value;
+               rows.dirichlet_value[a] = left_value;
             }
          }
       }
@@ -238,7 +234,7 @@ PetscErrorCode StructuredFD1D::create(MPI_Comm comm, PhaseSpace &ps, PetscReal l
             {
                oor_[r * 2] = -1;
                ooc_[r * 2] = -1;
-               ghost_inflow[r] = PetscAbsScalar(mu[a]) / dx_ * right_value;
+               rows.ghost_inflow[r] = PetscAbsScalar(mu[a]) / dx_ * right_value;
                continue;
             }
             if (ghost)
@@ -247,27 +243,27 @@ PetscErrorCode StructuredFD1D::create(MPI_Comm comm, PhaseSpace &ps, PetscReal l
                ooc_[r * 2] = (local_cells - 1) * n_angles + reflect_mu[a] + global_row_start;
                continue;
             }
-            is_bc_row[r] = 1;
+            rows.is_bc_row[r] = 1;
             if (right_bc == BCType::REFLECT)
             {
                PetscCheck(ps.n_cells > 1, comm_, PETSC_ERR_SUP, \
                   "a reflective face on a single-cell slab couples two boundary rows");
                oor_[r * 2] = r + global_row_start;
                ooc_[r * 2] = (local_cells - 1) * n_angles + reflect_mu[a] + global_row_start;
-               reflect_slot[r] = r * 2;
+               rows.reflect_slot[r] = r * 2;
             }
             else
             {
                oor_[r * 2] = -1;
                ooc_[r * 2] = -1;
-               dirichlet_value[r] = right_value;
+               rows.dirichlet_value[r] = right_value;
             }
          }
       }
    }
 
    // Slot maps - row r owns COO slots 2r (upwind neighbour) and 2r + 1 (diagonal)
-   PetscCall(set_uniform_pattern(2, is_bc_row, reflect_slot, dirichlet_value, ghost_inflow, ghost));
+   PetscCall(set_uniform_pattern(2, rows));
 
    PetscFunctionReturn(PETSC_SUCCESS);
 }
@@ -283,7 +279,7 @@ static void PaintIntervalsKernel(PetscIntKokkosView mat_id_d, PetscInt backgroun
    PetscInt cell_start_x, PetscScalar dx, PetscInt local_cells)
 {
    Kokkos::parallel_for(
-      Kokkos::RangePolicy<>(0, local_cells), KOKKOS_LAMBDA(PetscInt c) {
+      Kokkos::RangePolicy<>(PetscGetKokkosExecutionSpace(), 0, local_cells), KOKKOS_LAMBDA(PetscInt c) {
 
          // The centre of local cell c - node i sits at i dx
          const PetscScalar xc = ((PetscScalar)(cell_start_x + c) + 0.5) * dx;
@@ -333,8 +329,10 @@ PetscErrorCode StructuredFD1D::paint_intervals(PetscInt background_material, \
    if (n_intervals > 0) {
       PetscScalarKokkosViewHostUnmanaged interval_x_h(interval_x.data(), 2 * n_intervals);
       PetscIntKokkosViewHostUnmanaged interval_material_h(interval_material.data(), n_intervals);
-      Kokkos::deep_copy(interval_x_d, interval_x_h);
-      Kokkos::deep_copy(interval_material_d, interval_material_h);
+      Kokkos::deep_copy(PetscGetKokkosExecutionSpace(), interval_x_d, interval_x_h);
+      Kokkos::deep_copy(PetscGetKokkosExecutionSpace(), interval_material_d, interval_material_h);
+      // The copies are asynchronous and the host intervals die here
+      PetscGetKokkosExecutionSpace().fence();
    }
 
    mat_id_d = PetscIntKokkosView("mat_id_d", ps_.local_cells);

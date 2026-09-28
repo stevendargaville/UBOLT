@@ -6,37 +6,25 @@
 #include "ubolt/phase_space.hpp"
 #include "ubolt/sn_quadrature.hpp"
 #include "ubolt/bc_spec.hpp"
+#include "ubolt/material_regions.hpp"
 #include <vector>
-
-// An interval of one material, for StructuredFD1D::paint_intervals
-struct PETSC_VISIBILITY_PUBLIC MaterialInterval1D {
-   PetscScalar x0 = 0.0, x1 = 0.0;
-   PetscInt material = 0;
-};
 
 // Uniform-grid upwinded finite difference discretisation of a 1D slab
 //
-// Owns the mesh and the COO sparsity: two entries per row (the upwind neighbour
-// and the diagonal, in that order). A BC row loses its upwind entry - a
-// Dirichlet row keeps only the diagonal and its rhs carries the incoming flux
-// (that face's angle-integrated inflow shared over the ordinates; a 1D face is
-// a point, so there is no window to restrict it), a reflective row repurposes
-// the slot for the -1 coupling to the mirrored angle in the same cell. Everything it
-// hands terms - the CooPattern, the BoundaryInfo, the preallocated matrices -
-// is on the Discretisation base; what is 1D about it is the mesh it builds and
-// its geometry - dx(), and the painting below
-//
-// Those BC rows are VacuumTreatment::DIRICHLET_CELL, now opt-in. Under the
-// default GHOST_FLUX there are no BC rows at all: a vacuum inflow row keeps its
-// diagonal, loses only the upwind slot, and the |mu|/dx-weighted inflow goes
-// into BoundaryInfo::ghost_inflow_d instead, and a reflective inflow row keeps
-// its full stencil with the upwind slot pointed at the mirrored angle in the
-// same cell - the ghost value a mirror supplies
+// Two COO entries per row: the upwind neighbour, then the diagonal. Under
+// VacuumTreatment::GHOST_FLUX (the default) there are no BC rows: an inflow
+// row keeps its diagonal, and its upwind slot is nulled with the
+// |mu| / dx-weighted inflow moved to BoundaryInfo::ghost_inflow_d on a vacuum
+// face, or pointed at the mirrored angle in the same cell on a reflective one.
+// Under DIRICHLET_CELL an inflow row is a BC row: a vacuum one keeps only the
+// diagonal and its rhs carries the incoming flux (the face's angle-integrated
+// inflow over the ordinates; a point face takes no window), a reflective one
+// repurposes the upwind slot for the -1 coupling to the mirrored angle
 class PETSC_VISIBILITY_PUBLIC StructuredFD1D : public Discretisation {
 public:
-   // The boundary label ids this backend hands to the BCSpec - the ids
-   // PETSc's DMPlexCreateBoxMesh "Face Sets" convention gives a 1D interval,
-   // so the future unstructured backend agrees with these
+   // The boundary label ids this backend hands to the BCSpec - PETSc's
+   // DMPlexCreateBoxMesh "Face Sets" ids for a 1D interval. Any other id in a
+   // BCSpec is an error
    static constexpr PetscInt FACE_LEFT = 1;
    static constexpr PetscInt FACE_RIGHT = 2;
 

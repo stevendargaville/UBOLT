@@ -1,4 +1,5 @@
 #include "ubolt/sn_quadrature.hpp"
+#include "petsc_kokkos.hpp"
 // The generated level-symmetric table lives under src/ so it cannot be
 // included from the public headers - a quote include resolves against this
 // file's directory. Regenerate it with src/sn_lqn_table.py, never by hand
@@ -38,7 +39,9 @@ PetscErrorCode AngularQuadrature::set_weights(const std::vector<PetscScalar> &w,
    // const_cast only because the unmanaged host view type is non-const; the
    // deep_copy below reads it
    PetscScalar2DKokkosViewHostUnmanaged w_host_view(const_cast<PetscScalar *>(w.data()), n_angles_, 1);
-   Kokkos::deep_copy(w_d_, w_host_view);
+   Kokkos::deep_copy(PetscGetKokkosExecutionSpace(), w_d_, w_host_view);
+   // The copy is asynchronous and w is the caller's
+   PetscGetKokkosExecutionSpace().fence();
 
    PetscFunctionReturn(PETSC_SUCCESS);
 }
@@ -66,6 +69,45 @@ static PetscErrorCode FindOrdinate(const PetscScalar *mu, const PetscScalar *eta
       "Quadrature set is not symmetric: no ordinate at the reflection of (%g, %g, %g)", \
       (double)PetscRealPart(mu_want), (double)PetscRealPart(eta_want), \
       (double)PetscRealPart(xi_want));
+
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+// The host directions, zero padded to 3 per angle, and one reflection map per
+// live axis: the ordinate with that cosine negated and the others equal. Built
+// by search so the assertion in FindOrdinate, not any ordering of the set, is
+// what reflective boundaries rest on; a single-axis flip of a symmetric set
+// stays inside its permutation class, so the partner's weight is the same value
+PetscErrorCode AngularQuadrature::set_directions(PetscInt dim, const PetscScalar *mu, const PetscScalar *eta, \
+   const PetscScalar *xi, const std::vector<PetscScalar> &w)
+{
+   const PetscScalar *cosine[3] = {mu, dim > 1 ? eta : NULL, dim > 2 ? xi : NULL};
+
+   PetscFunctionBeginUser;
+
+   PetscCheck(dim >= 1 && dim <= 3 && (PetscInt)w.size() == n_angles_, PETSC_COMM_SELF, PETSC_ERR_PLIB, \
+      "set_directions needs dimension 1 to 3 and a weight per ordinate, after set_weights");
+
+   dimension_ = dim;
+   omega_h_.assign(3 * n_angles_, 0.0);
+   for (PetscInt a = 0; a < n_angles_; a++) {
+      for (PetscInt d = 0; d < dim; d++) omega_h_[3 * a + d] = cosine[d][a];
+   }
+
+   for (PetscInt d = 0; d < 3; d++) reflect_h_[d].clear();
+   for (PetscInt d = 0; d < dim; d++) {
+      reflect_h_[d].resize(n_angles_);
+      for (PetscInt a = 0; a < n_angles_; a++) {
+         PetscScalar want[3] = {0.0, 0.0, 0.0};
+         for (PetscInt e = 0; e < dim; e++) want[e] = cosine[e][a];
+         want[d] = -want[d];
+         PetscCall(FindOrdinate(cosine[0], cosine[1], cosine[2], n_angles_, want[0], want[1], want[2], &reflect_h_[d][a]));
+         PetscCheck(w[reflect_h_[d][a]] == w[a], PETSC_COMM_SELF, PETSC_ERR_PLIB, \
+            "Quadrature weights are not symmetric under a single cosine flip");
+      }
+   }
 
    PetscFunctionReturn(PETSC_SUCCESS);
 }
@@ -169,20 +211,13 @@ PetscErrorCode SNQuadrature::create(PetscInt sn_order)
    // In 1D we integrate over [-1, 1] so the sum of weights is 2
    PetscCall(set_weights(w_h, 2.0));
 
-   // The reflection map: the Gauss points come in +/- pairs with equal weights,
-   // and the search (rather than index arithmetic) is what a reflective
-   // boundary's correctness rests on
-   reflect_mu_h_.resize(n_angles);
-   for (PetscInt a = 0; a < n_angles; a++) {
-      PetscCall(FindOrdinate(mu, NULL, NULL, n_angles, -mu[a], 0.0, 0.0, &reflect_mu_h_[a]));
-      PetscCheck(w_h[reflect_mu_h_[a]] == w_h[a], PETSC_COMM_SELF, PETSC_ERR_PLIB, \
-         "Quadrature weights are not symmetric under mu -> -mu");
-   }
+   // The Gauss points come in +/- pairs with equal weights
+   PetscCall(set_directions(1, mu, NULL, NULL, w_h));
 
    // Copy the ordinates to device memory
    mu_d_ = PetscScalarKokkosView("mu_d", n_angles);
    PetscScalarKokkosViewHostUnmanaged mu_host_view(mu, n_angles);
-   Kokkos::deep_copy(mu_d_, mu_host_view);
+   Kokkos::deep_copy(PetscGetKokkosExecutionSpace(), mu_d_, mu_host_view);
 
    PetscFunctionReturn(PETSC_SUCCESS);
 }
@@ -282,30 +317,17 @@ PetscErrorCode SNQuadrature2D::create(PetscInt sn_order)
    }
    PetscCall(set_weights(w_h, 4.0 * PETSC_PI));
 
-   // The reflection maps: a level-symmetric set carries every sign combination
-   // of its base cosines, so both single-axis flips land on an ordinate, and a
-   // flip stays inside its permutation class so the partner's weight is the
-   // same value. Built by search so the assertion in FindOrdinate, not the
-   // quadrant ordering above, is what reflective boundaries rest on
-   reflect_mu_h_.resize(n_angles);
-   reflect_eta_h_.resize(n_angles);
-   for (PetscInt a = 0; a < n_angles; a++) {
-      PetscCall(FindOrdinate(mu_h_.data(), eta_h_.data(), NULL, n_angles, -mu_h_[a], eta_h_[a], \
-         0.0, &reflect_mu_h_[a]));
-      PetscCall(FindOrdinate(mu_h_.data(), eta_h_.data(), NULL, n_angles, mu_h_[a], -eta_h_[a], \
-         0.0, &reflect_eta_h_[a]));
-      PetscCheck(w_h[reflect_mu_h_[a]] == w_h[a] && w_h[reflect_eta_h_[a]] == w_h[a], \
-         PETSC_COMM_SELF, PETSC_ERR_PLIB, \
-         "Quadrature weights are not symmetric under a single cosine flip");
-   }
+   // A level-symmetric set carries every sign combination of its base
+   // cosines, so both single-axis flips land on an ordinate
+   PetscCall(set_directions(2, mu_h_.data(), eta_h_.data(), NULL, w_h));
 
    // Copy the ordinates to device memory
    mu_d_  = PetscScalarKokkosView("mu_d", n_angles);
    eta_d_ = PetscScalarKokkosView("eta_d", n_angles);
    PetscScalarKokkosViewHostUnmanaged mu_host_view(mu_h_.data(), n_angles);
    PetscScalarKokkosViewHostUnmanaged eta_host_view(eta_h_.data(), n_angles);
-   Kokkos::deep_copy(mu_d_, mu_host_view);
-   Kokkos::deep_copy(eta_d_, eta_host_view);
+   Kokkos::deep_copy(PetscGetKokkosExecutionSpace(), mu_d_, mu_host_view);
+   Kokkos::deep_copy(PetscGetKokkosExecutionSpace(), eta_d_, eta_host_view);
 
    PetscFunctionReturn(PETSC_SUCCESS);
 }
@@ -355,26 +377,9 @@ PetscErrorCode SNQuadrature3D::create(PetscInt sn_order)
    }
    PetscCall(set_weights(w_h, 4.0 * PETSC_PI));
 
-   // The reflection maps, one single-axis flip each: a level-symmetric set
-   // carries every sign combination of its base cosines, so all three land on
-   // an ordinate, and a flip stays inside its permutation class so the
-   // partner's weight is the same value. Built by search so the assertion in
-   // FindOrdinate, not the octant ordering above, is what reflective
-   // boundaries rest on
-   reflect_mu_h_.resize(n_angles);
-   reflect_eta_h_.resize(n_angles);
-   reflect_xi_h_.resize(n_angles);
-   for (PetscInt a = 0; a < n_angles; a++) {
-      PetscCall(FindOrdinate(mu_h_.data(), eta_h_.data(), xi_h_.data(), n_angles, \
-         -mu_h_[a], eta_h_[a], xi_h_[a], &reflect_mu_h_[a]));
-      PetscCall(FindOrdinate(mu_h_.data(), eta_h_.data(), xi_h_.data(), n_angles, \
-         mu_h_[a], -eta_h_[a], xi_h_[a], &reflect_eta_h_[a]));
-      PetscCall(FindOrdinate(mu_h_.data(), eta_h_.data(), xi_h_.data(), n_angles, \
-         mu_h_[a], eta_h_[a], -xi_h_[a], &reflect_xi_h_[a]));
-      PetscCheck(w_h[reflect_mu_h_[a]] == w_h[a] && w_h[reflect_eta_h_[a]] == w_h[a] && \
-         w_h[reflect_xi_h_[a]] == w_h[a], PETSC_COMM_SELF, PETSC_ERR_PLIB, \
-         "Quadrature weights are not symmetric under a single cosine flip");
-   }
+   // A level-symmetric set carries every sign combination of its base
+   // cosines, so all three single-axis flips land on an ordinate
+   PetscCall(set_directions(3, mu_h_.data(), eta_h_.data(), xi_h_.data(), w_h));
 
    // Copy the ordinates to device memory
    mu_d_  = PetscScalarKokkosView("mu_d", n_angles);
@@ -383,9 +388,9 @@ PetscErrorCode SNQuadrature3D::create(PetscInt sn_order)
    PetscScalarKokkosViewHostUnmanaged mu_host_view(mu_h_.data(), n_angles);
    PetscScalarKokkosViewHostUnmanaged eta_host_view(eta_h_.data(), n_angles);
    PetscScalarKokkosViewHostUnmanaged xi_host_view(xi_h_.data(), n_angles);
-   Kokkos::deep_copy(mu_d_, mu_host_view);
-   Kokkos::deep_copy(eta_d_, eta_host_view);
-   Kokkos::deep_copy(xi_d_, xi_host_view);
+   Kokkos::deep_copy(PetscGetKokkosExecutionSpace(), mu_d_, mu_host_view);
+   Kokkos::deep_copy(PetscGetKokkosExecutionSpace(), eta_d_, eta_host_view);
+   Kokkos::deep_copy(PetscGetKokkosExecutionSpace(), xi_d_, xi_host_view);
 
    PetscFunctionReturn(PETSC_SUCCESS);
 }
@@ -414,7 +419,7 @@ PetscErrorCode UboltAngularIntegral(Vec psi, PetscInt n_angles, \
    // The integral over angle is just a dgemm (on the device)
    const PetscScalar alpha = 1.0;
    const PetscScalar beta  = 0.0;
-   KokkosBlas::gemm("N", "N", alpha, psi_d_2d, w_d, beta, scalar_flux_d);
+   KokkosBlas::gemm(PetscGetKokkosExecutionSpace(), "N", "N", alpha, psi_d_2d, w_d, beta, scalar_flux_d);
 
    PetscCall(VecRestoreKokkosView(psi, &psi_d));
 

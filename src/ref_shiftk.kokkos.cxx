@@ -26,10 +26,19 @@ static void ShiftFillKernel(PetscScalarKokkosView shift_d, \
    PetscScalar alpha, PetscInt rows_per_cell, PetscInt local_rows)
 {
    Kokkos::parallel_for(
-      Kokkos::RangePolicy<>(0, local_rows), KOKKOS_LAMBDA(PetscInt r) {
+      Kokkos::RangePolicy<>(PetscGetKokkosExecutionSpace(), 0, local_rows), KOKKOS_LAMBDA(PetscInt r) {
 
          shift_d(r) = is_bc_row_d(r) ? (PetscScalar)0.0 : alpha * sigma_t_ref_d(r / rows_per_cell);
       });
+}
+
+// Group g's Sigma_t on the host, copied on PETSc's execution space
+static auto SigmaTHost(const GroupXSections &xs, PetscInt g)
+{
+   auto h = Kokkos::create_mirror_view(Kokkos::HostSpace(), xs.sigma_t(g));
+   Kokkos::deep_copy(PetscGetKokkosExecutionSpace(), h, xs.sigma_t(g));
+   PetscGetKokkosExecutionSpace().fence();
+   return h;
 }
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -52,7 +61,7 @@ static void ShiftFillKernel(PetscScalarKokkosView shift_d, \
 //     opens a new one and becomes its reference. On a void-free problem every
 //     group with removal has the whole mesh as its support, so there is one
 //     class and its reference is the first such group - group 0 whenever
-//     group 0 qualifies, which is what the alphas (and the pins) always were
+//     group 0 qualifies
 //   - a VOID cell is outside the support, so it is left out of the log-mean
 //     (the ratio 0/0 means nothing there) and the class reference is zero in
 //     it - the shift built from it leaves the void's pmat rows pure streaming,
@@ -86,7 +95,7 @@ PetscErrorCode RefShiftPmats::compute_alphas(const GroupXSections &xs)
    std::vector<PetscReal> min_max(2 * n_groups_);
    for (PetscInt g = 0; g < n_groups_; g++) {
       PetscReal mn = PETSC_MAX_REAL, mx = -PETSC_MAX_REAL;
-      auto sigma_t_h = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), xs.sigma_t(g));
+      auto sigma_t_h = SigmaTHost(xs, g);
       for (PetscInt c = 0; c < ps_.local_cells; c++) {
          mn = PetscMin(mn, PetscRealPart(sigma_t_h(c)));
          mx = PetscMax(mx, PetscRealPart(sigma_t_h(c)));
@@ -112,10 +121,9 @@ PetscErrorCode RefShiftPmats::compute_alphas(const GroupXSections &xs)
    for (PetscInt g = 0; g < n_groups_; g++) {
       if (is_streaming_group_[g]) continue;
 
-      auto sigma_t_h = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), xs.sigma_t(g));
+      auto sigma_t_h = SigmaTHost(xs, g);
       for (PetscInt k = 0; k < (PetscInt)class_ref_.size() && class_of_group_[g] < 0; k++) {
-         auto sigma_t_ref_h = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), \
-            xs.sigma_t(class_ref_[k]));
+         auto sigma_t_ref_h = SigmaTHost(xs, class_ref_[k]);
          PetscInt differ = 0;
          for (PetscInt c = 0; c < ps_.local_cells; c++) {
             if ((PetscRealPart(sigma_t_h(c)) > 0.0) != (PetscRealPart(sigma_t_ref_h(c)) > 0.0)) differ++;
@@ -137,8 +145,7 @@ PetscErrorCode RefShiftPmats::compute_alphas(const GroupXSections &xs)
 
    // A reference's own ratio is 1 by construction and there is nothing to sum
    // - taking the log of sigma_t/sigma_t would only add rounding. On a
-   // void-free class every cell is in the support and the divisor is n_cells,
-   // so the arithmetic is exactly what it was before voids were admitted
+   // void-free class every cell is in the support and the divisor is n_cells
    for (PetscInt g = 0; g < n_groups_; g++) {
       if (is_streaming_group_[g]) continue;
       const PetscInt k = class_of_group_[g];
@@ -146,9 +153,8 @@ PetscErrorCode RefShiftPmats::compute_alphas(const GroupXSections &xs)
 
       PetscReal log_sum = 0.0;
 
-      auto sigma_t_h = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), xs.sigma_t(g));
-      auto sigma_t_ref_h = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), \
-         xs.sigma_t(class_ref_[k]));
+      auto sigma_t_h = SigmaTHost(xs, g);
+      auto sigma_t_ref_h = SigmaTHost(xs, class_ref_[k]);
       for (PetscInt c = 0; c < ps_.local_cells; c++) {
          if (!(PetscRealPart(sigma_t_ref_h(c)) > 0.0)) continue;
          log_sum += PetscLogReal(PetscRealPart(sigma_t_h(c)) / PetscRealPart(sigma_t_ref_h(c)));
@@ -215,8 +221,7 @@ static PetscInt BinsNeeded(const std::vector<PetscReal> &sorted_log, PetscReal s
 // that still holds more than one, until they run out or every bin is exact.
 // That never widens a bin, so the worst mismatch stands, and the top is where
 // the spare hierarchy pays: the high-alpha groups are the thick ones, where a
-// mismatch costs the most iterations (box_decades4 at k = 3: 15, 29 on the two
-// thick groups with them exact, against 27, 51 with them sharing a bin)
+// mismatch costs the most iterations (TODO.md Phase 5)
 //
 // Each bin's representative then sits at the log-MIDPOINT of the alphas it
 // holds, which is the choice that minimises the worst mismatch inside the bin:
@@ -316,8 +321,7 @@ PetscErrorCode RefShiftPmats::create(MPI_Comm comm, const PhaseSpace &ps, \
    // after those of the classes before it, and a class never shares a bin with
    // another (their references differ where one of them is void). On a problem
    // with at most one support besides the empty one, which is every problem
-   // whose voids are void in every group, there is one class and this is the
-   // single binning it always was
+   // whose voids are void in every group, there is one class and one binning
    //
    // How many bins per class - counting the SHIFTED ones only: the unshifted
    // bin any streaming-only groups share is appended on top of the count,

@@ -36,6 +36,7 @@
 // ubolt.hpp pulls in petscvec_kokkos.hpp which must come before any other
 // PETSc header in a C++ file (see docs/dev/kokkos.md)
 #include "ubolt/ubolt.hpp"
+#include "petsc_kokkos.hpp"
 #include <petscksp.h>
 #include "pflare.h"
 #include <vector>
@@ -159,7 +160,7 @@ static PetscErrorCode CheckStreamingClosedForm(PetscInt n_cells_x, PetscInt n_ce
 
    // Streaming alone: no removal, no scatter
    PetscCall(streaming.create(ps, disc, quad));
-   PetscCall(op.create(PETSC_COMM_WORLD, ps, disc));
+   PetscCall(op.create(disc));
    PetscCall(op.add_term(&streaming));
    PetscCall(op.assemble());
 
@@ -312,14 +313,14 @@ static PetscErrorCode CheckOperatorAgainstReference(PetscInt n_cells_x, PetscInt
 
    PetscScalarKokkosView sigma_t_d("sigma_t_d", ps.local_cells);
    PetscScalarKokkosView sigma_s_d("sigma_s_d", ps.local_cells);
-   Kokkos::deep_copy(sigma_t_d, sigma_t);
-   Kokkos::deep_copy(sigma_s_d, sigma_s);
+   Kokkos::deep_copy(PetscGetKokkosExecutionSpace(), sigma_t_d, sigma_t);
+   Kokkos::deep_copy(PetscGetKokkosExecutionSpace(), sigma_s_d, sigma_s);
 
    PetscCall(streaming.create(ps, disc, quad));
    PetscCall(removal.create(ps, disc, sigma_t_d));
    PetscCall(scattering.create(ps, disc, quad, sigma_s_d));
 
-   PetscCall(op.create(PETSC_COMM_WORLD, ps, disc));
+   PetscCall(op.create(disc));
    PetscCall(op.add_term(&streaming));
    PetscCall(op.add_term(&removal));
    PetscCall(op.add_term(&scattering));
@@ -466,10 +467,10 @@ static PetscErrorCode CheckConstantInflow(PetscInt n_cells_x, PetscInt n_cells_y
       AllVacuum(ghost, inflow)));
 
    PetscScalarKokkosView sigma_t_d("sigma_t_d", ps.local_cells);
-   Kokkos::deep_copy(sigma_t_d, sigma_t);
+   Kokkos::deep_copy(PetscGetKokkosExecutionSpace(), sigma_t_d, sigma_t);
    PetscCall(streaming.create(ps, disc, quad));
    PetscCall(removal.create(ps, disc, sigma_t_d));
-   PetscCall(op.create(PETSC_COMM_WORLD, ps, disc));
+   PetscCall(op.create(disc));
    PetscCall(op.add_term(&streaming));
    PetscCall(op.add_term(&removal));
    PetscCall(op.assemble());
@@ -551,11 +552,12 @@ static PetscErrorCode CheckOppositeTranspose(PetscInt n_cells_x, PetscInt n_cell
    {
       auto sigma_t_h = Kokkos::create_mirror_view(sigma_t_d);
       for (PetscInt c = 0; c < ps.local_cells; c++) sigma_t_h(c) = 1.0 + 0.25 * (PetscScalar)(c % 7);
-      Kokkos::deep_copy(sigma_t_d, sigma_t_h);
+      Kokkos::deep_copy(PetscGetKokkosExecutionSpace(), sigma_t_d, sigma_t_h);
+      PetscGetKokkosExecutionSpace().fence();
    }
    PetscCall(streaming.create(ps, disc, quad));
    PetscCall(removal.create(ps, disc, sigma_t_d));
-   PetscCall(op.create(PETSC_COMM_WORLD, ps, disc));
+   PetscCall(op.create(disc));
    PetscCall(op.add_term(&streaming));
    PetscCall(op.add_term(&removal));
    PetscCall(op.assemble());

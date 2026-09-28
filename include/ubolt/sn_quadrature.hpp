@@ -7,15 +7,17 @@
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-// What an angular quadrature owes the consumers that do not care which
-// directions the ordinates point in: how many there are, what their weights sum
-// to, and the weight matrix the angular integral is a gemm against
+// What an angular quadrature owes the consumers that do not care how it was
+// built: how many ordinates, what their weights sum to, the weight matrix the
+// angular integral is a gemm against, and - on the host - every ordinate's
+// direction and the reflection partners
 //
-// That is everything the scattering term and the group transfer need, so they
-// take this base and work in any dimension. The direction cosines are on the
-// concrete classes, because the only thing that wants them is the streaming
-// term, which is per-dimension anyway - the same split the Discretisation base
-// makes with the geometry
+// The scattering term and the group transfer need only the first three, so
+// they work in any dimension. The host directions are what a backend that
+// reads Omega as a vector (the plex ones) builds from, so a new direction set
+// is a new subclass that calls set_weights and set_directions. The structured
+// backends' per-dimension streaming terms read the concrete classes' mu/eta/xi
+// device views instead
 class PETSC_VISIBILITY_PUBLIC AngularQuadrature {
 public:
    virtual ~AngularQuadrature() = default;
@@ -28,6 +30,18 @@ public:
    // one moment; a Pn set widens that column dimension (see TODO.md)
    const PetscScalar2DKokkosView &w_d() const { return w_d_; }
 
+   // How many direction cosines the ordinates carry: 1, 2 or 3
+   PetscInt dimension() const { return dimension_; }
+   // Every ordinate's direction, 3 per angle (a * 3 + d), zero past dimension()
+   const PetscScalar *omega_host() const { return omega_h_.data(); }
+   // reflect_host(d)[a] is the ordinate with cosine d negated and the other
+   // cosines and the weight equal - the partner a reflective face normal to
+   // axis d couples angle a to. nullptr for d >= dimension()
+   const PetscInt *reflect_host(PetscInt axis) const
+   {
+      return (axis >= 0 && axis < dimension_) ? reflect_h_[axis].data() : nullptr;
+   }
+
 protected:
    AngularQuadrature() = default;
 
@@ -38,37 +52,39 @@ protected:
    // floating point sum of the weights would agree with it only to rounding
    PetscErrorCode set_weights(const std::vector<PetscScalar> &w, PetscScalar sum_weights);
 
+   // Record the directions on the host (cosines past dim are null) and build
+   // the reflection maps by search, checking each partner carries the same
+   // weight - a set that is not reflection-symmetric errors here rather than
+   // reflecting into a wrong angle. Host only: no device allocation
+   PetscErrorCode set_directions(PetscInt dim, const PetscScalar *mu, const PetscScalar *eta, \
+      const PetscScalar *xi, const std::vector<PetscScalar> &w);
+
    PetscInt n_angles_ = 0;
    PetscScalar sum_weights_ = 0.0;
    PetscScalar2DKokkosView w_d_;
+   PetscInt dimension_ = 0;
+   std::vector<PetscScalar> omega_h_;
+   std::vector<PetscInt> reflect_h_[3];
 };
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 // 1D SN quadrature: Gauss-Legendre, any even order
 //
-// The order is what a problem asks for; how many ordinates that is, is the
-// quadrature's own business - in 1D the SN order IS the ordinate count, an N
-// point Gauss-Legendre rule on [-1, 1]. The nodes and weights are generated to
-// machine precision at create() time rather than tabulated, so there is no
-// upper bound on the order
-//
-// Keeps the ordinates on the host (the COO preallocation is a host loop) and on
-// the device (the assembly and scatter kernels)
+// In 1D the SN order IS the ordinate count, an N point Gauss-Legendre rule on
+// [-1, 1]. The nodes and weights are generated to machine precision at
+// create() time rather than tabulated, so there is no upper bound on the order
 class PETSC_VISIBILITY_PUBLIC SNQuadrature : public AngularQuadrature {
 public:
    PetscErrorCode create(PetscInt sn_order);
 
    const PetscScalar *mu_host() const { return mu_h_.data(); }
    const PetscScalarKokkosView &mu_d() const { return mu_d_; }
-   // reflect_mu_host()[a] is the ordinate with mu = -mu_a and the same weight -
-   // the partner a reflective boundary couples angle a to. Host only: the COO
-   // preallocation is the only consumer
-   const PetscInt *reflect_mu_host() const { return reflect_mu_h_.data(); }
+   // reflect_mu_host()[a] is the ordinate with mu = -mu_a and the same weight
+   const PetscInt *reflect_mu_host() const { return reflect_host(0); }
 
 private:
    std::vector<PetscScalar> mu_h_;
-   std::vector<PetscInt> reflect_mu_h_;
    PetscScalarKokkosView mu_d_;
 };
 
@@ -96,16 +112,13 @@ public:
    const PetscScalarKokkosView &mu_d() const { return mu_d_; }
    const PetscScalarKokkosView &eta_d() const { return eta_d_; }
    // The reflection partners: reflect_mu_host()[a] flips the sign of mu and
-   // keeps eta (an x-face reflection), reflect_eta_host()[a] the other way
-   // round. Host only: the COO preallocation is the only consumer
-   const PetscInt *reflect_mu_host() const { return reflect_mu_h_.data(); }
-   const PetscInt *reflect_eta_host() const { return reflect_eta_h_.data(); }
+   // keeps eta (an x-face reflection), reflect_eta_host()[a] the other way round
+   const PetscInt *reflect_mu_host() const { return reflect_host(0); }
+   const PetscInt *reflect_eta_host() const { return reflect_host(1); }
 
 private:
    std::vector<PetscScalar> mu_h_;
    std::vector<PetscScalar> eta_h_;
-   std::vector<PetscInt> reflect_mu_h_;
-   std::vector<PetscInt> reflect_eta_h_;
    PetscScalarKokkosView mu_d_;
    PetscScalarKokkosView eta_d_;
 };
@@ -131,19 +144,15 @@ public:
    const PetscScalarKokkosView &eta_d() const { return eta_d_; }
    const PetscScalarKokkosView &xi_d() const { return xi_d_; }
    // The reflection partners, one per axis: each map flips the sign of its own
-   // cosine and keeps the other two. Host only: the COO preallocation is the
-   // only consumer
-   const PetscInt *reflect_mu_host() const { return reflect_mu_h_.data(); }
-   const PetscInt *reflect_eta_host() const { return reflect_eta_h_.data(); }
-   const PetscInt *reflect_xi_host() const { return reflect_xi_h_.data(); }
+   // cosine and keeps the other two
+   const PetscInt *reflect_mu_host() const { return reflect_host(0); }
+   const PetscInt *reflect_eta_host() const { return reflect_host(1); }
+   const PetscInt *reflect_xi_host() const { return reflect_host(2); }
 
 private:
    std::vector<PetscScalar> mu_h_;
    std::vector<PetscScalar> eta_h_;
    std::vector<PetscScalar> xi_h_;
-   std::vector<PetscInt> reflect_mu_h_;
-   std::vector<PetscInt> reflect_eta_h_;
-   std::vector<PetscInt> reflect_xi_h_;
    PetscScalarKokkosView mu_d_;
    PetscScalarKokkosView eta_d_;
    PetscScalarKokkosView xi_d_;

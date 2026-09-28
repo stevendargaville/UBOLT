@@ -48,13 +48,12 @@
 //
 // Why k of them rather than one per group. One pmat per group is exact and
 // costs a PCAIR hierarchy per group; one pmat for the whole sweep costs one
-// hierarchy and is exact only if every group has the same removal. The measured
-// middle (Phase 5 campaign, Aug 2026): iteration quality degrades gently with
-// the MISMATCH RATIO between a group's alpha and the one its pmat was built
-// with - a factor of 3 costs roughly 1.3-1.6x, and the whole useful window is
-// about a factor of 10 - and that window is independent of the mesh and the
-// angular order. So a handful of hierarchies, log-spaced over the range the
-// groups occupy, covers a realistic multigroup problem
+// hierarchy and is exact only if every group has the same removal. Iteration
+// quality degrades gently with the MISMATCH RATIO between a group's alpha and
+// the one its pmat was built with, independently of the mesh and the angular
+// order (measurements: TODO.md Phase 5), so a handful of hierarchies,
+// log-spaced over the range the groups occupy, covers a realistic multigroup
+// problem
 //
 // Which is what this class is: the alphas, the binning, and the k matrices. The
 // group loop stays with the caller, which owns one solver per bin and asks
@@ -69,14 +68,11 @@ public:
    // fewest that do as well as that cap allows (asking for a bin that does not
    // improve the worst case buys a hierarchy and nothing else)
    //
-   // 3 is where the campaign measured a mismatch of that size costing roughly
-   // 1.3-1.6x the exact-ratio iteration count, with the whole useful window
-   // about a factor of 10 wide - so it is the far end of "still cheap" rather
-   // than the edge of "still works". 3 bins covers a factor of 9 apiece, i.e.
-   // an alpha range of a few hundred, which is more than a realistic group
-   // structure spans; past that a PCAIR hierarchy per bin is the thing that
-   // stops being free, so the default stops and -precon_ref_k is how a caller
-   // buys more deliberately
+   // A mismatch of 3 is the far end of "still cheap" rather than the edge of
+   // "still works" (TODO.md Phase 5). 3 bins of a factor of 9 apiece span an
+   // alpha range of a few hundred, more than a realistic group structure;
+   // past that a hierarchy per bin stops being free, so -precon_ref_k is how
+   // a caller buys more deliberately
    static constexpr PetscReal default_max_mismatch = 3.0;
    static constexpr PetscInt  default_max_bins     = 3;
 
