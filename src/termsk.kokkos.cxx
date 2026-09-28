@@ -74,7 +74,7 @@ static void StructuredStreamingKernel(PetscScalarKokkosView out_d, bool diag_onl
    PetscInt n_angles, PetscInt local_rows)
 {
    Kokkos::parallel_for(
-      Kokkos::RangePolicy<>(0, local_rows), KOKKOS_LAMBDA(PetscInt r) {
+      Kokkos::RangePolicy<>(PetscGetKokkosExecutionSpace(), 0, local_rows), KOKKOS_LAMBDA(PetscInt r) {
 
          // BC rows carry only what the assembly puts on them
          if (is_bc_row_d(r)) return;
@@ -208,7 +208,7 @@ PetscErrorCode StreamingTermDG0::assemble_add(const PetscScalarKokkosView &coo_v
    PetscFunctionBeginUser;
 
    Kokkos::parallel_for(
-      Kokkos::RangePolicy<>(0, local_rows_), KOKKOS_LAMBDA(PetscInt r) {
+      Kokkos::RangePolicy<>(PetscGetKokkosExecutionSpace(), 0, local_rows_), KOKKOS_LAMBDA(PetscInt r) {
 
          // BC rows carry only what the assembly puts on them
          if (is_bc_row_d(r)) return;
@@ -254,7 +254,7 @@ PetscErrorCode StreamingTermDG0::add_diagonal(Vec d) const
    PetscCall(VecGetKokkosView(d, &d_d));
 
    Kokkos::parallel_for(
-      Kokkos::RangePolicy<>(0, local_rows_), KOKKOS_LAMBDA(PetscInt r) {
+      Kokkos::RangePolicy<>(PetscGetKokkosExecutionSpace(), 0, local_rows_), KOKKOS_LAMBDA(PetscInt r) {
 
          if (is_bc_row_d(r)) return;
 
@@ -341,7 +341,7 @@ PetscErrorCode StreamingTermDG1::assemble_add(const PetscScalarKokkosView &coo_v
    PetscFunctionBeginUser;
 
    Kokkos::parallel_for(
-      Kokkos::RangePolicy<>(0, local_rows_), KOKKOS_LAMBDA(PetscInt r) {
+      Kokkos::RangePolicy<>(PetscGetKokkosExecutionSpace(), 0, local_rows_), KOKKOS_LAMBDA(PetscInt r) {
 
          // DG1 has no BC rows, but the contract costs nothing to keep
          if (is_bc_row_d(r)) return;
@@ -404,7 +404,7 @@ PetscErrorCode StreamingTermDG1::add_diagonal(Vec d) const
    PetscCall(VecGetKokkosView(d, &d_d));
 
    Kokkos::parallel_for(
-      Kokkos::RangePolicy<>(0, local_rows_), KOKKOS_LAMBDA(PetscInt r) {
+      Kokkos::RangePolicy<>(PetscGetKokkosExecutionSpace(), 0, local_rows_), KOKKOS_LAMBDA(PetscInt r) {
 
          if (is_bc_row_d(r)) return;
 
@@ -458,7 +458,7 @@ PetscErrorCode RemovalTerm::assemble_add(const PetscScalarKokkosView &coo_v_d) c
    PetscFunctionBeginUser;
 
    Kokkos::parallel_for(
-      Kokkos::RangePolicy<>(0, local_rows_), KOKKOS_LAMBDA(PetscInt r) {
+      Kokkos::RangePolicy<>(PetscGetKokkosExecutionSpace(), 0, local_rows_), KOKKOS_LAMBDA(PetscInt r) {
 
          // Add nothing to the bcs
          if (is_bc_row_d(r)) return;
@@ -492,7 +492,7 @@ PetscErrorCode RemovalTerm::apply_add(Vec x, Vec y) const
    PetscCall(VecGetKokkosView(y, &y_d));
 
    Kokkos::parallel_for(
-      Kokkos::RangePolicy<>(0, local_rows_), KOKKOS_LAMBDA(PetscInt r) {
+      Kokkos::RangePolicy<>(PetscGetKokkosExecutionSpace(), 0, local_rows_), KOKKOS_LAMBDA(PetscInt r) {
 
          // Add nothing to the bcs - the assembly wrote those rows and this
          // would take that straight back off
@@ -526,7 +526,7 @@ PetscErrorCode RemovalTerm::add_diagonal(Vec d) const
    PetscCall(VecGetKokkosView(d, &d_d));
 
    Kokkos::parallel_for(
-      Kokkos::RangePolicy<>(0, local_rows_), KOKKOS_LAMBDA(PetscInt r) {
+      Kokkos::RangePolicy<>(PetscGetKokkosExecutionSpace(), 0, local_rows_), KOKKOS_LAMBDA(PetscInt r) {
 
          if (is_bc_row_d(r)) return;
 
@@ -609,7 +609,7 @@ PetscErrorCode ScatteringTerm::apply_add(Vec x, Vec y) const
 
    // Now let's multiply by the scattering xsection
    Kokkos::parallel_for(
-      Kokkos::RangePolicy<>(0, local_nodes), KOKKOS_LAMBDA(PetscInt i) {
+      Kokkos::RangePolicy<>(PetscGetKokkosExecutionSpace(), 0, local_nodes), KOKKOS_LAMBDA(PetscInt i) {
 
          // We have to divide by the sum of weights to get the amount going
          // into each angle. The xsection is per cell

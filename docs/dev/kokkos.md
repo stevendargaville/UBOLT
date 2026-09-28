@@ -194,6 +194,18 @@ fill runs on device (MATAIJKOKKOS dispatches `MatSetValuesCOO` to the GPU):
   per term, the first INSERTing and the rest ADDing. Same per-entry arithmetic in the same
   order, so the two paths agree bit for bit — the test suite runs both.
 
+## Execution space: one instance, PETSc's
+- Every policy, `deep_copy`, `KokkosBlas` call and host mirror copy in `src/` runs on
+  `PetscGetKokkosExecutionSpace()` (from `petsc_kokkos.hpp`): `RangePolicy<>(exec, 0, n)`,
+  `deep_copy(exec, dst, src)`, `KokkosBlas::gemm(exec, ...)`, `create_mirror_view` +
+  `deep_copy(exec, h, d)` — never the default-instance overloads.
+- Why: PETSc's own Vec/Mat kernels (and `MatSetValuesCOO`) run on that instance, so UBOLT's
+  kernels are ordered against them by the stream alone. The default instance is ordered
+  with PETSc's only while PETSc's root stream is the legacy NULL stream; on SYCL or a
+  non-blocking stream it is a race.
+- `deep_copy(exec, ...)` returns before the copy is done: `exec.fence()` before the host
+  reads a device-to-host result, and before the host source of an upload is freed or reused.
+
 ## MatShell rules
 - `MatShellSetVecType` from the assembled matrix's vectype is MANDATORY after
   `MatCreateShell` — without it the shell creates host vectors and every Kokkos view

@@ -1,4 +1,5 @@
 #include "ubolt/discretisation.hpp"
+#include "petsc_kokkos.hpp"
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -134,16 +135,19 @@ PetscErrorCode Discretisation::set_pattern(const std::vector<PetscInt> &row_slot
    PetscIntKokkosViewHostUnmanaged reflect_slot_h(const_cast<PetscInt *>(rows.reflect_slot.data()), local_rows);
    PetscScalarKokkosViewHostUnmanaged dirichlet_value_h(const_cast<PetscScalar *>(rows.dirichlet_value.data()), \
       local_rows);
-   Kokkos::deep_copy(pattern_.row_slot_offset_d, row_slot_offset_h);
-   Kokkos::deep_copy(pattern_.diag_slot_d, diag_slot_h);
-   Kokkos::deep_copy(boundary_.is_bc_row_d, is_bc_row_h);
-   Kokkos::deep_copy(boundary_.reflect_slot_d, reflect_slot_h);
-   Kokkos::deep_copy(boundary_.dirichlet_value_d, dirichlet_value_h);
+   auto exec = PetscGetKokkosExecutionSpace();
+   Kokkos::deep_copy(exec, pattern_.row_slot_offset_d, row_slot_offset_h);
+   Kokkos::deep_copy(exec, pattern_.diag_slot_d, diag_slot_h);
+   Kokkos::deep_copy(exec, boundary_.is_bc_row_d, is_bc_row_h);
+   Kokkos::deep_copy(exec, boundary_.reflect_slot_d, reflect_slot_h);
+   Kokkos::deep_copy(exec, boundary_.dirichlet_value_d, dirichlet_value_h);
    if (rows.ghost_flux) {
       PetscScalarKokkosViewHostUnmanaged ghost_inflow_h( \
          const_cast<PetscScalar *>(rows.ghost_inflow.data()), local_rows);
-      Kokkos::deep_copy(boundary_.ghost_inflow_d, ghost_inflow_h);
+      Kokkos::deep_copy(exec, boundary_.ghost_inflow_d, ghost_inflow_h);
    }
+   // The copies are asynchronous and the host arrays are the caller's
+   exec.fence();
 
    PetscFunctionReturn(PETSC_SUCCESS);
 }
@@ -156,7 +160,7 @@ static void FillInflowKernel(PetscScalarKokkosView b_d, PetscIntKokkosView is_bc
    PetscIntKokkosView reflect_slot_d, PetscScalarKokkosView dirichlet_value_d, PetscInt local_rows)
 {
    Kokkos::parallel_for(
-      Kokkos::RangePolicy<>(0, local_rows), KOKKOS_LAMBDA(PetscInt r) {
+      Kokkos::RangePolicy<>(PetscGetKokkosExecutionSpace(), 0, local_rows), KOKKOS_LAMBDA(PetscInt r) {
 
          // Dirichlet = a BC row that is not reflective, the existing idiom
          if (is_bc_row_d(r) && reflect_slot_d(r) < 0) b_d(r) = dirichlet_value_d(r);
@@ -170,7 +174,7 @@ static void FillGhostInflowKernel(PetscScalarKokkosView b_d, \
    PetscScalarKokkosView ghost_inflow_d, PetscInt local_rows)
 {
    Kokkos::parallel_for(
-      Kokkos::RangePolicy<>(0, local_rows), KOKKOS_LAMBDA(PetscInt r) {
+      Kokkos::RangePolicy<>(PetscGetKokkosExecutionSpace(), 0, local_rows), KOKKOS_LAMBDA(PetscInt r) {
 
          b_d(r) += ghost_inflow_d(r);
       });
@@ -209,7 +213,7 @@ static void ZeroReflectRowsKernel(PetscScalarKokkosView b_d, PetscIntKokkosView 
    PetscInt local_rows)
 {
    Kokkos::parallel_for(
-      Kokkos::RangePolicy<>(0, local_rows), KOKKOS_LAMBDA(PetscInt r) {
+      Kokkos::RangePolicy<>(PetscGetKokkosExecutionSpace(), 0, local_rows), KOKKOS_LAMBDA(PetscInt r) {
 
          if (reflect_slot_d(r) >= 0) b_d(r) = 0.0;
       });

@@ -80,7 +80,7 @@ PetscErrorCode PlexDiscretisation::allocate_background(PetscInt background_mater
       "background material index %" PetscInt_FMT " is negative", background_material);
 
    mat_id_d = PetscIntKokkosView("mat_id_d", (PetscInt)paint_point_.size());
-   Kokkos::deep_copy(mat_id_d, background_material);
+   Kokkos::deep_copy(PetscGetKokkosExecutionSpace(), mat_id_d, background_material);
 
    PetscFunctionReturn(PETSC_SUCCESS);
 }

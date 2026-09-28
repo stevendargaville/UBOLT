@@ -1,4 +1,5 @@
 #include "ubolt/block_inverse.hpp"
+#include "petsc_kokkos.hpp"
 #include <petscmat_kokkos.hpp>
 // For PetscObjectStateIncrease only (see scale()); a src/ TU, so the private
 // header never reaches include/ubolt/
@@ -86,7 +87,7 @@ static PetscInt InvertBlocksKernel(PetscScalarKokkosView inv_d, PetscIntConstKok
    PetscInt n_singular = 0;
 
    Kokkos::parallel_reduce(
-      Kokkos::RangePolicy<>(0, n_blocks), KOKKOS_LAMBDA(PetscInt b, PetscInt &singular) {
+      Kokkos::RangePolicy<>(PetscGetKokkosExecutionSpace(), 0, n_blocks), KOKKOS_LAMBDA(PetscInt b, PetscInt &singular) {
 
          const PetscInt c = b / n_angles;
          const PetscInt a = b % n_angles;
@@ -162,7 +163,7 @@ static PetscInt ScaleRowsKernel(PetscScalarMatKokkosView out_a, PetscIntConstKok
    PetscInt n_mismatch = 0;
 
    Kokkos::parallel_reduce(
-      Kokkos::RangePolicy<>(0, n_blocks), KOKKOS_LAMBDA(PetscInt b, PetscInt &mismatch) {
+      Kokkos::RangePolicy<>(PetscGetKokkosExecutionSpace(), 0, n_blocks), KOKKOS_LAMBDA(PetscInt b, PetscInt &mismatch) {
 
          const PetscInt c = b / n_angles;
          const PetscInt a = b % n_angles;
@@ -206,7 +207,7 @@ static void ApplyKernel(PetscScalarKokkosView y_d, PetscScalarConstKokkosView x_
    PetscInt n_angles, PetscInt nb, PetscInt n_blocks)
 {
    Kokkos::parallel_for(
-      Kokkos::RangePolicy<>(0, n_blocks), KOKKOS_LAMBDA(PetscInt b) {
+      Kokkos::RangePolicy<>(PetscGetKokkosExecutionSpace(), 0, n_blocks), KOKKOS_LAMBDA(PetscInt b) {
 
          const PetscInt c = b / n_angles;
          const PetscInt a = b % n_angles;

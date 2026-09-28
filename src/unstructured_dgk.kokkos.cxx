@@ -516,9 +516,10 @@ PetscErrorCode UnstructuredDG::create(PhaseSpace &ps, const AngularQuadrature &q
       PetscScalarKokkosViewHostUnmanaged face_own_h(face_own.data(), face_own.size());
       PetscScalarKokkosViewHostUnmanaged face_up_h(face_up.data(), face_up.size());
       PetscScalarKokkosViewHostUnmanaged basis_grad_h(basis_grad.data(), basis_grad.size());
-      Kokkos::deep_copy(face_own_d_, face_own_h);
-      Kokkos::deep_copy(face_up_d_, face_up_h);
-      Kokkos::deep_copy(basis_grad_d_, basis_grad_h);
+      // The host buffers move into members below, so they outlive the copies
+      Kokkos::deep_copy(PetscGetKokkosExecutionSpace(), face_own_d_, face_own_h);
+      Kokkos::deep_copy(PetscGetKokkosExecutionSpace(), face_up_d_, face_up_h);
+      Kokkos::deep_copy(PetscGetKokkosExecutionSpace(), basis_grad_d_, basis_grad_h);
       face_own_h_ = std::move(face_own);
       face_up_h_ = std::move(face_up);
       basis_grad_h_ = std::move(basis_grad);
@@ -680,11 +681,14 @@ PetscErrorCode UnstructuredDG::create(PhaseSpace &ps, const AngularQuadrature &q
    PetscScalarKokkosViewHostUnmanaged face_nA_h(face_nA_h_.data(), 3 * n_cell_faces);
    PetscScalarKokkosViewHostUnmanaged inv_volume_h(inv_volume.data(), local_cells);
    PetscScalarKokkosViewHostUnmanaged centroid_h(centroid.data(), 3 * local_cells);
-   Kokkos::deep_copy(omega_d_, omega_h);
-   Kokkos::deep_copy(cell_face_offset_d_, cell_face_offset_h);
-   Kokkos::deep_copy(face_nA_d_, face_nA_h);
-   Kokkos::deep_copy(inv_volume_d_, inv_volume_h);
-   Kokkos::deep_copy(paint_centroid_d_, centroid_h);
+   auto exec = PetscGetKokkosExecutionSpace();
+   Kokkos::deep_copy(exec, omega_d_, omega_h);
+   Kokkos::deep_copy(exec, cell_face_offset_d_, cell_face_offset_h);
+   Kokkos::deep_copy(exec, face_nA_d_, face_nA_h);
+   Kokkos::deep_copy(exec, inv_volume_d_, inv_volume_h);
+   Kokkos::deep_copy(exec, paint_centroid_d_, centroid_h);
+   // The copies are asynchronous and inv_volume and centroid die here
+   exec.fence();
 
    PetscFunctionReturn(PETSC_SUCCESS);
 }
@@ -824,7 +828,7 @@ static void ScalarFluxGradientKernel(PetscScalarKokkosView grad_d, PetscScalar2D
    PetscScalarKokkosView basis_grad_d, PetscInt nb, PetscInt d, PetscInt local_cells)
 {
    Kokkos::parallel_for(
-      Kokkos::RangePolicy<>(0, local_cells), KOKKOS_LAMBDA(PetscInt c) {
+      Kokkos::RangePolicy<>(PetscGetKokkosExecutionSpace(), 0, local_cells), KOKKOS_LAMBDA(PetscInt c) {
 
          PetscScalar g = 0.0;
          for (PetscInt i = 1; i < nb; i++) g += phi_d(c * nb + i, 0) * basis_grad_d((c * nb + i) * 3 + d);

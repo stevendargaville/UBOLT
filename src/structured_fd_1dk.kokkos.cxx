@@ -279,7 +279,7 @@ static void PaintIntervalsKernel(PetscIntKokkosView mat_id_d, PetscInt backgroun
    PetscInt cell_start_x, PetscScalar dx, PetscInt local_cells)
 {
    Kokkos::parallel_for(
-      Kokkos::RangePolicy<>(0, local_cells), KOKKOS_LAMBDA(PetscInt c) {
+      Kokkos::RangePolicy<>(PetscGetKokkosExecutionSpace(), 0, local_cells), KOKKOS_LAMBDA(PetscInt c) {
 
          // The centre of local cell c - node i sits at i dx
          const PetscScalar xc = ((PetscScalar)(cell_start_x + c) + 0.5) * dx;
@@ -329,8 +329,10 @@ PetscErrorCode StructuredFD1D::paint_intervals(PetscInt background_material, \
    if (n_intervals > 0) {
       PetscScalarKokkosViewHostUnmanaged interval_x_h(interval_x.data(), 2 * n_intervals);
       PetscIntKokkosViewHostUnmanaged interval_material_h(interval_material.data(), n_intervals);
-      Kokkos::deep_copy(interval_x_d, interval_x_h);
-      Kokkos::deep_copy(interval_material_d, interval_material_h);
+      Kokkos::deep_copy(PetscGetKokkosExecutionSpace(), interval_x_d, interval_x_h);
+      Kokkos::deep_copy(PetscGetKokkosExecutionSpace(), interval_material_d, interval_material_h);
+      // The copies are asynchronous and the host intervals die here
+      PetscGetKokkosExecutionSpace().fence();
    }
 
    mat_id_d = PetscIntKokkosView("mat_id_d", ps_.local_cells);

@@ -86,7 +86,7 @@ PetscErrorCode GroupXSections::set_sigma_t(PetscInt g, PetscScalar value)
    PetscCheck(g >= 0 && g < n_groups_, PETSC_COMM_SELF, PETSC_ERR_ARG_OUTOFRANGE, \
       "group %" PetscInt_FMT " out of range, n_groups is %" PetscInt_FMT, g, n_groups_);
 
-   Kokkos::deep_copy(sigma_t(g), value);
+   Kokkos::deep_copy(PetscGetKokkosExecutionSpace(), sigma_t(g), value);
 
    PetscFunctionReturn(PETSC_SUCCESS);
 }
@@ -102,7 +102,7 @@ PetscErrorCode GroupXSections::set_sigma_s(PetscInt g_from, PetscInt g_to, Petsc
    PetscCheck(g_to >= 0 && g_to < n_groups_, PETSC_COMM_SELF, PETSC_ERR_ARG_OUTOFRANGE, \
       "group %" PetscInt_FMT " out of range, n_groups is %" PetscInt_FMT, g_to, n_groups_);
 
-   Kokkos::deep_copy(sigma_s(g_from, g_to), value);
+   Kokkos::deep_copy(PetscGetKokkosExecutionSpace(), sigma_s(g_from, g_to), value);
 
    PetscFunctionReturn(PETSC_SUCCESS);
 }
@@ -120,7 +120,7 @@ static void FillFromMaterialsKernel(PetscScalar2DRightKokkosView sigma_t_d, \
    PetscInt local_cells)
 {
    Kokkos::parallel_for(
-      Kokkos::RangePolicy<>(0, local_cells), KOKKOS_LAMBDA(PetscInt c) {
+      Kokkos::RangePolicy<>(PetscGetKokkosExecutionSpace(), 0, local_cells), KOKKOS_LAMBDA(PetscInt c) {
 
          const PetscInt m = mat_id_d(c);
          for (PetscInt g = 0; g < n_groups; g++) {
@@ -154,8 +154,11 @@ PetscErrorCode GroupXSections::set_from_materials(const MaterialSpec &mats, cons
       const_cast<PetscScalar *>(mats.sigma_t_host().data()), mats.sigma_t_host().size());
    PetscScalarKokkosViewHostUnmanaged sigma_s_tab_h( \
       const_cast<PetscScalar *>(mats.sigma_s_host().data()), mats.sigma_s_host().size());
-   Kokkos::deep_copy(sigma_t_tab_d, sigma_t_tab_h);
-   Kokkos::deep_copy(sigma_s_tab_d, sigma_s_tab_h);
+   auto exec = PetscGetKokkosExecutionSpace();
+   Kokkos::deep_copy(exec, sigma_t_tab_d, sigma_t_tab_h);
+   Kokkos::deep_copy(exec, sigma_s_tab_d, sigma_s_tab_h);
+   // The copies are asynchronous and the host tables are the caller's
+   exec.fence();
 
    FillFromMaterialsKernel(sigma_t_d_, sigma_s_d_, sigma_t_tab_d, sigma_s_tab_d, mat_id_d, \
       n_groups_, local_cells_);
@@ -265,7 +268,7 @@ PetscErrorCode GroupTransfer::add_transfer(PetscInt g_from, PetscInt g_to, Vec b
    // amount going into each angle. Into the scratch, not the cache: the source
    // group scatters into every group below it and each wants its own xsection
    Kokkos::parallel_for(
-      Kokkos::RangePolicy<>(0, local_nodes), KOKKOS_LAMBDA(PetscInt i) {
+      Kokkos::RangePolicy<>(PetscGetKokkosExecutionSpace(), 0, local_nodes), KOKKOS_LAMBDA(PetscInt i) {
 
          // The xsection is per cell
          scalar_flux_d(i, 0) = phi_d(i, 0) * (sigma_s_d(i / n_basis) / sum_weights);

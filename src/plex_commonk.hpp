@@ -396,7 +396,7 @@ static inline void PaintBoxesKernel(PetscIntKokkosView mat_id_d, PetscScalarKokk
    PetscInt dim, PetscInt n_cells)
 {
    Kokkos::parallel_for(
-      Kokkos::RangePolicy<>(0, n_cells), KOKKOS_LAMBDA(PetscInt c) {
+      Kokkos::RangePolicy<>(PetscGetKokkosExecutionSpace(), 0, n_cells), KOKKOS_LAMBDA(PetscInt c) {
 
          PetscInt m = mat_id_d(c);
          for (PetscInt b = 0; b < n_boxes; b++) {
@@ -441,8 +441,10 @@ static inline PetscErrorCode PaintFlatBoxes(MPI_Comm comm, PetscInt dim, PetscIn
    if (n_boxes > 0) {
       PetscScalarKokkosViewHostUnmanaged box_lohi_h(const_cast<PetscScalar *>(box_lohi.data()), 2 * dim * n_boxes);
       PetscIntKokkosViewHostUnmanaged box_material_h(const_cast<PetscInt *>(box_material.data()), n_boxes);
-      Kokkos::deep_copy(box_lohi_d, box_lohi_h);
-      Kokkos::deep_copy(box_material_d, box_material_h);
+      Kokkos::deep_copy(PetscGetKokkosExecutionSpace(), box_lohi_d, box_lohi_h);
+      Kokkos::deep_copy(PetscGetKokkosExecutionSpace(), box_material_d, box_material_h);
+      // The copies are asynchronous and the host boxes are the caller's
+      PetscGetKokkosExecutionSpace().fence();
    }
 
    PaintBoxesKernel(mat_id_d, centroid_d, box_lohi_d, box_material_d, n_boxes, dim, n_cells);
@@ -489,7 +491,9 @@ static inline PetscErrorCode PaintCellSets(DM dm, MPI_Comm comm, PetscInt backgr
 
    mat_id_d = PetscIntKokkosView("mat_id_d", n_cells);
    PetscIntKokkosViewHostUnmanaged mat_id_h(mat_id.data(), n_cells);
-   Kokkos::deep_copy(mat_id_d, mat_id_h);
+   Kokkos::deep_copy(PetscGetKokkosExecutionSpace(), mat_id_d, mat_id_h);
+   // The copy is asynchronous and mat_id dies here
+   PetscGetKokkosExecutionSpace().fence();
 
    PetscFunctionReturn(PETSC_SUCCESS);
 }

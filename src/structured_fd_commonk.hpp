@@ -406,7 +406,7 @@ template <int DIM> static void PaintStructuredBoxesKernel(PetscIntKokkosView mat
    PetscScalar h_z, PetscInt local_cells)
 {
    Kokkos::parallel_for(
-      Kokkos::RangePolicy<>(0, local_cells), KOKKOS_LAMBDA(PetscInt c) {
+      Kokkos::RangePolicy<>(PetscGetKokkosExecutionSpace(), 0, local_cells), KOKKOS_LAMBDA(PetscInt c) {
 
          // The centre of local cell c, in the patch's lexicographic order
          PetscScalar centre[3] = {0.0, 0.0, 0.0};
@@ -464,8 +464,10 @@ template <class Box> static PetscErrorCode PaintStructuredBoxes(MPI_Comm comm, P
    if (n_boxes > 0) {
       PetscScalarKokkosViewHostUnmanaged box_lohi_h(box_lohi.data(), 2 * DIM * n_boxes);
       PetscIntKokkosViewHostUnmanaged box_material_h(box_material.data(), n_boxes);
-      Kokkos::deep_copy(box_lohi_d, box_lohi_h);
-      Kokkos::deep_copy(box_material_d, box_material_h);
+      Kokkos::deep_copy(PetscGetKokkosExecutionSpace(), box_lohi_d, box_lohi_h);
+      Kokkos::deep_copy(PetscGetKokkosExecutionSpace(), box_material_d, box_material_h);
+      // The copies are asynchronous and the host boxes die here
+      PetscGetKokkosExecutionSpace().fence();
    }
 
    mat_id_d = PetscIntKokkosView("mat_id_d", local_cells);

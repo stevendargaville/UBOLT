@@ -46,7 +46,7 @@ static void SUPGFillKernel(PetscScalarKokkosView out_d, bool diag_only, PetscSca
    PetscInt local_rows)
 {
    Kokkos::parallel_for(
-      Kokkos::RangePolicy<>(0, local_rows), KOKKOS_LAMBDA(PetscInt r) {
+      Kokkos::RangePolicy<>(PetscGetKokkosExecutionSpace(), 0, local_rows), KOKKOS_LAMBDA(PetscInt r) {
 
          const PetscInt k = r / n_angles;
          const PetscInt a = r % n_angles;
@@ -150,7 +150,7 @@ static PetscErrorCode NodalFromScalarFlux(const PetscScalar2DKokkosView &phi_d, 
    PetscCheck(n == (PetscInt)phi_d.extent(0), PETSC_COMM_SELF, PETSC_ERR_ARG_INCOMP, \
       "a nodal Vec of %" PetscInt_FMT " vertices for %" PetscInt_FMT " owned vertices", n, (PetscInt)phi_d.extent(0));
    Kokkos::parallel_for(
-      Kokkos::RangePolicy<>(0, n), KOKKOS_LAMBDA(PetscInt i) { n_d(i) = phi_d(i, 0); });
+      Kokkos::RangePolicy<>(PetscGetKokkosExecutionSpace(), 0, n), KOKKOS_LAMBDA(PetscInt i) { n_d(i) = phi_d(i, 0); });
    PetscCall(VecRestoreKokkosViewWrite(nodal, &n_d));
 
    PetscFunctionReturn(PETSC_SUCCESS);
