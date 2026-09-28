@@ -52,7 +52,7 @@ static void ShiftFillKernel(PetscScalarKokkosView shift_d, \
 //     opens a new one and becomes its reference. On a void-free problem every
 //     group with removal has the whole mesh as its support, so there is one
 //     class and its reference is the first such group - group 0 whenever
-//     group 0 qualifies, which is what the alphas (and the pins) always were
+//     group 0 qualifies
 //   - a VOID cell is outside the support, so it is left out of the log-mean
 //     (the ratio 0/0 means nothing there) and the class reference is zero in
 //     it - the shift built from it leaves the void's pmat rows pure streaming,
@@ -137,8 +137,7 @@ PetscErrorCode RefShiftPmats::compute_alphas(const GroupXSections &xs)
 
    // A reference's own ratio is 1 by construction and there is nothing to sum
    // - taking the log of sigma_t/sigma_t would only add rounding. On a
-   // void-free class every cell is in the support and the divisor is n_cells,
-   // so the arithmetic is exactly what it was before voids were admitted
+   // void-free class every cell is in the support and the divisor is n_cells
    for (PetscInt g = 0; g < n_groups_; g++) {
       if (is_streaming_group_[g]) continue;
       const PetscInt k = class_of_group_[g];
@@ -215,8 +214,7 @@ static PetscInt BinsNeeded(const std::vector<PetscReal> &sorted_log, PetscReal s
 // that still holds more than one, until they run out or every bin is exact.
 // That never widens a bin, so the worst mismatch stands, and the top is where
 // the spare hierarchy pays: the high-alpha groups are the thick ones, where a
-// mismatch costs the most iterations (box_decades4 at k = 3: 15, 29 on the two
-// thick groups with them exact, against 27, 51 with them sharing a bin)
+// mismatch costs the most iterations (TODO.md Phase 5)
 //
 // Each bin's representative then sits at the log-MIDPOINT of the alphas it
 // holds, which is the choice that minimises the worst mismatch inside the bin:
@@ -316,8 +314,7 @@ PetscErrorCode RefShiftPmats::create(MPI_Comm comm, const PhaseSpace &ps, \
    // after those of the classes before it, and a class never shares a bin with
    // another (their references differ where one of them is void). On a problem
    // with at most one support besides the empty one, which is every problem
-   // whose voids are void in every group, there is one class and this is the
-   // single binning it always was
+   // whose voids are void in every group, there is one class and one binning
    //
    // How many bins per class - counting the SHIFTED ones only: the unshifted
    // bin any streaming-only groups share is appended on top of the count,

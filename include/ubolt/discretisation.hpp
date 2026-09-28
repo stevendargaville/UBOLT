@@ -48,6 +48,9 @@ public:
 
    // The DM the layout, the mesh and the decomposition came from
    DM dm() const { return dm_; }
+   MPI_Comm comm() const { return comm_; }
+   // The phase space as decomposed by create()
+   const PhaseSpace &phase_space() const { return ps_; }
 
 protected:
    // Backends are built through their own create(), never by instantiating this

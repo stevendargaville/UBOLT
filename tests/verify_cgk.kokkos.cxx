@@ -83,7 +83,7 @@ static PetscErrorCode BuildCG(const PlexMeshSpec &mesh, PetscInt sn_order, const
    PetscCall(p.xs.set_from_materials(mats, p.mat_id_d));
    PetscCall(p.supg.create(p.ps, p.disc, p.xs.sigma_t(0)));
    PetscCall(p.scattering.create(p.ps, p.disc, p.quad, p.xs.sigma_t(0), p.xs.sigma_s(0, 0)));
-   PetscCall(p.op.create(PETSC_COMM_WORLD, p.ps, p.disc));
+   PetscCall(p.op.create(p.disc));
    PetscCall(p.op.add_term(&p.supg));
    PetscCall(p.op.add_term(&p.scattering));
    PetscCall(p.op.assemble());

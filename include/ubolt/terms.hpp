@@ -12,88 +12,58 @@
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-// Streaming: mu dpsi/dx, upwinded onto the discretisation's stencil
+// Streaming on a structured mesh: sum_d |cos_d| / h_d (psi_here - psi_upwind_d),
+// each axis upwinded onto its own slot
 //
-// Takes the 1D backend by concrete type, not the Discretisation base: it needs
-// the geometry (dx) and it owns the upwind slot convention, both of which are
-// per-dimension. A 2D mesh wants a 2D sibling, not this term
-class PETSC_VISIBILITY_PUBLIC StreamingTerm : public OperatorTerm {
+// The shared half of StreamingTerm1D / 2D / 3D; only those create it. It owns
+// the structured backends' slot convention: per row one upwind slot per axis in
+// axis order (x, y, z), then the diagonal - written positionally, so the fill
+// never branches on the sign of a cosine (the backend already put the upwind
+// neighbour, the mirrored angle or a null in each slot)
+class PETSC_VISIBILITY_PUBLIC StructuredStreamingTerm : public OperatorTerm {
+public:
+   PetscBool assembled() const override { return PETSC_TRUE; }
+   PetscErrorCode assemble_add(const PetscScalarKokkosView &coo_v_d) const override;
+
+   PetscBool has_diagonal() const override { return PETSC_TRUE; }
+   PetscErrorCode add_diagonal(Vec d) const override;
+
+protected:
+   StructuredStreamingTerm() = default;
+   // h and cos hold n_dims entries, axis order
+   PetscErrorCode create_common(const PhaseSpace &ps, const Discretisation &disc, PetscInt n_dims, \
+      const PetscScalar h[], const PetscScalarKokkosView cos_d[]);
+
+private:
+   PetscInt n_dims_ = 0;
+   PetscInt n_angles_ = 0;
+   PetscInt local_rows_ = 0;
+   PetscScalar h_[3] = {0.0, 0.0, 0.0};
+   PetscScalarKokkosView cos_d_[3];
+   CooPattern pattern_;
+   BoundaryInfo boundary_;
+};
+
+// The per-dimension streaming terms. Each takes its backend and SN set by
+// concrete type: the geometry (dx, dy, dz) and the direction cosines live
+// there, not on the bases
+
+// mu dpsi/dx
+class PETSC_VISIBILITY_PUBLIC StreamingTerm1D : public StructuredStreamingTerm {
 public:
    PetscErrorCode create(const PhaseSpace &ps, const StructuredFD1D &disc, const SNQuadrature &quad);
-
-   PetscBool assembled() const override { return PETSC_TRUE; }
-   PetscErrorCode assemble_add(PetscScalarKokkosView &coo_v_d) const override;
-
-   PetscBool has_diagonal() const override { return PETSC_TRUE; }
-   PetscErrorCode add_diagonal(Vec d) const override;
-
-private:
-   PetscInt n_angles_ = 0;
-   PetscInt local_rows_ = 0;
-   PetscScalar dx_ = 0.0;
-   PetscScalarKokkosView mu_d_;
-   CooPattern pattern_;
-   BoundaryInfo boundary_;
 };
 
-// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-// Streaming in 2D: mu dpsi/dx + eta dpsi/dy, each upwinded onto its own axis
-//
-// The sibling of StreamingTerm, not a generalisation of it: the slot convention
-// is per-dimension, and this is the term that owns it. It writes StructuredFD2D's
-// three slots positionally - upwind-x, upwind-y, diagonal - which is the same
-// contract the 1D pair have, one axis wider
-class PETSC_VISIBILITY_PUBLIC StreamingTerm2D : public OperatorTerm {
+// mu dpsi/dx + eta dpsi/dy
+class PETSC_VISIBILITY_PUBLIC StreamingTerm2D : public StructuredStreamingTerm {
 public:
    PetscErrorCode create(const PhaseSpace &ps, const StructuredFD2D &disc, const SNQuadrature2D &quad);
-
-   PetscBool assembled() const override { return PETSC_TRUE; }
-   PetscErrorCode assemble_add(PetscScalarKokkosView &coo_v_d) const override;
-
-   PetscBool has_diagonal() const override { return PETSC_TRUE; }
-   PetscErrorCode add_diagonal(Vec d) const override;
-
-private:
-   PetscInt n_angles_ = 0;
-   PetscInt local_rows_ = 0;
-   PetscScalar dx_ = 0.0;
-   PetscScalar dy_ = 0.0;
-   PetscScalarKokkosView mu_d_;
-   PetscScalarKokkosView eta_d_;
-   CooPattern pattern_;
-   BoundaryInfo boundary_;
 };
 
-// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-// Streaming in 3D: mu dpsi/dx + eta dpsi/dy + xi dpsi/dz, each upwinded onto
-// its own axis
-//
-// The next sibling along: it writes StructuredFD3D's four slots positionally -
-// upwind-x, upwind-y, upwind-z, diagonal - the same contract the 1D and 2D
-// pairs have, one axis wider again
-class PETSC_VISIBILITY_PUBLIC StreamingTerm3D : public OperatorTerm {
+// mu dpsi/dx + eta dpsi/dy + xi dpsi/dz
+class PETSC_VISIBILITY_PUBLIC StreamingTerm3D : public StructuredStreamingTerm {
 public:
    PetscErrorCode create(const PhaseSpace &ps, const StructuredFD3D &disc, const SNQuadrature3D &quad);
-
-   PetscBool assembled() const override { return PETSC_TRUE; }
-   PetscErrorCode assemble_add(PetscScalarKokkosView &coo_v_d) const override;
-
-   PetscBool has_diagonal() const override { return PETSC_TRUE; }
-   PetscErrorCode add_diagonal(Vec d) const override;
-
-private:
-   PetscInt n_angles_ = 0;
-   PetscInt local_rows_ = 0;
-   PetscScalar dx_ = 0.0;
-   PetscScalar dy_ = 0.0;
-   PetscScalar dz_ = 0.0;
-   PetscScalarKokkosView mu_d_;
-   PetscScalarKokkosView eta_d_;
-   PetscScalarKokkosView xi_d_;
-   CooPattern pattern_;
-   BoundaryInfo boundary_;
 };
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -118,7 +88,7 @@ public:
    PetscErrorCode create(const PhaseSpace &ps, const UnstructuredDG &disc);
 
    PetscBool assembled() const override { return PETSC_TRUE; }
-   PetscErrorCode assemble_add(PetscScalarKokkosView &coo_v_d) const override;
+   PetscErrorCode assemble_add(const PetscScalarKokkosView &coo_v_d) const override;
 
    PetscBool has_diagonal() const override { return PETSC_TRUE; }
    PetscErrorCode add_diagonal(Vec d) const override;
@@ -156,7 +126,7 @@ public:
    PetscErrorCode create(const PhaseSpace &ps, const UnstructuredDG &disc);
 
    PetscBool assembled() const override { return PETSC_TRUE; }
-   PetscErrorCode assemble_add(PetscScalarKokkosView &coo_v_d) const override;
+   PetscErrorCode assemble_add(const PetscScalarKokkosView &coo_v_d) const override;
 
    PetscBool has_diagonal() const override { return PETSC_TRUE; }
    PetscErrorCode add_diagonal(Vec d) const override;
@@ -200,6 +170,8 @@ public:
    // nothing here caches anything derived from sigma_t. Matrix-free the apply
    // reads it straight through, so there is nothing to refill at all
    void set_sigma_t(const PetscScalarKokkosView &sigma_t_d) { sigma_t_d_ = sigma_t_d; }
+   // set_sigma_t(xs.sigma_t(g))
+   PetscErrorCode set_group(const GroupXSections &xs, PetscInt g) override;
 
    // Assemble this term (the default) or apply it matrix-free. Set it before
    // the first TransportOperator::assemble() - the operator partitions its
@@ -208,7 +180,7 @@ public:
    void set_matrix_free(PetscBool matrix_free) { matrix_free_ = matrix_free; }
 
    PetscBool assembled() const override { return (PetscBool)!matrix_free_; }
-   PetscErrorCode assemble_add(PetscScalarKokkosView &coo_v_d) const override;
+   PetscErrorCode assemble_add(const PetscScalarKokkosView &coo_v_d) const override;
 
    PetscBool matrix_free() const override { return matrix_free_; }
    PetscErrorCode apply_add(Vec x, Vec y) const override;
@@ -231,7 +203,9 @@ private:
 
 // Isotropic scattering, applied matrix-free: integrate the angular flux to get
 // the scalar flux, scale by sigma_s, and subtract it from every angle (it is on
-// the lhs). Never assembled - that is the whole point of the MatShell
+// the lhs). Never assembled - that is the whole point of the MatShell. Per
+// NODE, a (cell, basis) pair: with DG1's orthonormal basis the mass matrix is
+// the identity and the xsection is cell-constant, so each node scatters alone
 class PETSC_VISIBILITY_PUBLIC ScatteringTerm : public OperatorTerm {
 public:
    // sigma_s_d is indexed by local cell and must outlive the term. In a
@@ -245,6 +219,8 @@ public:
 
    // Point the term at a different xsection - see RemovalTerm::set_sigma_t
    void set_sigma_s(const PetscScalarKokkosView &sigma_s_d) { sigma_s_d_ = sigma_s_d; }
+   // set_sigma_s(xs.sigma_s(g, g)), the within-group block
+   PetscErrorCode set_group(const GroupXSections &xs, PetscInt g) override;
 
    PetscBool matrix_free() const override { return PETSC_TRUE; }
    PetscErrorCode apply_add(Vec x, Vec y) const override;

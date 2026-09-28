@@ -112,19 +112,6 @@ PetscErrorCode GroupXSections::set_sigma_s(PetscInt g_from, PetscInt g_to, Petsc
 // Free functions rather than local lambdas: an extended device lambda can't be
 // defined inside another lambda
 
-// Same range check as UboltFillSource's: a painted index outside the spec's
-// table would silently read garbage
-static void MaterialIdRange(const PetscIntKokkosView &mat_id_d, PetscInt local_cells, \
-   PetscInt *id_min, PetscInt *id_max)
-{
-   Kokkos::parallel_reduce(
-      Kokkos::RangePolicy<>(0, local_cells), KOKKOS_LAMBDA(PetscInt c, PetscInt &lmin, PetscInt &lmax) {
-
-         lmin = Kokkos::min(lmin, mat_id_d(c));
-         lmax = Kokkos::max(lmax, mat_id_d(c));
-      }, Kokkos::Min<PetscInt>(*id_min), Kokkos::Max<PetscInt>(*id_max));
-}
-
 // Cell is the parallel index and the fastest extent of both destinations, so
 // consecutive threads write consecutive cells; the group loops run inside
 static void FillFromMaterialsKernel(PetscScalar2DRightKokkosView sigma_t_d, \
@@ -149,8 +136,6 @@ static void FillFromMaterialsKernel(PetscScalar2DRightKokkosView sigma_t_d, \
 
 PetscErrorCode GroupXSections::set_from_materials(const MaterialSpec &mats, const PetscIntKokkosView &mat_id_d)
 {
-   PetscInt id_min = 0, id_max = 0;
-
    PetscFunctionBeginUser;
 
    PetscCheck(mats.n_groups() == n_groups_, PETSC_COMM_SELF, PETSC_ERR_ARG_INCOMP, \
@@ -160,10 +145,7 @@ PetscErrorCode GroupXSections::set_from_materials(const MaterialSpec &mats, cons
       "material ids cover %" PetscInt_FMT " cells but there are %" PetscInt_FMT " local cells", \
       (PetscInt)mat_id_d.extent(0), local_cells_);
 
-   MaterialIdRange(mat_id_d, local_cells_, &id_min, &id_max);
-   PetscCheck(id_min >= 0 && id_max < mats.n_materials(), PETSC_COMM_SELF, PETSC_ERR_ARG_OUTOFRANGE, \
-      "painted material indices span [%" PetscInt_FMT ", %" PetscInt_FMT "] but the spec has %" \
-      PetscInt_FMT " materials", id_min, id_max, mats.n_materials());
+   PetscCall(UboltCheckMaterialIds(mats, mat_id_d));
 
    // The material tables are tiny, so upload them whole
    PetscScalarKokkosView sigma_t_tab_d("sigma_t_tab_d", (PetscInt)mats.sigma_t_host().size());
@@ -185,8 +167,8 @@ PetscErrorCode GroupXSections::set_from_materials(const MaterialSpec &mats, cons
 // GroupTransfer
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-PetscErrorCode GroupTransfer::create(const PhaseSpace &ps, const AngularQuadrature &quad, \
-   const GroupXSections &xs, const BoundaryInfo &boundary)
+PetscErrorCode GroupTransfer::create(const PhaseSpace &ps, const AngularQuadrature &quad, const GroupXSections &xs, \
+   const BoundaryInfo &boundary, const MaterialSpec &mats, const PetscIntKokkosView &mat_id_d)
 {
    PetscFunctionBeginUser;
 
@@ -194,6 +176,16 @@ PetscErrorCode GroupTransfer::create(const PhaseSpace &ps, const AngularQuadratu
    PetscCall(PetscKokkosInitializeCheck());
 
    PetscCall(ps.check_decomposed());
+   PetscCheck(quad.n_angles() == ps.n_angles, PETSC_COMM_SELF, PETSC_ERR_ARG_INCOMP, \
+      "the quadrature has %" PetscInt_FMT " angles but the phase space has %" PetscInt_FMT, \
+      quad.n_angles(), ps.n_angles);
+   PetscCheck((PetscInt)mat_id_d.extent(0) == ps.local_cells, PETSC_COMM_SELF, PETSC_ERR_ARG_INCOMP, \
+      "material ids cover %" PetscInt_FMT " cells but there are %" PetscInt_FMT " local cells", \
+      (PetscInt)mat_id_d.extent(0), ps.local_cells);
+   PetscCheck((PetscInt)boundary.is_bc_row_d.extent(0) == ps.local_rows(), PETSC_COMM_SELF, \
+      PETSC_ERR_ARG_INCOMP, "the boundary info covers %" PetscInt_FMT " rows but there are %" \
+      PetscInt_FMT " local rows", (PetscInt)boundary.is_bc_row_d.extent(0), ps.local_rows());
+   PetscCall(source_.create(mats, mat_id_d));
 
    n_angles_ = ps.n_angles;
    n_basis_ = ps.n_basis;
@@ -211,6 +203,17 @@ PetscErrorCode GroupTransfer::create(const PhaseSpace &ps, const AngularQuadratu
    for (PetscInt g = 0; g < ps.n_groups; g++) {
       phi_[g] = PetscScalar2DKokkosView("phi_d", local_nodes_, 1);
    }
+
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+PetscErrorCode GroupTransfer::add_external(PetscInt g, Vec b) const
+{
+   PetscFunctionBeginUser;
+
+   PetscCall(source_.add_isotropic(g, n_angles_, n_basis_, sum_weights_, is_bc_row_d_, b));
 
    PetscFunctionReturn(PETSC_SUCCESS);
 }
@@ -235,7 +238,7 @@ PetscErrorCode GroupTransfer::set_scalar_flux(PetscInt g, Vec psi_g)
 // Take the source group's cached scalar flux, scale it by the transfer xsection
 // and spread it isotropically over the target group's angles
 // This happens entirely on the device
-PetscErrorCode GroupTransfer::add_source(PetscInt g_from, PetscInt g_to, Vec b) const
+PetscErrorCode GroupTransfer::add_transfer(PetscInt g_from, PetscInt g_to, Vec b) const
 {
    const PetscInt n_angles = n_angles_;
    const PetscInt n_basis = n_basis_;

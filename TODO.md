@@ -397,6 +397,14 @@ now direct and tested (see that item).
 - [x] Follow-up: sweep the `-precon_ref_shift` pins over the CI arches — SUPERSEDED
       2026-09-25: pins are now the local opt measurement and CI flags any arch that needs
       +1 (docs/dev/testing.md, "Pass/fail contract").
+- Measurements behind the `RefShiftPmats` defaults (moved out of `ref_shift.hpp` /
+  `ref_shiftk.kokkos.cxx` in the Sep 2026 refactor): the Phase 5 campaign (Aug 2026)
+  measured iteration quality degrading gently with the mismatch ratio - a mismatch of 3
+  costs roughly 1.3-1.6x the exact-ratio count, the whole useful window is about a
+  factor of 10, and it is independent of the mesh and the angular order; hence
+  `default_max_mismatch = 3`, `default_max_bins = 3`. Spare bins go to the TOP because
+  the thick groups pay most for a mismatch: `box_decades4` at k = 3 takes 15, 29 on its
+  two thick groups with them exact, against 27, 51 with them sharing a bin.
 
 ## Phase 6 — DMPlex backends
 - [x] DECISION POINT (22 Sep 2026): hand-written Kokkos kernels over DMPlex, NOT MFEM, and
@@ -1422,6 +1430,11 @@ now direct and tested (see that item).
   1000x4); the decomposition is decided in cells (PetscSplitOwnership over n_cells) from
   Phase 1a on. np=1,2 are unaffected (the splits coincide), np=3 now converges in 10 its
   matching serial where the pre-refactor binary did not.
+- Measurement behind `PCSetUseAmat` under DSA (moved out of `transport_solverk.kokkos.cxx`
+  in the Sep 2026 refactor): on `slab_diffusive.json`, with the composite forming its
+  intermediate residuals from pmat, the moment reaching the diffusion solve was ~1e-6 of
+  the residual and the count did not move at all; updating with AMAT (the shell, scatter
+  included) took it from 19 iterations to 11.
 
 ## Phase 5 postscript — the ghost-flux vacuum treatment (own commit, Sep 2026)
 Split out of the transposed-solves campaign (branch `claude/transpose-boltzmann-report-a40050`,

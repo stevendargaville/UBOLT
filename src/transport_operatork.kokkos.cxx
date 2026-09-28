@@ -61,17 +61,17 @@ static PetscErrorCode ShellMatMultApply(Mat A, Vec x, Vec y)
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-PetscErrorCode TransportOperator::create(MPI_Comm comm, const PhaseSpace &ps, const Discretisation &disc)
+PetscErrorCode TransportOperator::create(const Discretisation &disc)
 {
    PetscFunctionBeginUser;
 
    // We allocate device memory below, and PETSc brings Kokkos up lazily
    PetscCall(PetscKokkosInitializeCheck());
 
-   PetscCall(ps.check_decomposed());
+   PetscCall(disc.phase_space().check_decomposed());
 
-   comm_ = comm;
-   ps_ = ps;
+   comm_ = disc.comm();
+   ps_ = disc.phase_space();
    disc_ = &disc;
 
    // The shared COO values every assembled term adds into
@@ -97,11 +97,32 @@ PetscErrorCode TransportOperator::destroy()
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
+PetscErrorCode TransportOperator::add_term(OperatorTerm *term)
+{
+   PetscFunctionBeginUser;
+
+   terms_.push_back(term);
+   group_terms_.push_back(term);
+
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
 PetscErrorCode TransportOperator::add_term(const OperatorTerm *term)
 {
    PetscFunctionBeginUser;
 
    terms_.push_back(term);
+
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+PetscErrorCode TransportOperator::set_group(const GroupXSections &xs, PetscInt g)
+{
+   PetscFunctionBeginUser;
+
+   for (OperatorTerm *term : group_terms_) PetscCall(term->set_group(xs, g));
 
    PetscFunctionReturn(PETSC_SUCCESS);
 }
@@ -199,8 +220,8 @@ PetscErrorCode TransportOperator::diagonal(Vec d) const
 // Values-only COO fill: every term adds into the shared values array and the
 // whole thing goes in with a single MatSetValuesCOO
 //
-// -ubolt_coo_two_call keeps the old behaviour of one MatSetValuesCOO per term
-// (the first INSERTs, the rest ADD) as a debug fallback. The two paths do the
+// -ubolt_coo_two_call is the debug fallback of one MatSetValuesCOO per term
+// (the first INSERTs, the rest ADD), and the only exercise of the ADD path. The two paths do the
 // same per-entry arithmetic in the same order, so they agree bit for bit
 PetscErrorCode TransportOperator::assemble_into(Mat mat, PetscInt n_terms, const OperatorTerm *const terms[]) const
 {

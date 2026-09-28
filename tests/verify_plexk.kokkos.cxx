@@ -159,7 +159,7 @@ static PetscErrorCode BuildSolve(const PhaseSpace &ps, const Discretisation &dis
    PetscCall(s.xs.set_from_materials(mats, mat_id_d));
    PetscCall(s.removal.create(ps, disc, s.xs.sigma_t(0)));
    PetscCall(s.scattering.create(ps, disc, quad, s.xs.sigma_s(0, 0)));
-   PetscCall(s.op.create(PETSC_COMM_WORLD, ps, disc));
+   PetscCall(s.op.create(disc));
    PetscCall(s.op.add_term(&streaming));
    PetscCall(s.op.add_term(&s.removal));
    PetscCall(s.op.add_term(&s.scattering));
@@ -1536,14 +1536,14 @@ static PetscErrorCode CheckComposedBlocks(const char *where, const PhaseSpace &p
    PetscFunctionBeginUser;
 
    PetscCall(removal_asm.create(ps, disc, sigma_t_d));
-   PetscCall(op_asm.create(PETSC_COMM_WORLD, ps, disc));
+   PetscCall(op_asm.create(disc));
    PetscCall(op_asm.add_term(&streaming));
    PetscCall(op_asm.add_term(&removal_asm));
    PetscCall(op_asm.assemble());
 
    PetscCall(removal_mf.create(ps, disc, sigma_t_d));
    removal_mf.set_matrix_free(PETSC_TRUE);
-   PetscCall(op_mf.create(PETSC_COMM_WORLD, ps, disc));
+   PetscCall(op_mf.create(disc));
    PetscCall(op_mf.add_term(&streaming));
    PetscCall(op_mf.add_term(&removal_mf));
    PetscCall(op_mf.assemble());
@@ -1694,7 +1694,7 @@ static PetscErrorCode CheckGhostSimplex(PetscInt dim, PetscInt n, const char *fi
       for (PetscInt c = 0; c < ps.local_cells; c++) sigma_t_h(c) = 1.0 + 0.25 * (PetscScalar)(c % 7);
       Kokkos::deep_copy(sigma_t_d, sigma_t_h);
       PetscCall(removal.create(ps, disc, sigma_t_d));
-      PetscCall(op.create(PETSC_COMM_WORLD, ps, disc));
+      PetscCall(op.create(disc));
       PetscCall(op.add_term(&streaming));
       PetscCall(op.add_term(&removal));
       PetscCall(op.assemble());
@@ -1761,7 +1761,7 @@ static PetscErrorCode CheckGhostSimplex(PetscInt dim, PetscInt n, const char *fi
       PetscScalarKokkosView sigma_t_d("sigma_t_d", ps.local_cells);
       Kokkos::deep_copy(sigma_t_d, (PetscScalar)sigma_t);
       PetscCall(removal_b.create(ps, disc, sigma_t_d));
-      PetscCall(op_b.create(PETSC_COMM_WORLD, ps, disc));
+      PetscCall(op_b.create(disc));
       PetscCall(op_b.add_term(&streaming));
       PetscCall(op_b.add_term(&removal_b));
       PetscCall(op_b.assemble());
@@ -1883,7 +1883,7 @@ static PetscErrorCode CheckDG1(const char *where, const PlexMeshSpec &mesh, cons
       for (PetscInt c = 0; c < ps.local_cells; c++) sigma_t_h(c) = 1.0 + 0.25 * (PetscScalar)(c % 7);
       Kokkos::deep_copy(sigma_t_d, sigma_t_h);
       PetscCall(removal.create(ps, disc, sigma_t_d));
-      PetscCall(op.create(PETSC_COMM_WORLD, ps, disc));
+      PetscCall(op.create(disc));
       PetscCall(op.add_term(&streaming));
       PetscCall(op.add_term(&removal));
       PetscCall(op.assemble());
@@ -1949,7 +1949,7 @@ static PetscErrorCode CheckDG1(const char *where, const PlexMeshSpec &mesh, cons
       PetscScalarKokkosView sigma_t_d("sigma_t_d", ps.local_cells);
       Kokkos::deep_copy(sigma_t_d, (PetscScalar)sigma_t);
       PetscCall(removal.create(ps, disc, sigma_t_d));
-      PetscCall(op.create(PETSC_COMM_WORLD, ps, disc));
+      PetscCall(op.create(disc));
       PetscCall(op.add_term(&streaming));
       PetscCall(op.add_term(&removal));
       PetscCall(op.assemble());
@@ -1994,7 +1994,7 @@ static PetscErrorCode CheckDG1(const char *where, const PlexMeshSpec &mesh, cons
       PetscReal err = 0.0, scale = 0.0;
       PetscInt n_interior = 0;
 
-      PetscCall(op.create(PETSC_COMM_WORLD, ps, disc));
+      PetscCall(op.create(disc));
       PetscCall(op.add_term(&streaming));
       PetscCall(op.assemble());
       PetscCall(MatCreateVecs(op.assembled_mat(), &psi, &y));

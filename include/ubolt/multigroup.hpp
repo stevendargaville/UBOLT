@@ -54,40 +54,51 @@ private:
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-// Group-to-group scattering source
-//
-// In the group Gauss-Seidel sweep the within-group block sigma_s(g -> g) stays
-// on the lhs (matrix-free, as ScatteringTerm) and the off-diagonal blocks move
-// to the rhs, evaluated with the flux of whichever groups have already been
-// solved. With downscatter only that sweep is a block lower triangular solve,
-// so one forward pass over the groups is exact - no outer iteration
+// The part of group g's right hand side that is not the boundary: the
+// external source and what scatters in from other groups
 //
 // Not an OperatorTerm: it does not act on the unknowns of the group being
-// solved, it builds that group's right hand side
-class PETSC_VISIBILITY_PUBLIC GroupTransfer {
+// solved, it builds that group's rhs. The group sweep calls, per group g,
+//   add_external(g, b), then add_transfer(g_from, g, b) for every g_from
+//   already solved, solve, then set_scalar_flux(g, psi_g)
+// Every call ADDS to b and leaves the BC rows alone (their rhs belongs to the
+// boundary condition). One implementation per family of discretisation:
+// GroupTransfer (per node) and GroupTransferCG (SUPG-weighted)
+//
+// In the group Gauss-Seidel sweep the within-group block sigma_s(g -> g)
+// stays on the lhs and the off-diagonal blocks come here, evaluated with the
+// flux of whichever groups have already been solved. With downscatter only
+// that sweep is a block lower triangular solve, so one forward pass is exact
+class PETSC_VISIBILITY_PUBLIC GroupSource {
 public:
-   // xs and boundary must outlive the object
+   virtual ~GroupSource() = default;
+
+   // b += group g's external source
+   virtual PetscErrorCode add_external(PetscInt g, Vec b) const = 0;
+   // Integrate group g's angular flux and keep it. Once per solved group:
+   // every group below it scatters from the same flux, so integrating on
+   // demand in add_transfer would redo it once per target
+   virtual PetscErrorCode set_scalar_flux(PetscInt g, Vec psi_g) = 0;
+   // b += the scatter from g_from into g_to. set_scalar_flux(g_from, ...)
+   // must have been called first
+   virtual PetscErrorCode add_transfer(PetscInt g_from, PetscInt g_to, Vec b) const = 0;
+};
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+// GroupSource for the per-node discretisations (the structured backends and
+// UnstructuredDG): the external source (MaterialSourceTable::add_isotropic)
+// and b += sigma_s(g_from -> g_to) phi(g_from) / sum_weights on every angle
+class PETSC_VISIBILITY_PUBLIC GroupTransfer : public GroupSource {
+public:
+   // xs and boundary must outlive the object; mat_id_d is per local cell.
    // Any quadrature: like the scatter it only needs the weights
-   PetscErrorCode create(const PhaseSpace &ps, const AngularQuadrature &quad, \
-      const GroupXSections &xs, const BoundaryInfo &boundary);
+   PetscErrorCode create(const PhaseSpace &ps, const AngularQuadrature &quad, const GroupXSections &xs, \
+      const BoundaryInfo &boundary, const MaterialSpec &mats, const PetscIntKokkosView &mat_id_d);
 
-   // Integrate group g's angular flux and keep it. Call once, as soon as that
-   // group is solved
-   //
-   // A group's scalar flux is fixed the moment the group is solved, and every
-   // group below it scatters from the same one, so integrating on demand inside
-   // add_source() would redo it once per target group: G(G-1)/2 angular
-   // integrals over a sweep instead of G
-   PetscErrorCode set_scalar_flux(PetscInt g, Vec psi_g);
-
-   // b += sigma_s(g_from -> g_to) phi(g_from) / sum_weights, on every angle.
-   // set_scalar_flux(g_from, ...) must have been called first
-   //
-   // BC rows are skipped: the rhs there belongs to the boundary condition (the
-   // incoming flux value on a Dirichlet row, zero on a reflective one) and a
-   // scattering source must not touch it, the same contract the terms have
-   // with the BC row mask
-   PetscErrorCode add_source(PetscInt g_from, PetscInt g_to, Vec b) const;
+   PetscErrorCode add_external(PetscInt g, Vec b) const override;
+   PetscErrorCode set_scalar_flux(PetscInt g, Vec psi_g) override;
+   PetscErrorCode add_transfer(PetscInt g_from, PetscInt g_to, Vec b) const override;
 
 private:
    PetscInt n_angles_ = 0;
@@ -97,6 +108,7 @@ private:
    const GroupXSections *xs_ = nullptr;
    PetscScalar2DKokkosView w_d_;
    PetscIntKokkosView is_bc_row_d_;
+   MaterialSourceTable source_;
    // The cached scalar flux of each group, (local_nodes, 1) apiece. Separate
    // allocations rather than one (group, cell) table: the angular integral
    // writes a 2D gemm output, and a slice of a 2D table would be a rank-2 view

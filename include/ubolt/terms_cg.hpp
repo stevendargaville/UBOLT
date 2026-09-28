@@ -10,8 +10,8 @@
 #include <vector>
 
 // The consistent-SUPG pieces of the CG backend (UnstructuredCG): the operator,
-// the scatter, the external source and the group transfer. The generic
-// RemovalTerm, ScatteringTerm, UboltFillSource and GroupTransfer do not apply
+// the scatter, and the external source + group transfer. The generic
+// RemovalTerm, ScatteringTerm and GroupTransfer do not apply
 // on this backend - they are per row, while the SUPG weight couples a vertex to
 // its star and depends on the angle - so these are their siblings, and all
 // four read the backend's element tables, its tau (UboltSUPGTau) and its one
@@ -37,8 +37,10 @@ public:
    // sigma_t_e is per local element and must outlive the term
    PetscErrorCode create(const PhaseSpace &ps, const UnstructuredCG &disc, const PetscScalarKokkosView &sigma_t_e);
    void set_sigma_t(const PetscScalarKokkosView &sigma_t_e) { sigma_t_e_ = sigma_t_e; }
+   // set_sigma_t(xs.sigma_t(g))
+   PetscErrorCode set_group(const GroupXSections &xs, PetscInt g) override;
    PetscBool assembled() const override { return PETSC_TRUE; }
-   PetscErrorCode assemble_add(PetscScalarKokkosView &coo_v_d) const override;
+   PetscErrorCode assemble_add(const PetscScalarKokkosView &coo_v_d) const override;
    PetscBool has_diagonal() const override { return PETSC_TRUE; }
    PetscErrorCode add_diagonal(Vec d) const override;
 private:
@@ -66,6 +68,8 @@ public:
       sigma_t_e_ = sigma_t_e;
       sigma_s_e_ = sigma_s_e;
    }
+   // set_group(xs.sigma_t(g), xs.sigma_s(g, g))
+   PetscErrorCode set_group(const GroupXSections &xs, PetscInt g) override;
    PetscBool matrix_free() const override { return PETSC_TRUE; }
    PetscErrorCode apply_add(Vec x, Vec y) const override;
    PetscErrorCode destroy();
@@ -80,18 +84,24 @@ private:
 };
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-// The group-to-group scattering source with the SUPG weight - GroupTransfer's
-// sibling (same calling sequence: set_scalar_flux once per solved group, then
-// add_source per target). tau is the TARGET group's: the source sits in that
-// group's equation, so it is weighted with that group's test function
-class PETSC_VISIBILITY_PUBLIC GroupTransferCG {
+// GroupSource with the SUPG weight - GroupTransfer's sibling. Both parts are
+// the backend's weighted load, with tau from the TARGET group's sigma_t (the
+// source sits in that group's equation, so it takes that group's test
+// function):
+//   external: b += 1 / m_i sum_e q_e(g) / W sum_j (M_ij + tau_g Omega . G_ji)
+//   transfer: b += 1 / m_i sum_e sigma_s,e(g_from -> g_to) / W
+//                  sum_j (M_ij + tau_{g_to} Omega . G_ji) phi_j(g_from)
+// Each solved group's nodal scalar flux is kept owned + overlap, so the halo
+// exchange happens once per group, in set_scalar_flux. Owns Vecs, hence destroy()
+class PETSC_VISIBILITY_PUBLIC GroupTransferCG : public GroupSource {
 public:
-   // xs (sized per local element) and disc must outlive the object
+   // xs (sized per local element) and disc must outlive the object; mat_id_d
+   // is per local element
    PetscErrorCode create(const PhaseSpace &ps, const UnstructuredCG &disc, const AngularQuadrature &quad, \
-      const GroupXSections &xs);
-   PetscErrorCode set_scalar_flux(PetscInt g, Vec psi_g);
-   // b += 1 / m_i sum_e sigma_s,e(g_from -> g_to) / W sum_j (M_ij + tau_{g_to} Omega . G_ji) phi_j(g_from)
-   PetscErrorCode add_source(PetscInt g_from, PetscInt g_to, Vec b) const;
+      const GroupXSections &xs, const MaterialSpec &mats, const PetscIntKokkosView &mat_id_d);
+   PetscErrorCode add_external(PetscInt g, Vec b) const override;
+   PetscErrorCode set_scalar_flux(PetscInt g, Vec psi_g) override;
+   PetscErrorCode add_transfer(PetscInt g_from, PetscInt g_to, Vec b) const override;
    PetscErrorCode destroy();
 private:
    const UnstructuredCG *disc_ = nullptr;
@@ -99,23 +109,21 @@ private:
    PetscInt n_angles_ = 0;
    PetscScalar sum_weights_ = 0.0;
    PetscScalar2DKokkosView w_d_;
+   MaterialSourceTable source_;
+   // Persistent scratch: the per-element source, the integrated flux and the
+   // owned nodal Vec it goes through
+   PetscScalarKokkosView q_e_;
    PetscScalar2DKokkosView scalar_flux_d_;
+   Vec phi_global_ = NULL;
+   // Per group, the nodal scalar flux over the LOCAL vertices
    std::vector<Vec> phi_;
    std::vector<PetscBool> phi_set_;
-   Vec phi_local_ = NULL;
 };
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-// The external source per local element: source(material(e), g), the
-// isotropic strength as the spec holds it (not divided by sum_weights).
-// Allocates nothing - q_e must be n_local_elements() long, like mat_id_d. What
-// UboltFillSourceCG weighs, and what output writes as a cell field
-PETSC_EXTERN PetscErrorCode UboltFillElementSource(const MaterialSpec &mats, const PetscIntKokkosView &mat_id_d, \
-   PetscInt g, PetscScalarKokkosView q_e);
-
-// b += 1 / m_i sum_e q_e / W sum_j (M_ij + tau Omega . G_ji) - the external
-// source with the SUPG weight, tau from sigma_t_e (group g's). ADDS, like
-// UboltFillSource: call on a zeroed b after UboltFillInflow
+// One-shot GroupTransferCG::add_external: b += the SUPG-weighted external
+// source, tau from sigma_t_e (group g's). ADDS, like UboltFillSource: call on
+// a zeroed b after UboltFillInflow
 PETSC_EXTERN PetscErrorCode UboltFillSourceCG(const UnstructuredCG &disc, const AngularQuadrature &quad, \
    const MaterialSpec &mats, const PetscIntKokkosView &mat_id_d, const PetscScalarKokkosView &sigma_t_e, \
    PetscInt g, Vec b);
