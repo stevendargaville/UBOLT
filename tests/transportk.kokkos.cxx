@@ -22,6 +22,7 @@
 // ubolt.hpp pulls in petscvec_kokkos.hpp which must come before any other
 // PETSc header in a C++ file (see docs/dev/kokkos.md)
 #include "ubolt/ubolt.hpp"
+#include "petsc_kokkos.hpp"
 #include <petscksp.h>
 #include "pflare.h"
 #include <string>
@@ -204,7 +205,9 @@ static PetscErrorCode CheckRefShiftExact(const PhaseSpace &ps, const Discretisat
       PetscCall(MatNorm(full, NORM_MAX, &diff));
       PetscCall(MatDestroy(&full));
 
-      auto sigma_t_h = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), xs.sigma_t(g));
+      auto sigma_t_h = Kokkos::create_mirror_view(Kokkos::HostSpace(), xs.sigma_t(g));
+      Kokkos::deep_copy(PetscGetKokkosExecutionSpace(), sigma_t_h, xs.sigma_t(g));
+      PetscGetKokkosExecutionSpace().fence();
       for (PetscInt c = 0; c < ps.local_cells; c++) {
          sigma_max = PetscMax(sigma_max, PetscAbsScalar(sigma_t_h(c)));
       }

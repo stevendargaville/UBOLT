@@ -1,4 +1,5 @@
 #include "ubolt/flux_output.hpp"
+#include "petsc_kokkos.hpp"
 #include "ubolt/unstructured_cg.hpp"
 #include <petscdmda.h>
 #include <petscdmplex.h>
@@ -245,7 +246,9 @@ static PetscErrorCode WriteCGVTU(const PhaseSpace &ps, const UnstructuredCG &dis
       for (PetscInt f = 0; f < n_extra; f++) {
          Vec loc = NULL;
          PetscScalar *a = nullptr;
-         auto values_h = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), extra[f].values);
+         auto values_h = Kokkos::create_mirror_view(Kokkos::HostSpace(), extra[f].values);
+         Kokkos::deep_copy(PetscGetKokkosExecutionSpace(), values_h, extra[f].values);
+         PetscGetKokkosExecutionSpace().fence();
          PetscCall(DMCreateLocalVector(cell_twin, &loc));
          PetscCall(PetscObjectSetName((PetscObject)loc, extra[f].name));
          PetscCall(VecGetArray(loc, &a));
@@ -321,7 +324,9 @@ PetscErrorCode UboltWriteScalarFluxVTK(const PhaseSpace &ps, \
    // field in local node order
    PetscScalar2DKokkosView scalar_flux_d("scalar_flux_d", ps.local_nodes(), 1);
    PetscCall(UboltAngularIntegral(psi, ps.n_angles, quad.w_d(), scalar_flux_d));
-   auto flux_h = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), scalar_flux_d);
+   auto flux_h = Kokkos::create_mirror_view(Kokkos::HostSpace(), scalar_flux_d);
+   Kokkos::deep_copy(PetscGetKokkosExecutionSpace(), flux_h, scalar_flux_d);
+   PetscGetKokkosExecutionSpace().fence();
 
    if (cg) {
       PetscCall(WriteCGVTU(ps, *cg, flux_h.data(), n_extra, extra, filename));
@@ -333,16 +338,18 @@ PetscErrorCode UboltWriteScalarFluxVTK(const PhaseSpace &ps, \
    // (DG1). The extra fields are plain per-cell views
    std::vector<PetscScalar> cell_flux(ps.local_cells);
    for (PetscInt c = 0; c < ps.local_cells; c++) cell_flux[c] = flux_h.data()[c * ps.n_basis];
-   std::vector<decltype(Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), extra[0].values))> extra_h;
+   std::vector<decltype(Kokkos::create_mirror_view(Kokkos::HostSpace(), extra[0].values))> extra_h;
    std::vector<const char *> names(1 + n_extra);
    std::vector<const PetscScalar *> values(1 + n_extra);
    names[0] = "scalar_flux";
    values[0] = cell_flux.data();
    for (PetscInt f = 0; f < n_extra; f++) {
-      extra_h.push_back(Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), extra[f].values));
+      extra_h.push_back(Kokkos::create_mirror_view(Kokkos::HostSpace(), extra[f].values));
+      Kokkos::deep_copy(PetscGetKokkosExecutionSpace(), extra_h.back(), extra[f].values);
       names[1 + f] = extra[f].name;
       values[1 + f] = extra_h.back().data();
    }
+   PetscGetKokkosExecutionSpace().fence();
 
    // Every field rides the same twin DM, which is what lets them share one file
    if (is_plex) PetscCall(WritePlexVTU(disc.dm(), ps.local_cells, 1 + n_extra, names.data(), values.data(), filename));

@@ -45,6 +45,7 @@
 // Currently run with: make build_tests && ./verify_cgk
 
 #include "ubolt/ubolt.hpp"
+#include "petsc_kokkos.hpp"
 #include <petscksp.h>
 #include "pflare.h"
 #include <cmath>
@@ -144,7 +145,9 @@ static PetscErrorCode NodalScalarFlux(const CGProblem<Quad> &p, Vec psi, std::ve
 {
    PetscFunctionBeginUser;
 
-   auto w_h = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), p.quad.w_d());
+   auto w_h = Kokkos::create_mirror_view(Kokkos::HostSpace(), p.quad.w_d());
+   Kokkos::deep_copy(PetscGetKokkosExecutionSpace(), w_h, p.quad.w_d());
+   PetscGetKokkosExecutionSpace().fence();
    const PetscScalar *a;
    phi.assign(p.ps.local_cells, 0.0);
    PetscCall(VecGetArrayRead(psi, &a));
@@ -257,7 +260,9 @@ static PetscErrorCode SolveSlab(const std::vector<SlabRegion> &regions, PetscBoo
 
    std::vector<PetscReal> phi, mu, w;
    PetscCall(NodalScalarFlux(p, psi, phi));
-   auto w_h = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), p.quad.w_d());
+   auto w_h = Kokkos::create_mirror_view(Kokkos::HostSpace(), p.quad.w_d());
+   Kokkos::deep_copy(PetscGetKokkosExecutionSpace(), w_h, p.quad.w_d());
+   PetscGetKokkosExecutionSpace().fence();
    for (PetscInt a = 0; a < p.quad.n_angles(); a++) {
       mu.push_back(PetscRealPart(p.quad.mu_host()[a]));
       w.push_back(PetscRealPart(w_h(a, 0)));
@@ -581,7 +586,9 @@ static PetscErrorCode CheckOrder(const char *where, PetscBool simplex, PetscBool
 
       std::vector<PetscReal> phi;
       PetscCall(NodalScalarFlux(p, psi, phi));
-      auto w_h = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), p.quad.w_d());
+      auto w_h = Kokkos::create_mirror_view(Kokkos::HostSpace(), p.quad.w_d());
+      Kokkos::deep_copy(PetscGetKokkosExecutionSpace(), w_h, p.quad.w_d());
+      PetscGetKokkosExecutionSpace().fence();
       const PetscReal psi_in = inflow / PetscRealPart(p.quad.sum_weights());
       PetscReal sums[2] = {0.0, 0.0};
       for (PetscInt k = 0; k < p.ps.local_cells; k++) {
@@ -808,7 +815,9 @@ static PetscErrorCode CheckDSAConsistency(const char *where, const PlexMeshSpec 
    PetscCall(MatCreateVecs(p.op.assembled_mat(), &psi, &a_psi));
    const PetscInt n_angles = p.quad.n_angles();
    const PetscReal sum_w = PetscRealPart(p.quad.sum_weights());
-   auto w_h = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), p.quad.w_d());
+   auto w_h = Kokkos::create_mirror_view(Kokkos::HostSpace(), p.quad.w_d());
+   Kokkos::deep_copy(PetscGetKokkosExecutionSpace(), w_h, p.quad.w_d());
+   PetscGetKokkosExecutionSpace().fence();
    {
       const PetscScalar *phi_a = nullptr;
       PetscScalar *psi_a = nullptr;
