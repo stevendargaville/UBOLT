@@ -1234,6 +1234,24 @@ now direct and tested (see that item).
     under `-dsa_void_bridge 0`.
   - [ ] Per-group cached DSA Mat/KSP instead of one refilled pair (a local change inside
     `DSAPrecon`, see its header; only worth it if a sweep revisits groups).
+  - [x] DSA code restructure (28 Sep 2026, refactor W2, bit-identical: every
+    `-precon_dsa` recipe's `-ksp_monitor` history and the verify_plexk / verify_cgk
+    output unchanged, serial and np 2/3). `DSAPrecon` keeps the policy (restriction,
+    prolongation, inner KSP, void census and bridge decision) in `src/dsak.kokkos.cxx`;
+    each backend's operator is a private `DSAOperator` in its own TU
+    (`dsa_structuredk`, `dsa_plexk` for DG0 + DG1, `dsa_cgk`); a generic
+    `create(..., const Discretisation &, ...)` dispatches. Derivations moved out of the
+    header into `docs/dsa.md`; the measurements the header quoted were already here
+    (this item's siblings, the Phase 6 DG1 / CG DSA items) or in `docs/dev/testing.md`
+    (the Marshak-coefficient scan: 0.25-1.0 moves no count by more than 1). Fewer
+    transfers, none added: the weights are copied to the host once per create (they were
+    copied once per plex face slot / CG vacuum face - millions of synchronous copies at
+    create on a GPU); the void mask is uploaded only when it changes; the structured D
+    staging and its ghost exchange run on host Vecs (were a VECKOKKOS round trip per
+    group, two when bridging); CG's per-group D tensor is a host array, the device one
+    only for an unbridged void's SUPG tensor; the cell-count reduction moved to create;
+    and the volume / lumped-mass weight is folded into the restriction kernel (one
+    launch fewer per apply). `destroy()` now resets the object.
   - **Literature benchmark study run (Aug 2026)** — six studies (crooked pipe per
     Southworth/Holec/Haut NSE 195, Warsa-style periodic horizontal interface, Brunner-style
     lattice, per-realization random media, Larsen diffusion-limit epsilon sweep, and the

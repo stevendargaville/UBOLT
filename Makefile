@@ -114,6 +114,9 @@ OBJS := $(SRCDIR)/sn_quadraturek.o \
 		  $(SRCDIR)/block_inversek.o \
 		  $(SRCDIR)/transport_solverk.o \
 		  $(SRCDIR)/dsak.o \
+		  $(SRCDIR)/dsa_structuredk.o \
+		  $(SRCDIR)/dsa_plexk.o \
+		  $(SRCDIR)/dsa_cgk.o \
 		  $(SRCDIR)/ref_shiftk.o \
 		  $(SRCDIR)/flux_outputk.o
 
@@ -137,6 +140,8 @@ $(SRCDIR)/sn_quadraturek.o: $(SRCDIR)/sn_lqn_table.hpp
 # And the plex plumbing the two unstructured backends share - internal, under
 # src/ for the same reason
 $(SRCDIR)/unstructured_dgk.o $(SRCDIR)/unstructured_cgk.o: $(SRCDIR)/plex_commonk.hpp
+# And the DSA's per-backend operator interface
+$(SRCDIR)/dsak.o $(SRCDIR)/dsa_structuredk.o $(SRCDIR)/dsa_plexk.o $(SRCDIR)/dsa_cgk.o: $(SRCDIR)/dsa_operatork.hpp
 
 # Define a variable containing all the tests
 export TEST_TARGETS = transportk verify_2dk verify_3dk verify_quadraturek verify_plexk verify_cgk
