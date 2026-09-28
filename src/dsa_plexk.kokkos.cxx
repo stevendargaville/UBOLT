@@ -63,7 +63,7 @@ private:
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 // No DMDA twin: the matrix is sized off the backend's owned cells, whose
-// global order is the transport rows' (CheckPlexLayout), and preallocated
+// global order is the transport rows' (CheckPlexStratumLayout), and preallocated
 // from its face CSR. Host work, once
 PetscErrorCode DSAPlex::create(MPI_Comm comm, const PhaseSpace &ps, const UnstructuredDG &disc, \
    const AngularQuadrature &quad, const BCSpec &bcs)

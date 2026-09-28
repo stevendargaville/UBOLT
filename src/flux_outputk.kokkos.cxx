@@ -127,7 +127,7 @@ static PetscErrorCode LabelOwnedCells(DM twin, PetscInt c_start, const std::vect
 // The DG path: every field a global Vec on the cell twin, written as a .vtu.
 // A cell's vector index is read from the twin's own global section (offset -
 // rstart) rather than assumed: the backend's local cell k is the k-th owned
-// cell in point order (its CheckPlexLayout asserts the global numbering
+// cell in point order (CheckPlexStratumLayout asserts the global numbering
 // follows that), and this map is what ties the two together here
 static PetscErrorCode WritePlexVTU(DM dm, PetscInt local_cells, PetscInt n_fields, \
    const char *const names[], const PetscScalar *const values[], const char *filename)

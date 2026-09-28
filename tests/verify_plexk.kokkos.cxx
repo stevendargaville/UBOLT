@@ -250,7 +250,7 @@ static PetscErrorCode BoundaryToVec(const BoundaryInfo &boundary, RowField field
 // side - the cell's natural (lexicographic) index, used ONLY as a join key.
 // Neither backend's global numbering is assumed: each side's row of local cell
 // c is its own rstart + c * n_angles + a, the property each backend's layout
-// check asserts (CheckDALayout / CheckPlexLayout)
+// check asserts (CheckDALayout / CheckPlexStratumLayout)
 //
 // The join goes through a Vec indexed by key: the plex ranks write their row
 // base into it, the FD ranks read theirs back. Out of it come
