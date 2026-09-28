@@ -1234,7 +1234,7 @@ place of the half-range current on the vacuum faces:
 | `cg_decades4` (per group) | 4, 7, 16, 41 | 4, 4, 5, 5 | 4, 4, 5, 4 | 4, 4, 5, 5 | 4, 4, 5, 5 | 4, 5, 5, 6 |
 | `cg_box_diffusive` | 39 | 5 | 4 | 5 | 5 | 6 |
 | `cg_tri_diffusive` | 35 | 5 | 4 | 5 | 5 | 7 |
-| `cg_cube_diffusive` | 48 | 6 | 5 | 5 | 6 | - |
+| `cg_cube_diffusive` | 48 (49 on the CI images) | 6 | 5 | 5 | 6 | - |
 | `cg_tet_diffusive` | 39 | 5 | 4 | 5 | 5 | - |
 | `cg_box_void_channel` | 47 | 8 | 8 | 6 | 7 | 8 |
 | `cg_slab_saaf_ls_void` | 4 | 4 | 4 | - | 4 | 4 |

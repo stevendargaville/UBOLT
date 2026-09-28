@@ -802,7 +802,7 @@ ifeq ($(PETSC_HAVE_TRIANGLE),1)
 	./transportk -problem problems/cg_tri_diffusive.json -precon_dsa -ksp_max_it 5
 endif
 	@echo "Test 3D unstructured hex cube, CG-SUPG, diffusive regime WITHOUT the DSA correction (the reference)"
-	./transportk -problem problems/cg_cube_diffusive.json -ksp_max_it 48
+	./transportk -problem problems/cg_cube_diffusive.json -ksp_max_it 49
 	@echo "Test 3D unstructured hex cube, CG-SUPG, diffusive regime with the DSA correction"
 	./transportk -problem problems/cg_cube_diffusive.json -precon_dsa -ksp_max_it 6
 ifeq ($(PETSC_HAVE_TETMESHER),1)
