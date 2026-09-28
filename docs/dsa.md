@@ -123,7 +123,7 @@ The cell-centred finite VOLUME sibling of the structured operator:
   times the structured one and its correction reproduces the structured one to rounding
   with an exact inner solve (`verify_plexk` checks both).
 - No DMDA twin: the matrix is sized off the backend's owned cells, whose global order is
-  the transport rows' (`CheckPlexLayout`), and preallocated from its face CSR; host
+  the transport rows' (`CheckPlexStratumLayout`), and preallocated from its face CSR; host
   values go into that COO pattern once per group.
 
 ## The DG1 operator (UnstructuredDG, order 1): MIP

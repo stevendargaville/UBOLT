@@ -45,8 +45,9 @@ static_assert(!std::is_same_v<typename Slice::array_layout, Kokkos::LayoutStride
   `#error`s otherwise). `types.hpp` pulls it in, so ubolt headers that need views include
   `ubolt/types.hpp` before anything else, and `ubolt/ubolt.hpp` lists it first — include
   the umbrella header before `<petscksp.h>` and friends.
-- Only Kokkos-using files include `types.hpp`: keeping Kokkos out of the plain `.cxx`
-  translation units means they don't need the Kokkos device compiler.
+- Every translation unit in `src/` and `tests/` is a Kokkos one (`Xk.kokkos.cxx`), so
+  every one may include `types.hpp`; there are no plain `.cxx` units left to keep Kokkos
+  out of.
 - PETSc compiles C++ with `-fvisibility=hidden` but strips it from its Kokkos rule, so
   which rule compiled a file would otherwise decide whether its symbols are exported.
   Public declarations are therefore tagged `PETSC_EXTERN` (which is
@@ -54,6 +55,10 @@ static_assert(!std::is_same_v<typename Slice::array_layout, Kokkos::LayoutStride
   unmangled names — public functions can't be overloaded).
 
 ## COO assembly discipline
+The design behind these rules (the slot convention per backend, the BC contract and the
+two vacuum treatments) is written out in `docs/architecture.md`; this section is the
+Kokkos-side discipline.
+
 The streaming/removal operator is assembled with the PETSc COO interface so that value
 fill runs on device (MATAIJKOKKOS dispatches `MatSetValuesCOO` to the GPU):
 - `MatSetPreallocationCOO` happens ONCE on the host, in the discretisation backend: it
@@ -76,14 +81,17 @@ fill runs on device (MATAIJKOKKOS dispatches `MatSetValuesCOO` to the GPU):
   and lexicographically *within* the patch, so `StructuredFD2D`/`StructuredFD3D` read them
   out of the DM's
   local-to-global map (which covers the ghost nodes, so a column can point into a
-  neighbour's patch). Each backend asserts the layout property it actually relies on in its
-  own `CheckDALayout` — see `docs/dev/testing.md`. On a DMPlex the global numbering comes
-  from the DM's GLOBAL SECTION (n_angles dof on every height-0 point, overlap ghosts
+  neighbour's patch). Each backend asserts the layout property it actually relies on:
+  1D in its own `CheckDALayout` (`src/structured_fd_1dk.kokkos.cxx`), 2D and 3D in the
+  shared `CheckDALayout<DIM>` (`src/structured_fd_commonk.hpp`) — see
+  `docs/dev/testing.md`. On a DMPlex the global numbering comes
+  from the DM's GLOBAL SECTION (`rows_per_cell` dof on every height-0 point, overlap ghosts
   included): `PetscSectionGetOffset` gives an owned cell's first row as `g >= 0` and an
   overlap ghost's as `-(g + 1)`, so one lookup serves the owned cells and the ghost
   neighbours a column points into. The mesh is distributed with face adjacency and a
   one-cell overlap, which is exactly the set of neighbours an upwind face flux reads.
-  `CheckPlexLayout` (`src/unstructured_dgk.kokkos.cxx`) is the layout assert there: the
+  `CheckPlexStratumLayout` (`src/plex_commonk.hpp`, shared by both plex backends: the
+  cells on `UnstructuredDG`, the vertices on `UnstructuredCG`) is the layout assert there: the
   section and the point SF agree on ownership, the owned cells sum to the phase space's,
   and the owned cells in increasing POINT order sit at `rstart + k * rows_per_cell`
   (`n_basis * n_angles`, the section's dof per cell) — which is what makes "local cell
@@ -105,16 +113,16 @@ fill runs on device (MATAIJKOKKOS dispatches `MatSetValuesCOO` to the GPU):
   the diagonal LAST — 1D: upwind, diagonal; 2D: upwind-x, upwind-y, diagonal; 3D:
   upwind-x, upwind-y, upwind-z, diagonal — every row
   the same regardless of the sign of the direction cosines, and value fills must match it
-  exactly. `Discretisation::set_uniform_pattern(slots_per_row, is_bc_row, reflect_slot)`
-  builds the slot maps from that convention, so a fixed-entries-per-row backend states it
-  once — the backend hands it the BC row mask and the repurposed reflection slots along
-  with the slot count.
+  exactly. `Discretisation::set_uniform_pattern(slots_per_row, rows)` builds the slot
+  maps from that convention, so a fixed-entries-per-row backend states it once — `rows`
+  is a host `BoundaryRows` (the BC row mask, the repurposed reflection slots, the
+  Dirichlet values and the ghost inflow, per row) handed over with the slot count.
 - The unstructured backend (`UnstructuredDG`, DG0 on a DMPlex) does not have a fixed
   count: a row of cell c carries `n_faces(c) + 1` slots — one per face in the cell's CONE
   order, then the diagonal LAST — so a mesh with mixed cell shapes has rows of different
   lengths. It builds its slot maps with the general `Discretisation::set_pattern(row_slot_offset,
-  diag_slot, is_bc_row, reflect_slot, dirichlet_value)` (CSR `row_slot_offset`, one
-  `diag_slot` per row); `set_uniform_pattern` is now a thin wrapper that computes those two
+  diag_slot, rows)` (CSR `row_slot_offset`, one `diag_slot` per row, the same
+  `BoundaryRows`); `set_uniform_pattern` is now a thin wrapper that computes those two
   arrays and calls it, so both kinds of backend upload through one path. The -1 nulls do
   the upwind selection exactly as in the structured backends: a face slot is live only on
   an interior row, across an interior face, for an angle flowing IN through it
@@ -143,8 +151,9 @@ fill runs on device (MATAIJKOKKOS dispatches `MatSetValuesCOO` to the GPU):
   angular integral, the scatter and the group transfer are sized `local_nodes()` and
   read the per-cell xsection at `node / n_basis`, removal at `row / rows_per_cell()`.
   That is only valid because the DG1 basis is ORTHONORMAL on each cell (the mass matrix
-  is the identity) and the xsections are cell-constant; `UboltFillSource` writes basis 0
-  only (a constant projects onto nothing else). Keep both true, or those terms stop
+  is the identity) and the xsections are cell-constant; the external source
+  (`MaterialSourceTable::add_isotropic`, behind `GroupSource::add_external` and
+  `UboltFillSource`) writes basis 0 only (a constant projects onto nothing else). Keep both true, or those terms stop
   being diagonal per node.
 - The CG-SUPG backend (`UnstructuredCG`) breaks both of the last point's
   assumptions on purpose, so it does not use those terms at all: its rows are
@@ -167,17 +176,18 @@ fill runs on device (MATAIJKOKKOS dispatches `MatSetValuesCOO` to the GPU):
 - Terms address entries through the `CooPattern` slot maps — `row_slot_offset_d`
   (CSR-shaped COO slot ranges per row) and `diag_slot_d` (which slot is the diagonal) —
   never through raw COO positions. With more than one off-diagonal a term has to address
-  them positionally within the row (`StreamingTerm2D` uses `row_slot_offset_d(r)` and
-  `+ 1`), which is why the slot order is a convention the backend and its streaming term
-  share, and why the streaming term is per-dimension.
+  them positionally within the row (`StructuredStreamingTerm`, under
+  `StreamingTerm1D`/`2D`/`3D`, writes axis d at `row_slot_offset_d(r) + d`), which is why
+  the slot order is a convention the backend and its streaming term share, and why each
+  backend has its own streaming term.
 - Contract: a term must contribute NOTHING to rows flagged in
   `BoundaryInfo::is_bc_row_d` — not from `assemble_add` and not from `apply_add`.
   `TransportOperator::assemble_into` (via `SetBoundaryRows`) writes those rows after the
   assembled terms have run — the identity, plus the -1.0 reflection coupling in
   `reflect_slot_d` on reflective rows — so a term never has to know what the boundary
   condition is; a matrix-free term that then adds to them would take that straight back
-  off. `ScatteringTerm::apply_add` did exactly that until Aug 2026 — see the Phase 4
-  postscript in `TODO.md`. Note the contract is about what a term WRITES: the scatter
+  off. `ScatteringTerm::apply_add` once did exactly that — see "Phase 4 postscript — the
+  matrix-free scatter ignored the Dirichlet mask" in `docs/dev/history.md`. Note the contract is about what a term WRITES: the scatter
   still reads every angle when it integrates the scalar flux, BC rows included — for
   reflective rows that read is REQUIRED, since the reflected outgoing flux is a real part
   of the flux in the cell (it is what makes the infinite-medium check land at machine
@@ -256,7 +266,7 @@ rather than filling it through COO, the way PFLARE does:
   a transient global vector to read the ownership range; the backends put mesh coordinates
   on their DMDA (a host vector held by the coordinate DM, read only by output); and the
   scalar flux VTK writer creates a host global vector from a dof-1 compatible DMDA purely
-  to hand to the viewer. The DMPlex backend is the same: `CheckPlexLayout` creates a
+  to hand to the viewer. The DMPlex backends are the same: `CheckPlexStratumLayout` creates a
   transient global vector off the backend's section only to read the ownership range, and
   the `.vtu` path writes host global vectors on a dof-1 `DMClone` of the mesh. If a later phase starts creating matrices or vectors through the
   DM *for the solve*, it has to set the types on the DM (or run with

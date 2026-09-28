@@ -277,8 +277,9 @@ captures — but that is exactly when it matters completely.
 See "Adding a test problem" in `docs/dev/testing.md`: commit the file under
 `tests/problems/` with a `"_comment"` saying what it pins, add the recipe
 line with `-ksp_max_it` pinned to the observed count, and keep output flags
-out of the recipe. Remember a pin is the max over the CI arches, not just
-your machine.
+out of the recipe. Pin the count your local opt arch measures, exactly;
+if a CI arch then needs one more, CI goes red and the pin takes the max over
+the arches (the CI-arch rule in `docs/dev/testing.md`).
 
 ## Exemplars in tests/problems/
 
