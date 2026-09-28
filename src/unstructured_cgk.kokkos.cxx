@@ -594,14 +594,14 @@ PetscErrorCode UnstructuredCG::create(PhaseSpace &ps, const AngularQuadrature &q
       d = PetscScalarKokkosView(name, h.size());
       if (!h.empty()) {
          PetscScalarKokkosViewHostUnmanaged hv(const_cast<PetscScalar *>(h.data()), h.size());
-         Kokkos::deep_copy(d, hv);
+         Kokkos::deep_copy(PetscGetKokkosExecutionSpace(), d, hv);
       }
    };
    auto upload_int = [](const std::vector<PetscInt> &h, const char *name, PetscIntKokkosView &d) {
       d = PetscIntKokkosView(name, h.size());
       if (!h.empty()) {
          PetscIntKokkosViewHostUnmanaged hv(const_cast<PetscInt *>(h.data()), h.size());
-         Kokkos::deep_copy(d, hv);
+         Kokkos::deep_copy(PetscGetKokkosExecutionSpace(), d, hv);
       }
    };
    upload_scalar(omega, "omega_d", omega_d_);
@@ -620,6 +620,8 @@ PetscErrorCode UnstructuredCG::create(PhaseSpace &ps, const AngularQuadrature &q
    upload_scalar(bface_nA, "bface_nA_d", bface_nA_d_);
    upload_scalar(bface_mass, "bface_mass_d", bface_mass_d_);
    upload_int(bface_slot, "bface_slot_d", bface_slot_d_);
+   // The copies are asynchronous and several host sources die here
+   PetscGetKokkosExecutionSpace().fence();
    bface_offset_h_ = std::move(bface_offset);
    bface_nA_h_ = std::move(bface_nA);
    bface_mass_h_ = std::move(bface_mass);
@@ -696,7 +698,7 @@ static void WeightedLoadKernel(PetscScalarKokkosView y_d, PetscScalarConstKokkos
    PetscInt nv, PetscInt n_angles, PetscInt local_rows)
 {
    Kokkos::parallel_for(
-      Kokkos::RangePolicy<>(0, local_rows), KOKKOS_LAMBDA(PetscInt r) {
+      Kokkos::RangePolicy<>(PetscGetKokkosExecutionSpace(), 0, local_rows), KOKKOS_LAMBDA(PetscInt r) {
 
          const PetscInt k = r / n_angles;
          const PetscInt a = r % n_angles;

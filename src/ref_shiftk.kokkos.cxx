@@ -26,10 +26,19 @@ static void ShiftFillKernel(PetscScalarKokkosView shift_d, \
    PetscScalar alpha, PetscInt rows_per_cell, PetscInt local_rows)
 {
    Kokkos::parallel_for(
-      Kokkos::RangePolicy<>(0, local_rows), KOKKOS_LAMBDA(PetscInt r) {
+      Kokkos::RangePolicy<>(PetscGetKokkosExecutionSpace(), 0, local_rows), KOKKOS_LAMBDA(PetscInt r) {
 
          shift_d(r) = is_bc_row_d(r) ? (PetscScalar)0.0 : alpha * sigma_t_ref_d(r / rows_per_cell);
       });
+}
+
+// Group g's Sigma_t on the host, copied on PETSc's execution space
+static auto SigmaTHost(const GroupXSections &xs, PetscInt g)
+{
+   auto h = Kokkos::create_mirror_view(Kokkos::HostSpace(), xs.sigma_t(g));
+   Kokkos::deep_copy(PetscGetKokkosExecutionSpace(), h, xs.sigma_t(g));
+   PetscGetKokkosExecutionSpace().fence();
+   return h;
 }
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -86,7 +95,7 @@ PetscErrorCode RefShiftPmats::compute_alphas(const GroupXSections &xs)
    std::vector<PetscReal> min_max(2 * n_groups_);
    for (PetscInt g = 0; g < n_groups_; g++) {
       PetscReal mn = PETSC_MAX_REAL, mx = -PETSC_MAX_REAL;
-      auto sigma_t_h = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), xs.sigma_t(g));
+      auto sigma_t_h = SigmaTHost(xs, g);
       for (PetscInt c = 0; c < ps_.local_cells; c++) {
          mn = PetscMin(mn, PetscRealPart(sigma_t_h(c)));
          mx = PetscMax(mx, PetscRealPart(sigma_t_h(c)));
@@ -112,10 +121,9 @@ PetscErrorCode RefShiftPmats::compute_alphas(const GroupXSections &xs)
    for (PetscInt g = 0; g < n_groups_; g++) {
       if (is_streaming_group_[g]) continue;
 
-      auto sigma_t_h = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), xs.sigma_t(g));
+      auto sigma_t_h = SigmaTHost(xs, g);
       for (PetscInt k = 0; k < (PetscInt)class_ref_.size() && class_of_group_[g] < 0; k++) {
-         auto sigma_t_ref_h = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), \
-            xs.sigma_t(class_ref_[k]));
+         auto sigma_t_ref_h = SigmaTHost(xs, class_ref_[k]);
          PetscInt differ = 0;
          for (PetscInt c = 0; c < ps_.local_cells; c++) {
             if ((PetscRealPart(sigma_t_h(c)) > 0.0) != (PetscRealPart(sigma_t_ref_h(c)) > 0.0)) differ++;
@@ -145,9 +153,8 @@ PetscErrorCode RefShiftPmats::compute_alphas(const GroupXSections &xs)
 
       PetscReal log_sum = 0.0;
 
-      auto sigma_t_h = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), xs.sigma_t(g));
-      auto sigma_t_ref_h = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), \
-         xs.sigma_t(class_ref_[k]));
+      auto sigma_t_h = SigmaTHost(xs, g);
+      auto sigma_t_ref_h = SigmaTHost(xs, class_ref_[k]);
       for (PetscInt c = 0; c < ps_.local_cells; c++) {
          if (!(PetscRealPart(sigma_t_ref_h(c)) > 0.0)) continue;
          log_sum += PetscLogReal(PetscRealPart(sigma_t_h(c)) / PetscRealPart(sigma_t_ref_h(c)));

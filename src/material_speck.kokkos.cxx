@@ -85,7 +85,7 @@ PetscErrorCode MaterialSpec::set_source(PetscInt mat, PetscInt g, PetscScalar va
 static void MaterialIdRange(const PetscIntKokkosView &mat_id_d, PetscInt n, PetscInt *id_min, PetscInt *id_max)
 {
    Kokkos::parallel_reduce(
-      Kokkos::RangePolicy<>(0, n), KOKKOS_LAMBDA(PetscInt c, PetscInt &lmin, PetscInt &lmax) {
+      Kokkos::RangePolicy<>(PetscGetKokkosExecutionSpace(), 0, n), KOKKOS_LAMBDA(PetscInt c, PetscInt &lmin, PetscInt &lmax) {
 
          lmin = Kokkos::min(lmin, mat_id_d(c));
          lmax = Kokkos::max(lmax, mat_id_d(c));
@@ -125,7 +125,9 @@ PetscErrorCode MaterialSourceTable::create(const MaterialSpec &mats, const Petsc
    source_tab_d_ = PetscScalarKokkosView("source_tab_d", (PetscInt)mats.source_host().size());
    PetscScalarKokkosViewHostUnmanaged source_tab_h( \
       const_cast<PetscScalar *>(mats.source_host().data()), mats.source_host().size());
-   Kokkos::deep_copy(source_tab_d_, source_tab_h);
+   Kokkos::deep_copy(PetscGetKokkosExecutionSpace(), source_tab_d_, source_tab_h);
+   // The copy is asynchronous and the host table is the caller's
+   PetscGetKokkosExecutionSpace().fence();
 
    PetscFunctionReturn(PETSC_SUCCESS);
 }
@@ -136,7 +138,7 @@ static void FillEntriesKernel(PetscScalarKokkosView out, PetscScalarKokkosView s
    PetscIntKokkosView mat_id_d, PetscInt n_groups, PetscInt g, PetscInt n)
 {
    Kokkos::parallel_for(
-      Kokkos::RangePolicy<>(0, n), KOKKOS_LAMBDA(PetscInt e) {
+      Kokkos::RangePolicy<>(PetscGetKokkosExecutionSpace(), 0, n), KOKKOS_LAMBDA(PetscInt e) {
 
          out(e) = source_tab_d(mat_id_d(e) * n_groups + g);
       });

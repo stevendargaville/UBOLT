@@ -1,4 +1,5 @@
 #include "ubolt/transport_operator.hpp"
+#include "petsc_kokkos.hpp"
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -16,7 +17,7 @@ static void SetBoundaryRows(PetscScalarKokkosView coo_v_d, \
    PetscInt local_rows)
 {
    Kokkos::parallel_for(
-      Kokkos::RangePolicy<>(0, local_rows), KOKKOS_LAMBDA(PetscInt r) {
+      Kokkos::RangePolicy<>(PetscGetKokkosExecutionSpace(), 0, local_rows), KOKKOS_LAMBDA(PetscInt r) {
 
          if (!is_bc_row_d(r)) return;
 
@@ -36,7 +37,7 @@ static void SetBoundaryDiagonal(PetscScalarKokkosView d_d, PetscIntKokkosView is
    PetscInt local_rows)
 {
    Kokkos::parallel_for(
-      Kokkos::RangePolicy<>(0, local_rows), KOKKOS_LAMBDA(PetscInt r) {
+      Kokkos::RangePolicy<>(PetscGetKokkosExecutionSpace(), 0, local_rows), KOKKOS_LAMBDA(PetscInt r) {
 
          if (is_bc_row_d(r)) d_d(r) = 1.0;
       });
@@ -244,7 +245,7 @@ PetscErrorCode TransportOperator::assemble_into(Mat mat, PetscInt n_terms, const
 
    if (!two_call) {
 
-      Kokkos::deep_copy(coo_v_d, 0.0);
+      Kokkos::deep_copy(PetscGetKokkosExecutionSpace(), coo_v_d, 0.0);
       for (PetscInt t = 0; t < n_terms; t++) PetscCall(terms[t]->assemble_add(coo_v_d));
       SetBoundaryRows(coo_v_d, row_slot_offset_d, diag_slot_d, is_bc_row_d, reflect_slot_d, local_rows);
       // This should all happen on the gpu
@@ -254,7 +255,7 @@ PetscErrorCode TransportOperator::assemble_into(Mat mat, PetscInt n_terms, const
 
       for (PetscInt t = 0; t < n_terms; t++) {
 
-         Kokkos::deep_copy(coo_v_d, 0.0);
+         Kokkos::deep_copy(PetscGetKokkosExecutionSpace(), coo_v_d, 0.0);
          PetscCall(terms[t]->assemble_add(coo_v_d));
          // The boundary rows ride along with the first call and the later ADDs
          // leave them alone, since terms contribute nothing to those rows

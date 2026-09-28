@@ -1,4 +1,5 @@
 #include "ubolt/sn_quadrature.hpp"
+#include "petsc_kokkos.hpp"
 // The generated level-symmetric table lives under src/ so it cannot be
 // included from the public headers - a quote include resolves against this
 // file's directory. Regenerate it with src/sn_lqn_table.py, never by hand
@@ -38,7 +39,9 @@ PetscErrorCode AngularQuadrature::set_weights(const std::vector<PetscScalar> &w,
    // const_cast only because the unmanaged host view type is non-const; the
    // deep_copy below reads it
    PetscScalar2DKokkosViewHostUnmanaged w_host_view(const_cast<PetscScalar *>(w.data()), n_angles_, 1);
-   Kokkos::deep_copy(w_d_, w_host_view);
+   Kokkos::deep_copy(PetscGetKokkosExecutionSpace(), w_d_, w_host_view);
+   // The copy is asynchronous and w is the caller's
+   PetscGetKokkosExecutionSpace().fence();
 
    PetscFunctionReturn(PETSC_SUCCESS);
 }
@@ -214,7 +217,7 @@ PetscErrorCode SNQuadrature::create(PetscInt sn_order)
    // Copy the ordinates to device memory
    mu_d_ = PetscScalarKokkosView("mu_d", n_angles);
    PetscScalarKokkosViewHostUnmanaged mu_host_view(mu, n_angles);
-   Kokkos::deep_copy(mu_d_, mu_host_view);
+   Kokkos::deep_copy(PetscGetKokkosExecutionSpace(), mu_d_, mu_host_view);
 
    PetscFunctionReturn(PETSC_SUCCESS);
 }
@@ -323,8 +326,8 @@ PetscErrorCode SNQuadrature2D::create(PetscInt sn_order)
    eta_d_ = PetscScalarKokkosView("eta_d", n_angles);
    PetscScalarKokkosViewHostUnmanaged mu_host_view(mu_h_.data(), n_angles);
    PetscScalarKokkosViewHostUnmanaged eta_host_view(eta_h_.data(), n_angles);
-   Kokkos::deep_copy(mu_d_, mu_host_view);
-   Kokkos::deep_copy(eta_d_, eta_host_view);
+   Kokkos::deep_copy(PetscGetKokkosExecutionSpace(), mu_d_, mu_host_view);
+   Kokkos::deep_copy(PetscGetKokkosExecutionSpace(), eta_d_, eta_host_view);
 
    PetscFunctionReturn(PETSC_SUCCESS);
 }
@@ -385,9 +388,9 @@ PetscErrorCode SNQuadrature3D::create(PetscInt sn_order)
    PetscScalarKokkosViewHostUnmanaged mu_host_view(mu_h_.data(), n_angles);
    PetscScalarKokkosViewHostUnmanaged eta_host_view(eta_h_.data(), n_angles);
    PetscScalarKokkosViewHostUnmanaged xi_host_view(xi_h_.data(), n_angles);
-   Kokkos::deep_copy(mu_d_, mu_host_view);
-   Kokkos::deep_copy(eta_d_, eta_host_view);
-   Kokkos::deep_copy(xi_d_, xi_host_view);
+   Kokkos::deep_copy(PetscGetKokkosExecutionSpace(), mu_d_, mu_host_view);
+   Kokkos::deep_copy(PetscGetKokkosExecutionSpace(), eta_d_, eta_host_view);
+   Kokkos::deep_copy(PetscGetKokkosExecutionSpace(), xi_d_, xi_host_view);
 
    PetscFunctionReturn(PETSC_SUCCESS);
 }
@@ -416,7 +419,7 @@ PetscErrorCode UboltAngularIntegral(Vec psi, PetscInt n_angles, \
    // The integral over angle is just a dgemm (on the device)
    const PetscScalar alpha = 1.0;
    const PetscScalar beta  = 0.0;
-   KokkosBlas::gemm("N", "N", alpha, psi_d_2d, w_d, beta, scalar_flux_d);
+   KokkosBlas::gemm(PetscGetKokkosExecutionSpace(), "N", "N", alpha, psi_d_2d, w_d, beta, scalar_flux_d);
 
    PetscCall(VecRestoreKokkosView(psi, &psi_d));
 
