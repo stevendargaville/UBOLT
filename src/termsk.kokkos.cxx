@@ -1,4 +1,5 @@
 #include "ubolt/terms.hpp"
+#include "ubolt/multigroup.hpp"
 #include "petsc_kokkos.hpp"
 
 // The kernels below capture plain values and shallow view copies, never `this`
@@ -6,305 +7,126 @@
 // the device
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-// StreamingTerm
+// StructuredStreamingTerm and the per-dimension creates
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-PetscErrorCode StreamingTerm::create(const PhaseSpace &ps, const StructuredFD1D &disc, const SNQuadrature &quad)
+PetscErrorCode StructuredStreamingTerm::create_common(const PhaseSpace &ps, const Discretisation &disc, \
+   PetscInt n_dims, const PetscScalar h[], const PetscScalarKokkosView cos_d[])
 {
    PetscFunctionBeginUser;
 
    PetscCall(ps.check_decomposed());
 
+   n_dims_ = n_dims;
    n_angles_ = ps.n_angles;
    local_rows_ = ps.local_rows();
-   dx_ = disc.dx();
-   mu_d_ = quad.mu_d();
+   for (PetscInt d = 0; d < n_dims; d++) {
+      h_[d] = h[d];
+      cos_d_[d] = cos_d[d];
+   }
    pattern_ = disc.coo_pattern();
    boundary_ = disc.boundary_info();
 
    PetscFunctionReturn(PETSC_SUCCESS);
 }
 
-// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-// Add the upwinded mu dpsi/dx stencil into the shared COO values
-// This happens entirely on the device
-PetscErrorCode StreamingTerm::assemble_add(PetscScalarKokkosView &coo_v_d) const
+PetscErrorCode StreamingTerm1D::create(const PhaseSpace &ps, const StructuredFD1D &disc, const SNQuadrature &quad)
 {
-   const PetscInt n_angles = n_angles_;
-   const PetscScalar dx = dx_;
-   const PetscScalarKokkosView mu_d = mu_d_;
-   const PetscIntKokkosView row_slot_offset_d = pattern_.row_slot_offset_d;
-   const PetscIntKokkosView diag_slot_d = pattern_.diag_slot_d;
-   const PetscIntKokkosView is_bc_row_d = boundary_.is_bc_row_d;
+   const PetscScalar h[] = {disc.dx()};
+   const PetscScalarKokkosView cos_d[] = {quad.mu_d()};
 
    PetscFunctionBeginUser;
-
-   Kokkos::parallel_for(
-      Kokkos::RangePolicy<>(0, local_rows_), KOKKOS_LAMBDA(PetscInt r) {
-
-         // BC rows carry only what the assembly puts on them
-         if (is_bc_row_d(r)) return;
-
-         const PetscInt a = r % n_angles;
-         const PetscInt diag = diag_slot_d(r);
-
-         coo_v_d(diag) += PetscAbsScalar(mu_d(a)) / dx;
-
-         // Everything else in the row is an upwind neighbour. The neighbour
-         // always sits on the opposite side of the diagonal, whichever way the
-         // angle points: mu dpsi/dx is |mu|/dx (psi_i - psi_upwind)
-         for (PetscInt s = row_slot_offset_d(r); s < row_slot_offset_d(r + 1); s++) {
-            if (s == diag) continue;
-            coo_v_d(s) += -PetscAbsScalar(mu_d(a)) / dx;
-         }
-      });
-
+   PetscCall(create_common(ps, disc, 1, h, cos_d));
    PetscFunctionReturn(PETSC_SUCCESS);
 }
-
-// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-// The same |mu|/dx this term writes into the diagonal slot above, added into d
-// - deliberately the same expression, so a composed diagonal is bitwise the
-// assembled one. BC rows belong to the composition, not to a term
-// This happens entirely on the device
-PetscErrorCode StreamingTerm::add_diagonal(Vec d) const
-{
-   const PetscInt n_angles = n_angles_;
-   const PetscScalar dx = dx_;
-   const PetscScalarKokkosView mu_d = mu_d_;
-   const PetscIntKokkosView is_bc_row_d = boundary_.is_bc_row_d;
-
-   PetscFunctionBeginUser;
-
-   PetscScalarKokkosView d_d;
-   PetscCall(VecGetKokkosView(d, &d_d));
-
-   Kokkos::parallel_for(
-      Kokkos::RangePolicy<>(0, local_rows_), KOKKOS_LAMBDA(PetscInt r) {
-
-         if (is_bc_row_d(r)) return;
-
-         const PetscInt a = r % n_angles;
-         d_d(r) += PetscAbsScalar(mu_d(a)) / dx;
-      });
-
-   PetscCall(VecRestoreKokkosView(d, &d_d));
-
-   PetscFunctionReturn(PETSC_SUCCESS);
-}
-
-// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-// StreamingTerm2D
-// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 PetscErrorCode StreamingTerm2D::create(const PhaseSpace &ps, const StructuredFD2D &disc, const SNQuadrature2D &quad)
 {
-   PetscFunctionBeginUser;
-
-   PetscCall(ps.check_decomposed());
-
-   n_angles_ = ps.n_angles;
-   local_rows_ = ps.local_rows();
-   dx_ = disc.dx();
-   dy_ = disc.dy();
-   mu_d_ = quad.mu_d();
-   eta_d_ = quad.eta_d();
-   pattern_ = disc.coo_pattern();
-   boundary_ = disc.boundary_info();
-
-   PetscFunctionReturn(PETSC_SUCCESS);
-}
-
-// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-// Add the upwinded mu dpsi/dx + eta dpsi/dy stencil into the shared COO values
-// This happens entirely on the device
-PetscErrorCode StreamingTerm2D::assemble_add(PetscScalarKokkosView &coo_v_d) const
-{
-   const PetscInt n_angles = n_angles_;
-   const PetscScalar dx = dx_;
-   const PetscScalar dy = dy_;
-   const PetscScalarKokkosView mu_d = mu_d_;
-   const PetscScalarKokkosView eta_d = eta_d_;
-   const PetscIntKokkosView row_slot_offset_d = pattern_.row_slot_offset_d;
-   const PetscIntKokkosView diag_slot_d = pattern_.diag_slot_d;
-   const PetscIntKokkosView is_bc_row_d = boundary_.is_bc_row_d;
+   const PetscScalar h[] = {disc.dx(), disc.dy()};
+   const PetscScalarKokkosView cos_d[] = {quad.mu_d(), quad.eta_d()};
 
    PetscFunctionBeginUser;
-
-   Kokkos::parallel_for(
-      Kokkos::RangePolicy<>(0, local_rows_), KOKKOS_LAMBDA(PetscInt r) {
-
-         // BC rows carry only what the assembly puts on them
-         if (is_bc_row_d(r)) return;
-
-         const PetscInt a = r % n_angles;
-         // Slot order is the discretisation's: upwind-x, upwind-y, diagonal.
-         // Unlike 1D there is more than one off-diagonal, so the two are
-         // addressed positionally rather than as "everything but the diagonal"
-         const PetscInt first = row_slot_offset_d(r);
-
-         const PetscScalar cx = PetscAbsScalar(mu_d(a)) / dx;
-         const PetscScalar cy = PetscAbsScalar(eta_d(a)) / dy;
-
-         // Each axis contributes |cosine| / h (psi_here - psi_upwind), whichever
-         // way it points - the direction is already baked into which neighbour
-         // the discretisation put in the slot
-         coo_v_d(diag_slot_d(r)) += cx + cy;
-         coo_v_d(first)     += -cx;
-         coo_v_d(first + 1) += -cy;
-      });
-
+   PetscCall(create_common(ps, disc, 2, h, cos_d));
    PetscFunctionReturn(PETSC_SUCCESS);
 }
-
-// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-// The cx + cy this term writes into the diagonal slot above - the same
-// expression in the same order, so a composed diagonal is bitwise the
-// assembled one
-// This happens entirely on the device
-PetscErrorCode StreamingTerm2D::add_diagonal(Vec d) const
-{
-   const PetscInt n_angles = n_angles_;
-   const PetscScalar dx = dx_;
-   const PetscScalar dy = dy_;
-   const PetscScalarKokkosView mu_d = mu_d_;
-   const PetscScalarKokkosView eta_d = eta_d_;
-   const PetscIntKokkosView is_bc_row_d = boundary_.is_bc_row_d;
-
-   PetscFunctionBeginUser;
-
-   PetscScalarKokkosView d_d;
-   PetscCall(VecGetKokkosView(d, &d_d));
-
-   Kokkos::parallel_for(
-      Kokkos::RangePolicy<>(0, local_rows_), KOKKOS_LAMBDA(PetscInt r) {
-
-         if (is_bc_row_d(r)) return;
-
-         const PetscInt a = r % n_angles;
-
-         const PetscScalar cx = PetscAbsScalar(mu_d(a)) / dx;
-         const PetscScalar cy = PetscAbsScalar(eta_d(a)) / dy;
-
-         d_d(r) += cx + cy;
-      });
-
-   PetscCall(VecRestoreKokkosView(d, &d_d));
-
-   PetscFunctionReturn(PETSC_SUCCESS);
-}
-
-// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-// StreamingTerm3D
-// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 PetscErrorCode StreamingTerm3D::create(const PhaseSpace &ps, const StructuredFD3D &disc, const SNQuadrature3D &quad)
 {
+   const PetscScalar h[] = {disc.dx(), disc.dy(), disc.dz()};
+   const PetscScalarKokkosView cos_d[] = {quad.mu_d(), quad.eta_d(), quad.xi_d()};
+
    PetscFunctionBeginUser;
-
-   PetscCall(ps.check_decomposed());
-
-   n_angles_ = ps.n_angles;
-   local_rows_ = ps.local_rows();
-   dx_ = disc.dx();
-   dy_ = disc.dy();
-   dz_ = disc.dz();
-   mu_d_ = quad.mu_d();
-   eta_d_ = quad.eta_d();
-   xi_d_ = quad.xi_d();
-   pattern_ = disc.coo_pattern();
-   boundary_ = disc.boundary_info();
-
+   PetscCall(create_common(ps, disc, 3, h, cos_d));
    PetscFunctionReturn(PETSC_SUCCESS);
 }
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-// Add the upwinded mu dpsi/dx + eta dpsi/dy + xi dpsi/dz stencil into the
-// shared COO values
-// This happens entirely on the device
-PetscErrorCode StreamingTerm3D::assemble_add(PetscScalarKokkosView &coo_v_d) const
+// Per row, c_d = |cos_d(a)| / h_d: the diagonal gets c_0 + c_1 + c_2 (summed
+// left to right, the order add_diagonal must match bitwise), upwind slot d
+// gets -c_d. diag_only adds just the diagonal into out_d(r) - the add_diagonal
+// half. A free function templated on the axis count, so each dimension
+// compiles to its own unrolled kernel
+template <int DIM>
+static void StructuredStreamingKernel(PetscScalarKokkosView out_d, bool diag_only, PetscScalarKokkosView cos0_d, \
+   PetscScalarKokkosView cos1_d, PetscScalarKokkosView cos2_d, PetscScalar h0, PetscScalar h1, PetscScalar h2, \
+   PetscIntKokkosView row_slot_offset_d, PetscIntKokkosView diag_slot_d, PetscIntKokkosView is_bc_row_d, \
+   PetscInt n_angles, PetscInt local_rows)
 {
-   const PetscInt n_angles = n_angles_;
-   const PetscScalar dx = dx_;
-   const PetscScalar dy = dy_;
-   const PetscScalar dz = dz_;
-   const PetscScalarKokkosView mu_d = mu_d_;
-   const PetscScalarKokkosView eta_d = eta_d_;
-   const PetscScalarKokkosView xi_d = xi_d_;
-   const PetscIntKokkosView row_slot_offset_d = pattern_.row_slot_offset_d;
-   const PetscIntKokkosView diag_slot_d = pattern_.diag_slot_d;
-   const PetscIntKokkosView is_bc_row_d = boundary_.is_bc_row_d;
-
-   PetscFunctionBeginUser;
-
    Kokkos::parallel_for(
-      Kokkos::RangePolicy<>(0, local_rows_), KOKKOS_LAMBDA(PetscInt r) {
+      Kokkos::RangePolicy<>(0, local_rows), KOKKOS_LAMBDA(PetscInt r) {
 
          // BC rows carry only what the assembly puts on them
          if (is_bc_row_d(r)) return;
 
          const PetscInt a = r % n_angles;
-         // Slot order is the discretisation's: upwind-x, upwind-y, upwind-z,
-         // diagonal - the off-diagonals addressed positionally, as in 2D
+         PetscScalar c[DIM];
+         c[0] = PetscAbsScalar(cos0_d(a)) / h0;
+         if constexpr (DIM > 1) c[1] = PetscAbsScalar(cos1_d(a)) / h1;
+         if constexpr (DIM > 2) c[2] = PetscAbsScalar(cos2_d(a)) / h2;
+         PetscScalar diag = c[0];
+         for (int d = 1; d < DIM; d++) diag += c[d];
+
+         if (diag_only) {
+            out_d(r) += diag;
+            return;
+         }
+         out_d(diag_slot_d(r)) += diag;
          const PetscInt first = row_slot_offset_d(r);
-
-         const PetscScalar cx = PetscAbsScalar(mu_d(a)) / dx;
-         const PetscScalar cy = PetscAbsScalar(eta_d(a)) / dy;
-         const PetscScalar cz = PetscAbsScalar(xi_d(a)) / dz;
-
-         // Each axis contributes |cosine| / h (psi_here - psi_upwind), whichever
-         // way it points - the direction is already baked into which neighbour
-         // the discretisation put in the slot
-         coo_v_d(diag_slot_d(r)) += cx + cy + cz;
-         coo_v_d(first)     += -cx;
-         coo_v_d(first + 1) += -cy;
-         coo_v_d(first + 2) += -cz;
+         for (int d = 0; d < DIM; d++) out_d(first + d) += -c[d];
       });
+}
+
+static void StructuredStreamingFill(PetscInt n_dims, PetscScalarKokkosView out_d, bool diag_only, \
+   const PetscScalarKokkosView cos_d[], const PetscScalar h[], const CooPattern &pattern, \
+   const BoundaryInfo &boundary, PetscInt n_angles, PetscInt local_rows)
+{
+   if (n_dims == 1) StructuredStreamingKernel<1>(out_d, diag_only, cos_d[0], cos_d[1], cos_d[2], h[0], h[1], h[2], \
+      pattern.row_slot_offset_d, pattern.diag_slot_d, boundary.is_bc_row_d, n_angles, local_rows);
+   else if (n_dims == 2) StructuredStreamingKernel<2>(out_d, diag_only, cos_d[0], cos_d[1], cos_d[2], h[0], h[1], \
+      h[2], pattern.row_slot_offset_d, pattern.diag_slot_d, boundary.is_bc_row_d, n_angles, local_rows);
+   else StructuredStreamingKernel<3>(out_d, diag_only, cos_d[0], cos_d[1], cos_d[2], h[0], h[1], h[2], \
+      pattern.row_slot_offset_d, pattern.diag_slot_d, boundary.is_bc_row_d, n_angles, local_rows);
+}
+
+// This happens entirely on the device
+PetscErrorCode StructuredStreamingTerm::assemble_add(const PetscScalarKokkosView &coo_v_d) const
+{
+   PetscFunctionBeginUser;
+
+   StructuredStreamingFill(n_dims_, coo_v_d, false, cos_d_, h_, pattern_, boundary_, n_angles_, local_rows_);
 
    PetscFunctionReturn(PETSC_SUCCESS);
 }
 
-// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-// The cx + cy + cz this term writes into the diagonal slot above - the same
-// expression in the same order, so a composed diagonal is bitwise the
-// assembled one
 // This happens entirely on the device
-PetscErrorCode StreamingTerm3D::add_diagonal(Vec d) const
+PetscErrorCode StructuredStreamingTerm::add_diagonal(Vec d) const
 {
-   const PetscInt n_angles = n_angles_;
-   const PetscScalar dx = dx_;
-   const PetscScalar dy = dy_;
-   const PetscScalar dz = dz_;
-   const PetscScalarKokkosView mu_d = mu_d_;
-   const PetscScalarKokkosView eta_d = eta_d_;
-   const PetscScalarKokkosView xi_d = xi_d_;
-   const PetscIntKokkosView is_bc_row_d = boundary_.is_bc_row_d;
-
    PetscFunctionBeginUser;
 
    PetscScalarKokkosView d_d;
    PetscCall(VecGetKokkosView(d, &d_d));
-
-   Kokkos::parallel_for(
-      Kokkos::RangePolicy<>(0, local_rows_), KOKKOS_LAMBDA(PetscInt r) {
-
-         if (is_bc_row_d(r)) return;
-
-         const PetscInt a = r % n_angles;
-
-         const PetscScalar cx = PetscAbsScalar(mu_d(a)) / dx;
-         const PetscScalar cy = PetscAbsScalar(eta_d(a)) / dy;
-         const PetscScalar cz = PetscAbsScalar(xi_d(a)) / dz;
-
-         d_d(r) += cx + cy + cz;
-      });
-
+   StructuredStreamingFill(n_dims_, d_d, true, cos_d_, h_, pattern_, boundary_, n_angles_, local_rows_);
    PetscCall(VecRestoreKokkosView(d, &d_d));
 
    PetscFunctionReturn(PETSC_SUCCESS);
@@ -372,7 +194,7 @@ KOKKOS_INLINE_FUNCTION PetscScalar DG0OutflowDiagonal(const PetscScalarKokkosVie
 
 // Add the upwind face fluxes into the shared COO values
 // This happens entirely on the device
-PetscErrorCode StreamingTermDG0::assemble_add(PetscScalarKokkosView &coo_v_d) const
+PetscErrorCode StreamingTermDG0::assemble_add(const PetscScalarKokkosView &coo_v_d) const
 {
    const PetscInt n_angles = n_angles_;
    const PetscScalarKokkosView omega_d = omega_d_;
@@ -503,7 +325,7 @@ KOKKOS_INLINE_FUNCTION PetscScalar DG1OutflowDiagonal(const PetscScalarKokkosVie
 
 // Add the DG1 face and volume terms into the shared COO values
 // This happens entirely on the device
-PetscErrorCode StreamingTermDG1::assemble_add(PetscScalarKokkosView &coo_v_d) const
+PetscErrorCode StreamingTermDG1::assemble_add(const PetscScalarKokkosView &coo_v_d) const
 {
    const PetscInt n_angles = n_angles_;
    const PetscInt nb = n_basis_;
@@ -615,11 +437,18 @@ PetscErrorCode RemovalTerm::create(const PhaseSpace &ps, const Discretisation &d
    PetscFunctionReturn(PETSC_SUCCESS);
 }
 
+PetscErrorCode RemovalTerm::set_group(const GroupXSections &xs, PetscInt g)
+{
+   PetscFunctionBeginUser;
+   set_sigma_t(xs.sigma_t(g));
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 // Add sigma_t onto the diagonal
 // This happens entirely on the device
-PetscErrorCode RemovalTerm::assemble_add(PetscScalarKokkosView &coo_v_d) const
+PetscErrorCode RemovalTerm::assemble_add(const PetscScalarKokkosView &coo_v_d) const
 {
    const PetscInt rows_per_cell = rows_per_cell_;
    const PetscScalarKokkosView sigma_t_d = sigma_t_d_;
@@ -722,6 +551,9 @@ PetscErrorCode ScatteringTerm::create(const PhaseSpace &ps, const Discretisation
    PetscCall(PetscKokkosInitializeCheck());
 
    PetscCall(ps.check_decomposed());
+   PetscCheck(quad.n_angles() == ps.n_angles, PETSC_COMM_SELF, PETSC_ERR_ARG_INCOMP, \
+      "the quadrature has %" PetscInt_FMT " angles but the phase space has %" PetscInt_FMT, \
+      quad.n_angles(), ps.n_angles);
 
    n_angles_ = ps.n_angles;
    n_basis_ = ps.n_basis;
@@ -734,6 +566,13 @@ PetscErrorCode ScatteringTerm::create(const PhaseSpace &ps, const Discretisation
    // scatter is applied to the local part of the vectors only
    scalar_flux_d_ = PetscScalar2DKokkosView("scalar_flux_d", ps.local_nodes(), 1);
 
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+PetscErrorCode ScatteringTerm::set_group(const GroupXSections &xs, PetscInt g)
+{
+   PetscFunctionBeginUser;
+   set_sigma_s(xs.sigma_s(g, g));
    PetscFunctionReturn(PETSC_SUCCESS);
 }
 

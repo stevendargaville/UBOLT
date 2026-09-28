@@ -154,11 +154,11 @@ static PetscErrorCode CheckMatfreeEquivalence(MPI_Comm comm, const PhaseSpace &p
    PetscCall(scattering_f.create(ps, disc, quad, xs.sigma_s(0, 0)));
 
    TransportOperator op_a, op_f;
-   PetscCall(op_a.create(comm, ps, disc));
+   PetscCall(op_a.create(disc));
    PetscCall(op_a.add_term(streaming));
    PetscCall(op_a.add_term(&removal_a));
    PetscCall(op_a.add_term(&scattering_a));
-   PetscCall(op_f.create(comm, ps, disc));
+   PetscCall(op_f.create(disc));
    PetscCall(op_f.add_term(streaming));
    PetscCall(op_f.add_term(&removal_f));
    PetscCall(op_f.add_term(&scattering_f));
@@ -447,7 +447,7 @@ int main(int argc, char **args) {
       StructuredFD1D disc_1d;
       StructuredFD2D disc_2d;
       StructuredFD3D disc_3d;
-      StreamingTerm streaming_1d;
+      StreamingTerm1D streaming_1d;
       StreamingTerm2D streaming_2d;
       StreamingTerm3D streaming_3d;
       UnstructuredDG disc_dg;
@@ -648,7 +648,7 @@ int main(int argc, char **args) {
       TransportOperator op;
       GroupTransfer transfer;
       GroupTransferCG transfer_cg;
-      PetscCall(op.create(PETSC_COMM_WORLD, ps, *disc));
+      PetscCall(op.create(*disc));
       if (spec.mesh_cg_supg) {
          // Streaming, SUPG and removal in the one assembled term; the scatter
          // and the transfer carry the SUPG weight too
@@ -656,7 +656,7 @@ int main(int argc, char **args) {
          PetscCall(scattering_cg.create(ps, disc_cg, *quad, xs.sigma_t(0), xs.sigma_s(0, 0)));
          PetscCall(op.add_term(streaming));
          PetscCall(op.add_term(&scattering_cg));
-         PetscCall(transfer_cg.create(ps, disc_cg, *quad, xs));
+         PetscCall(transfer_cg.create(ps, disc_cg, *quad, xs, spec.materials, mat_id_d));
       } else {
          PetscCall(removal.create(ps, *disc, xs.sigma_t(0)));
          removal.set_matrix_free(matfree_removal);
@@ -664,8 +664,9 @@ int main(int argc, char **args) {
          PetscCall(op.add_term(streaming));
          PetscCall(op.add_term(&removal));
          PetscCall(op.add_term(&scattering));
-         PetscCall(transfer.create(ps, *quad, xs, disc->boundary_info()));
+         PetscCall(transfer.create(ps, *quad, xs, disc->boundary_info(), spec.materials, mat_id_d));
       }
+      GroupSource *group_source = spec.mesh_cg_supg ? (GroupSource *)&transfer_cg : &transfer;
 
       // ~~~~~~~~~~~~~
       // One angular flux Vec per group, plus a single rhs we rebuild per group
@@ -736,14 +737,8 @@ int main(int argc, char **args) {
          // re-preallocation - the sparsity is the discretisation's, not the
          // group's. Under -matfree_removal there is nothing to refill: both
          // re-pointed terms are matrix-free and read their xsections straight
-         // through, so the pointer swaps above are the whole per-group update
-         if (spec.mesh_cg_supg) {
-            supg_cg.set_sigma_t(xs.sigma_t(g));
-            scattering_cg.set_group(xs.sigma_t(g), xs.sigma_s(g, g));
-         } else {
-            removal.set_sigma_t(xs.sigma_t(g));
-            scattering.set_sigma_s(xs.sigma_s(g, g));
-         }
+         // through, so the pointer swaps are the whole per-group update
+         PetscCall(op.set_group(xs, g));
          if (!matfree_removal) PetscCall(op.assemble());
          // The diffusion operator is built from the same two xsections, so it
          // is refilled here rather than in TransportSolver::refresh() - the
@@ -756,17 +751,12 @@ int main(int argc, char **args) {
          // rows, and everything downscattered out of the groups already
          // solved. A reflective row's rhs is zero - UboltZeroReflectRows
          // enforces that contract regardless of what the fills above wrote
-         // (add_source skips every BC row on its own)
+         // (add_transfer skips every BC row on its own)
          PetscCall(VecSet(b, 0.0));
          PetscCall(UboltFillInflow(disc->boundary_info(), b));
-         if (spec.mesh_cg_supg) PetscCall(UboltFillSourceCG(disc_cg, *quad, spec.materials, mat_id_d, \
-            xs.sigma_t(g), g, b));
-         else PetscCall(UboltFillSource(ps, disc->boundary_info(), *quad, spec.materials, mat_id_d, g, b));
+         PetscCall(group_source->add_external(g, b));
          PetscCall(UboltZeroReflectRows(disc->boundary_info(), b));
-         for (PetscInt g_from = 0; g_from < g; g_from++) {
-            if (spec.mesh_cg_supg) PetscCall(transfer_cg.add_source(g_from, g, b));
-            else PetscCall(transfer.add_source(g_from, g, b));
-         }
+         for (PetscInt g_from = 0; g_from < g; g_from++) PetscCall(group_source->add_transfer(g_from, g, b));
 
          // Diagonally scale this group's assembled operator and rhs - AFTER
          // the rhs is complete, and BEFORE the solver sees the matrix, so the
@@ -802,8 +792,7 @@ int main(int argc, char **args) {
 
          // This group's scalar flux is fixed now, and every group below it
          // scatters from it. Integrate once here rather than once per target
-         if (spec.mesh_cg_supg) PetscCall(transfer_cg.set_scalar_flux(g, psi[g]));
-         else PetscCall(transfer.set_scalar_flux(g, psi[g]));
+         PetscCall(group_source->set_scalar_flux(g, psi[g]));
       }
 
       // The infinite-medium check: uniform source, uniform xsections and no
@@ -866,8 +855,7 @@ int main(int argc, char **args) {
             else PetscCall(PetscSNPrintf(fname, sizeof(fname), "%.*s_g%" PetscInt_FMT "%s", \
                (int)base_len, flux_vtk.c_str(), g, dot ? dot : ""));
 
-            if (spec.mesh_cg_supg) PetscCall(UboltFillElementSource(spec.materials, mat_id_d, g, cell_source_d));
-            else PetscCall(UboltFillCellSource(ps, spec.materials, mat_id_d, g, cell_source_d));
+            PetscCall(UboltFillCellSource(spec.materials, mat_id_d, g, cell_source_d));
             std::vector<UboltCellField> extra = {{"sigma_t", xs.sigma_t(g)}, {"source", cell_source_d}};
             // DG1: scalar_flux is the cell average, so the slope rides along
             // and the file carries the whole linear solution

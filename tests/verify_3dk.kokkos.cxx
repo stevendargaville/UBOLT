@@ -169,7 +169,7 @@ static PetscErrorCode CheckStreamingClosedForm(PetscInt n_cells_x, PetscInt n_ce
 
    // Streaming alone: no removal, no scatter
    PetscCall(streaming.create(ps, disc, quad));
-   PetscCall(op.create(PETSC_COMM_WORLD, ps, disc));
+   PetscCall(op.create(disc));
    PetscCall(op.add_term(&streaming));
    PetscCall(op.assemble());
 
@@ -341,7 +341,7 @@ static PetscErrorCode CheckOperatorAgainstReference(PetscInt n_cells_x, PetscInt
    PetscCall(removal.create(ps, disc, sigma_t_d));
    PetscCall(scattering.create(ps, disc, quad, sigma_s_d));
 
-   PetscCall(op.create(PETSC_COMM_WORLD, ps, disc));
+   PetscCall(op.create(disc));
    PetscCall(op.add_term(&streaming));
    PetscCall(op.add_term(&removal));
    PetscCall(op.add_term(&scattering));
@@ -498,7 +498,7 @@ static PetscErrorCode CheckConstantInflow(PetscInt n_cells_x, PetscInt n_cells_y
    Kokkos::deep_copy(sigma_t_d, sigma_t);
    PetscCall(streaming.create(ps, disc, quad));
    PetscCall(removal.create(ps, disc, sigma_t_d));
-   PetscCall(op.create(PETSC_COMM_WORLD, ps, disc));
+   PetscCall(op.create(disc));
    PetscCall(op.add_term(&streaming));
    PetscCall(op.add_term(&removal));
    PetscCall(op.assemble());
@@ -580,7 +580,7 @@ static PetscErrorCode CheckOppositeTranspose(PetscInt n_cells_x, PetscInt n_cell
    }
    PetscCall(streaming.create(ps, disc, quad));
    PetscCall(removal.create(ps, disc, sigma_t_d));
-   PetscCall(op.create(PETSC_COMM_WORLD, ps, disc));
+   PetscCall(op.create(disc));
    PetscCall(op.add_term(&streaming));
    PetscCall(op.add_term(&removal));
    PetscCall(op.assemble());

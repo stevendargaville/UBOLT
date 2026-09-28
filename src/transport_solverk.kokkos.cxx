@@ -98,7 +98,7 @@ static PetscErrorCode RemovalPCApply(PC pc, Vec x, Vec y)
 // Apply the DSA diffusion correction. The context is the caller's DSAPrecon,
 // so there is no PCShellSetDestroy to match this: the object follows the
 // library's create/destroy idiom and is destroyed by whoever created it,
-// unlike the PetscNew'd removal context above
+// unlike the removal context above, which its PC deletes
 static PetscErrorCode DSAPCApply(PC pc, Vec x, Vec y)
 {
    DSAPrecon *dsa = nullptr;
@@ -198,7 +198,6 @@ PetscErrorCode TransportSolver::create(MPI_Comm comm, const TransportOperator &o
 {
    PC pc, pc_removal;
    PC block_inner = NULL;
-   RemovalPCCtx *shell = nullptr;
 
    PetscFunctionBeginUser;
 
@@ -220,10 +219,10 @@ PetscErrorCode TransportSolver::create(MPI_Comm comm, const TransportOperator &o
 
    // The removal preconditioner always works off the operator's own blocks,
    // whatever pmat the streaming preconditioner was handed
-   PetscCall(RemovalPCCreateContext(&shell, op_));
+   PetscCall(RemovalPCCreateContext(&removal_, op_));
 
    PetscCall(PCShellSetApply(pc_removal, RemovalPCApply));
-   PetscCall(PCShellSetContext(pc_removal, shell));
+   PetscCall(PCShellSetContext(pc_removal, removal_));
    PetscCall(PCShellSetDestroy(pc_removal, RemovalPCDestroy));
    PetscCall(PCShellSetName(pc_removal, "RemovalPCShell"));
 
@@ -278,15 +277,12 @@ PetscErrorCode TransportSolver::create(MPI_Comm comm, const TransportOperator &o
       PetscCall(PCShellSetName(pc_dsa, "DSAPCShell"));
 
       // A multiplicative composite hands each stage the residual left by the
-      // ones before it, and by default it forms that residual with PMAT. Pmat
-      // has no scattering in it - it is the assembled streaming/removal matrix,
-      // or a streaming-only one - so by the time PCAIR has inverted it the
-      // residual reaching this shell is tiny AND carries no trace of the
-      // scattering, which is the one thing DSA exists to correct. Measured on
-      // slab_diffusive.json: the moment reaching the diffusion solve is ~1e-6
-      // of the residual and the count does not move at all. Updating with AMAT
-      // - the shell, matrix-free scatter included - is what makes the composite
-      // a real residual correction: 19 iterations to 11 on that problem
+      // ones before it, formed with PMAT by default. Pmat has no scattering in
+      // it, so after PCAIR has inverted it the residual reaching this shell is
+      // tiny AND carries no trace of the scattering - the one thing DSA exists
+      // to correct. Updating with AMAT (the shell, scatter included) makes the
+      // composite a real residual correction (measurement: TODO.md Phase 4
+      // postscript 5)
       //
       // Only when there is a DSA to feed, so the preconditioner without one is
       // untouched, and before KSPSetFromOptions so -pc_use_amat false still wins
@@ -307,16 +303,9 @@ PetscErrorCode TransportSolver::create(MPI_Comm comm, const TransportOperator &o
 // xsections have changed under it
 PetscErrorCode TransportSolver::refresh()
 {
-   PC pc, pc_removal;
-   RemovalPCCtx *shell = nullptr;
-
    PetscFunctionBeginUser;
 
-   PetscCall(KSPGetPC(ksp_, &pc));
-   // Index 0 is the removal shell, added first in create()
-   PetscCall(PCCompositeGetPC(pc, 0, &pc_removal));
-   PetscCall(PCShellGetContext(pc_removal, &shell));
-   PetscCall(RemovalPCFillContext(shell, op_));
+   PetscCall(RemovalPCFillContext(removal_, op_));
 
    PetscFunctionReturn(PETSC_SUCCESS);
 }
@@ -339,8 +328,10 @@ PetscErrorCode TransportSolver::destroy()
 {
    PetscFunctionBeginUser;
 
+   // Frees the removal context too
    PetscCall(KSPDestroy(&ksp_));
    op_ = nullptr;
+   removal_ = nullptr;
 
    PetscFunctionReturn(PETSC_SUCCESS);
 }

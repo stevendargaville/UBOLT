@@ -76,27 +76,90 @@ PetscErrorCode MaterialSpec::set_source(PetscInt mat, PetscInt g, PetscScalar va
 }
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-// UboltFillSource
+// UboltCheckMaterialIds
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 // Free functions rather than local lambdas: an extended device lambda can't be
 // defined inside another lambda
 
-// The smallest and largest material index painted onto the cells - a painted
-// index outside the spec's table would silently read garbage, so the fill
-// checks the range out loud first
-static void MaterialIdRange(const PetscIntKokkosView &mat_id_d, PetscInt local_cells, \
-   PetscInt *id_min, PetscInt *id_max)
+static void MaterialIdRange(const PetscIntKokkosView &mat_id_d, PetscInt n, PetscInt *id_min, PetscInt *id_max)
 {
    Kokkos::parallel_reduce(
-      Kokkos::RangePolicy<>(0, local_cells), KOKKOS_LAMBDA(PetscInt c, PetscInt &lmin, PetscInt &lmax) {
+      Kokkos::RangePolicy<>(0, n), KOKKOS_LAMBDA(PetscInt c, PetscInt &lmin, PetscInt &lmax) {
 
          lmin = Kokkos::min(lmin, mat_id_d(c));
          lmax = Kokkos::max(lmax, mat_id_d(c));
       }, Kokkos::Min<PetscInt>(*id_min), Kokkos::Max<PetscInt>(*id_max));
 }
 
-static void FillSourceKernel(PetscScalarKokkosView b_d, PetscScalarKokkosView source_tab_d, \
+PetscErrorCode UboltCheckMaterialIds(const MaterialSpec &mats, const PetscIntKokkosView &mat_id_d)
+{
+   PetscInt id_min = 0, id_max = 0;
+
+   PetscFunctionBeginUser;
+
+   MaterialIdRange(mat_id_d, (PetscInt)mat_id_d.extent(0), &id_min, &id_max);
+   PetscCheck(id_min >= 0 && id_max < mats.n_materials(), PETSC_COMM_SELF, PETSC_ERR_ARG_OUTOFRANGE, \
+      "painted material indices span [%" PetscInt_FMT ", %" PetscInt_FMT "] but the spec has %" \
+      PetscInt_FMT " materials", id_min, id_max, mats.n_materials());
+
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+// MaterialSourceTable
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+PetscErrorCode MaterialSourceTable::create(const MaterialSpec &mats, const PetscIntKokkosView &mat_id_d)
+{
+   PetscFunctionBeginUser;
+
+   // We allocate device memory below, and PETSc brings Kokkos up lazily
+   PetscCall(PetscKokkosInitializeCheck());
+
+   PetscCall(UboltCheckMaterialIds(mats, mat_id_d));
+
+   n_groups_ = mats.n_groups();
+   mat_id_d_ = mat_id_d;
+   // The table is tiny, so upload it whole
+   source_tab_d_ = PetscScalarKokkosView("source_tab_d", (PetscInt)mats.source_host().size());
+   PetscScalarKokkosViewHostUnmanaged source_tab_h( \
+      const_cast<PetscScalar *>(mats.source_host().data()), mats.source_host().size());
+   Kokkos::deep_copy(source_tab_d_, source_tab_h);
+
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+static void FillEntriesKernel(PetscScalarKokkosView out, PetscScalarKokkosView source_tab_d, \
+   PetscIntKokkosView mat_id_d, PetscInt n_groups, PetscInt g, PetscInt n)
+{
+   Kokkos::parallel_for(
+      Kokkos::RangePolicy<>(0, n), KOKKOS_LAMBDA(PetscInt e) {
+
+         out(e) = source_tab_d(mat_id_d(e) * n_groups + g);
+      });
+}
+
+PetscErrorCode MaterialSourceTable::fill_entries(PetscInt g, const PetscScalarKokkosView &out) const
+{
+   PetscFunctionBeginUser;
+
+   PetscCheck(g >= 0 && g < n_groups_, PETSC_COMM_SELF, PETSC_ERR_ARG_OUTOFRANGE, \
+      "group %" PetscInt_FMT " out of range, n_groups is %" PetscInt_FMT, g, n_groups_);
+   PetscCheck(out.extent(0) == mat_id_d_.extent(0), PETSC_COMM_SELF, PETSC_ERR_ARG_INCOMP, \
+      "the destination holds %" PetscInt_FMT " entries but the material ids %" PetscInt_FMT, \
+      (PetscInt)out.extent(0), (PetscInt)mat_id_d_.extent(0));
+
+   FillEntriesKernel(out, source_tab_d_, mat_id_d_, n_groups_, g, (PetscInt)out.extent(0));
+
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+static void AddIsotropicKernel(PetscScalarKokkosView b_d, PetscScalarKokkosView source_tab_d, \
    PetscIntKokkosView mat_id_d, PetscIntKokkosView is_bc_row_d, PetscInt n_groups, PetscInt g, \
    PetscInt n_angles, PetscInt n_basis, PetscInt local_cells, PetscScalar sum_weights)
 {
@@ -109,128 +172,81 @@ static void FillSourceKernel(PetscScalarKokkosView b_d, PetscScalarKokkosView so
          // The isotropic strength shared out over the angular domain
          const PetscScalar q = source_tab_d(mat_id_d(i) * n_groups + g) / sum_weights;
 
-         // The same per-angle share into every angle of the cell
          Kokkos::parallel_for(
             Kokkos::TeamThreadRange(t, n_angles), [&](const PetscInt j) {
 
-               // Basis 0 of the cell: a constant projects onto nothing else
+               // Basis 0 of the cell
                const PetscInt r = i * n_basis * n_angles + j;
-               // The rhs on a BC row belongs to the boundary condition
                if (is_bc_row_d(r)) return;
-               // ADD, not assign. Under VacuumTreatment::DIRICHLET_CELL the
-               // rows this touches are exactly the rows UboltFillInflow does
-               // not, so on a zeroed b the two are the same thing bitwise. They
-               // are NOT the same under the default GHOST_FLUX: a ghost-flux
-               // boundary cell is an ordinary unknown, so it carries BOTH the
-               // external source and the |Omega|/h inflow, and assigning here
-               // would wipe the inflow the fill before it put there
+               // ADD, not assign - see the declaration
                b_d(r) += q;
          });
    });
 }
 
-// The source table is tiny, so upload it whole
-static PetscScalarKokkosView UploadSourceTable(const MaterialSpec &mats)
+PetscErrorCode MaterialSourceTable::add_isotropic(PetscInt g, PetscInt n_angles, PetscInt n_basis, \
+   PetscScalar sum_weights, const PetscIntKokkosView &is_bc_row_d, Vec b) const
 {
-   PetscScalarKokkosView source_tab_d("source_tab_d", (PetscInt)mats.source_host().size());
-   PetscScalarKokkosViewHostUnmanaged source_tab_h( \
-      const_cast<PetscScalar *>(mats.source_host().data()), mats.source_host().size());
-   Kokkos::deep_copy(source_tab_d, source_tab_h);
-   return source_tab_d;
-}
-
-// See the declaration in material_spec.hpp for the BC row contract
-PetscErrorCode UboltFillSource(const PhaseSpace &ps, const BoundaryInfo &boundary, \
-   const AngularQuadrature &quad, const MaterialSpec &mats, const PetscIntKokkosView &mat_id_d, \
-   PetscInt g, Vec b)
-{
+   const PetscInt local_cells = (PetscInt)mat_id_d_.extent(0);
    PetscInt local_rows_b = 0;
-   PetscInt id_min = 0, id_max = 0;
 
    PetscFunctionBeginUser;
 
-   // We allocate device memory below, and PETSc brings Kokkos up lazily
-   PetscCall(PetscKokkosInitializeCheck());
-
-   PetscCall(ps.check_decomposed());
-
-   PetscCheck(g >= 0 && g < mats.n_groups(), PETSC_COMM_SELF, PETSC_ERR_ARG_OUTOFRANGE, \
-      "group %" PetscInt_FMT " out of range, n_groups is %" PetscInt_FMT, g, mats.n_groups());
-   PetscCheck(quad.n_angles() == ps.n_angles, PETSC_COMM_SELF, PETSC_ERR_ARG_INCOMP, \
-      "the quadrature has %" PetscInt_FMT " angles but the phase space has %" PetscInt_FMT, \
-      quad.n_angles(), ps.n_angles);
-   PetscCheck((PetscInt)mat_id_d.extent(0) == ps.local_cells, PETSC_COMM_SELF, PETSC_ERR_ARG_INCOMP, \
-      "material ids cover %" PetscInt_FMT " cells but there are %" PetscInt_FMT " local cells", \
-      (PetscInt)mat_id_d.extent(0), ps.local_cells);
-   PetscCheck((PetscInt)boundary.is_bc_row_d.extent(0) == ps.local_rows(), PETSC_COMM_SELF, \
-      PETSC_ERR_ARG_INCOMP, "the boundary info covers %" PetscInt_FMT " rows but there are %" \
-      PetscInt_FMT " local rows", (PetscInt)boundary.is_bc_row_d.extent(0), ps.local_rows());
+   PetscCheck(g >= 0 && g < n_groups_, PETSC_COMM_SELF, PETSC_ERR_ARG_OUTOFRANGE, \
+      "group %" PetscInt_FMT " out of range, n_groups is %" PetscInt_FMT, g, n_groups_);
    PetscCall(VecGetLocalSize(b, &local_rows_b));
-   PetscCheck(local_rows_b == ps.local_rows(), PETSC_COMM_SELF, PETSC_ERR_ARG_INCOMP, \
-      "b has %" PetscInt_FMT " local rows but the phase space has %" PetscInt_FMT, \
-      local_rows_b, ps.local_rows());
-
-   MaterialIdRange(mat_id_d, ps.local_cells, &id_min, &id_max);
-   PetscCheck(id_min >= 0 && id_max < mats.n_materials(), PETSC_COMM_SELF, PETSC_ERR_ARG_OUTOFRANGE, \
-      "painted material indices span [%" PetscInt_FMT ", %" PetscInt_FMT "] but the spec has %" \
-      PetscInt_FMT " materials", id_min, id_max, mats.n_materials());
-
-   PetscScalarKokkosView source_tab_d = UploadSourceTable(mats);
+   PetscCheck(local_rows_b == local_cells * n_basis * n_angles && \
+      (PetscInt)is_bc_row_d.extent(0) == local_rows_b, PETSC_COMM_SELF, PETSC_ERR_ARG_INCOMP, \
+      "b has %" PetscInt_FMT " local rows and the BC row mask %" PetscInt_FMT ", but the material ids " \
+      "cover %" PetscInt_FMT " cells of %" PetscInt_FMT " rows", local_rows_b, \
+      (PetscInt)is_bc_row_d.extent(0), local_cells, n_basis * n_angles);
 
    PetscScalarKokkosView b_d;
    PetscCall(VecGetKokkosView(b, &b_d));
-   FillSourceKernel(b_d, source_tab_d, mat_id_d, boundary.is_bc_row_d, mats.n_groups(), g, \
-      ps.n_angles, ps.n_basis, ps.local_cells, quad.sum_weights());
+   AddIsotropicKernel(b_d, source_tab_d_, mat_id_d_, is_bc_row_d, n_groups_, g, n_angles, n_basis, \
+      local_cells, sum_weights);
    PetscCall(VecRestoreKokkosView(b, &b_d));
 
    PetscFunctionReturn(PETSC_SUCCESS);
 }
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-// UboltFillCellSource
+// The one-shot fills
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-static void FillCellSourceKernel(PetscScalarKokkosView cell_source_d, \
-   PetscScalarKokkosView source_tab_d, PetscIntKokkosView mat_id_d, PetscInt n_groups, \
-   PetscInt g, PetscInt local_cells)
+PetscErrorCode UboltFillSource(const PhaseSpace &ps, const BoundaryInfo &boundary, \
+   const AngularQuadrature &quad, const MaterialSpec &mats, const PetscIntKokkosView &mat_id_d, \
+   PetscInt g, Vec b)
 {
-   Kokkos::parallel_for(
-      Kokkos::RangePolicy<>(0, local_cells), KOKKOS_LAMBDA(PetscInt c) {
-
-         cell_source_d(c) = source_tab_d(mat_id_d(c) * n_groups + g);
-      });
-}
-
-// See the declaration in material_spec.hpp for what this writes and what it
-// deliberately does not do
-PetscErrorCode UboltFillCellSource(const PhaseSpace &ps, const MaterialSpec &mats, \
-   const PetscIntKokkosView &mat_id_d, PetscInt g, PetscScalarKokkosView cell_source_d)
-{
-   PetscInt id_min = 0, id_max = 0;
+   MaterialSourceTable table;
 
    PetscFunctionBeginUser;
 
-   // We allocate device memory below, and PETSc brings Kokkos up lazily
-   PetscCall(PetscKokkosInitializeCheck());
-
    PetscCall(ps.check_decomposed());
-
-   PetscCheck(g >= 0 && g < mats.n_groups(), PETSC_COMM_SELF, PETSC_ERR_ARG_OUTOFRANGE, \
-      "group %" PetscInt_FMT " out of range, n_groups is %" PetscInt_FMT, g, mats.n_groups());
+   PetscCheck(quad.n_angles() == ps.n_angles, PETSC_COMM_SELF, PETSC_ERR_ARG_INCOMP, \
+      "the quadrature has %" PetscInt_FMT " angles but the phase space has %" PetscInt_FMT, \
+      quad.n_angles(), ps.n_angles);
    PetscCheck((PetscInt)mat_id_d.extent(0) == ps.local_cells, PETSC_COMM_SELF, PETSC_ERR_ARG_INCOMP, \
       "material ids cover %" PetscInt_FMT " cells but there are %" PetscInt_FMT " local cells", \
       (PetscInt)mat_id_d.extent(0), ps.local_cells);
-   PetscCheck((PetscInt)cell_source_d.extent(0) == ps.local_cells, PETSC_COMM_SELF, \
-      PETSC_ERR_ARG_INCOMP, "the destination holds %" PetscInt_FMT " cells but there are %" \
-      PetscInt_FMT " local cells", (PetscInt)cell_source_d.extent(0), ps.local_cells);
 
-   MaterialIdRange(mat_id_d, ps.local_cells, &id_min, &id_max);
-   PetscCheck(id_min >= 0 && id_max < mats.n_materials(), PETSC_COMM_SELF, PETSC_ERR_ARG_OUTOFRANGE, \
-      "painted material indices span [%" PetscInt_FMT ", %" PetscInt_FMT "] but the spec has %" \
-      PetscInt_FMT " materials", id_min, id_max, mats.n_materials());
+   PetscCall(table.create(mats, mat_id_d));
+   PetscCall(table.add_isotropic(g, ps.n_angles, ps.n_basis, quad.sum_weights(), boundary.is_bc_row_d, b));
 
-   PetscScalarKokkosView source_tab_d = UploadSourceTable(mats);
-   FillCellSourceKernel(cell_source_d, source_tab_d, mat_id_d, mats.n_groups(), g, ps.local_cells);
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+PetscErrorCode UboltFillCellSource(const MaterialSpec &mats, const PetscIntKokkosView &mat_id_d, PetscInt g, \
+   PetscScalarKokkosView cell_source_d)
+{
+   MaterialSourceTable table;
+
+   PetscFunctionBeginUser;
+
+   PetscCall(table.create(mats, mat_id_d));
+   PetscCall(table.fill_entries(g, cell_source_d));
 
    PetscFunctionReturn(PETSC_SUCCESS);
 }

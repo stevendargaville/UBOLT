@@ -24,7 +24,9 @@ struct DeviceCSR {
    PetscInt nnz = 0;
 };
 
-static PetscErrorCode GetDeviceCSR(Mat A, DeviceCSR &csr)
+// nnz is the extent of the matrix's value view (taken first by the caller),
+// so the row offsets need no read back
+static PetscErrorCode GetDeviceCSR(Mat A, PetscInt nnz, DeviceCSR &csr)
 {
    const PetscInt *i = nullptr, *j = nullptr;
    PetscMemType mtype;
@@ -39,10 +41,7 @@ static PetscErrorCode GetDeviceCSR(Mat A, DeviceCSR &csr)
    PetscCheck(PetscMemTypeDevice(mtype) || (std::is_same<DefaultMemorySpace, Kokkos::HostSpace>::value), \
       PETSC_COMM_SELF, PETSC_ERR_ARG_WRONG, "ElementBlockInverse needs the CSR on the device");
    csr.i = PetscIntConstKokkosViewUnmanaged(i, csr.n_rows + 1);
-   // The last row offset is the nonzero count - read it back (one value)
-   Kokkos::View<PetscInt, Kokkos::HostSpace> nnz_h("nnz_h");
-   Kokkos::deep_copy(nnz_h, Kokkos::subview(csr.i, csr.n_rows));
-   csr.nnz = nnz_h();
+   csr.nnz = nnz;
    csr.j = PetscIntConstKokkosViewUnmanaged(j, csr.nnz);
 
    PetscFunctionReturn(PETSC_SUCCESS);
@@ -256,7 +255,8 @@ PetscErrorCode ElementBlockInverse::setup(Mat A, Vec diag)
    PetscFunctionBeginUser;
 
    PetscCall(SplitLocal(A, &Ad, &Ao));
-   PetscCall(GetDeviceCSR(Ad, csr));
+   PetscCall(MatSeqAIJGetKokkosView(Ad, &ad_a));
+   PetscCall(GetDeviceCSR(Ad, (PetscInt)ad_a.extent(0), csr));
    PetscCheck(csr.n_rows == n_blocks_ * nb_, PETSC_COMM_SELF, PETSC_ERR_ARG_SIZ, "the matrix has %" \
       PetscInt_FMT " local rows, the phase space %" PetscInt_FMT, csr.n_rows, n_blocks_ * nb_);
 
@@ -265,7 +265,6 @@ PetscErrorCode ElementBlockInverse::setup(Mat A, Vec diag)
       PetscCheck((PetscInt)diag_d.extent(0) == csr.n_rows, PETSC_COMM_SELF, PETSC_ERR_ARG_SIZ, "the diagonal " \
          "has %" PetscInt_FMT " local rows, the matrix %" PetscInt_FMT, (PetscInt)diag_d.extent(0), csr.n_rows);
    }
-   PetscCall(MatSeqAIJGetKokkosView(Ad, &ad_a));
    const PetscInt n_singular = InvertBlocksKernel(inv_d_, csr.i, csr.j, ad_a, diag_d, diag ? PETSC_TRUE : \
       PETSC_FALSE, n_angles_, nb_, n_blocks_);
    PetscCall(MatSeqAIJRestoreKokkosView(Ad, &ad_a));
@@ -321,11 +320,11 @@ PetscErrorCode ElementBlockInverse::scale(Mat A, MatReuse reuse, Mat *scaled) co
       PetscScalarMatConstKokkosView in_a;
       PetscScalarMatKokkosView out_a;
 
-      PetscCall(GetDeviceCSR(parts_in[part], csr));
+      PetscCall(MatSeqAIJGetKokkosView(parts_in[part], &in_a));
+      PetscCall(GetDeviceCSR(parts_in[part], (PetscInt)in_a.extent(0), csr));
       PetscCheck(csr.n_rows == n_blocks_ * nb_, PETSC_COMM_SELF, PETSC_ERR_ARG_SIZ, "the matrix has %" \
          PetscInt_FMT " local rows, the phase space %" PetscInt_FMT, csr.n_rows, n_blocks_ * nb_);
 
-      PetscCall(MatSeqAIJGetKokkosView(parts_in[part], &in_a));
       PetscCall(MatSeqAIJGetKokkosViewWrite(parts_out[part], &out_a));
       out_nnz = (PetscInt)out_a.extent(0);
       PetscInt n_mismatch = 0;
