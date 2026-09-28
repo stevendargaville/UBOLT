@@ -1151,7 +1151,65 @@ unstructured default ON, but on CG it changes nothing that matters:
 | `cg_box_20_inf_medium`, `-check_inf_medium -ksp_rtol 1e-12` | 11 | 11 | - | - | - |
 
 Above the DG0 twin: the diffusive quad box (39 against 29) and the void channel
-(47 against 26), neither investigated (TODO.md). `-diag_scale` on a scattering
+(47 against 26). Investigated 28 Sep 2026 (opt arch, serial, no code change) by
+swapping PCAIR for an exact inverse, `-precon_block_scale 0 -sub_1_pc_type lu`,
+which splits each count into what the discretisation costs and what AIR costs:
+
+| recipe | CG AIR | CG LU | DG0 AIR | DG0 LU |
+|---|---|---|---|---|
+| `*_box_diffusive` | 39 | 25 | 29 | 24 |
+| `*_tri_diffusive` | 35 | 25 | 35 | 29 |
+| `*_box_void_channel` | 47 | 38 | 25 | 21 |
+
+- **Diffusive box: PCAIR.** Under LU the backends tie. With the scattering off (the
+  same file, `Sigma_s` 0) AIR takes 5 iterations to 1e-10 on CG against 2 on DG0.
+  In thick cells tau = 1/sigma_t, so the SUPG removal term cancels the skew part of
+  the streaming, and what is left is sigma_t times the consistent mass matrix, which
+  on Q1 is not diagonally dominant (P1 triangles sit at equality). A throwaway
+  switch lumping that mass brought AIR to within 2 of LU (and the absorber to 2),
+  but it doubles the LU count (25 -> 50) and breaks SUPG consistency. The PCAIR
+  knobs (strong threshold, inverse sparsity order 2, `lair` Z, no drops, poly order
+  12, inverse type, up-and-down smoothing, combinations) do no better than 35;
+  zeta changes nothing (tau is 1/sigma_t there). Scanning sigma_t at c = 0.99, the gap
+  is all AIR's from 10 mean free paths per cell up (CG AIR / LU 39 / 25, 26 / 15,
+  18 / 10 at sigma_t 100 / 300 / 1000; DG0 29 / 24, 19 / 16, 12 / 10), while at 1-3 mean
+  free paths per cell CG is slower under LU too (37 against 28, 40 against 33).
+- **Void channel: the discretisation.** It is not void-specific (channel sigma_t
+  0 / 0.01 / 0.1 / 1 all give 47 / 38). It follows tau = h/zeta in the thin
+  cells, the SUPG streamline diffusion there:
+
+  | zeta | 0.125 | 0.5 | 2 | 8 | 32 |
+  |---|---|---|---|---|---|
+  | CG LU | 45 | 38 | 27 | 24 | 23 |
+  | CG AIR | 52 | 47 | 41 | 53 | diverges |
+
+  AIR needs the stabilisation the outer iteration pays for. (Zeta 1000 reports
+  a 1-iteration "convergence": AIR has blown up, preconditioned residual 1e17, and
+  the true residual has not moved.) Candidates in TODO.md.
+
+  Wang's cell size in place of h_Omega (28 Sep 2026, a throwaway switch, reverted):
+  tau = min(1/sigma_t, h/zeta) with an angle-independent h. h_Omega = 2 / sum_j
+  |Omega . grad phi_j(x_c)| is dx / max(|mu|, |eta|) on a square quad, so it is
+  never below the edge, and a cell size only rescales tau per angle, which the
+  zeta sweep already covers:
+
+  | h | zeta 0.125 | 0.5 | 2 | 8 |
+  |---|---|---|---|---|
+  | h_Omega (current) | 52 / 45 | 47 / 38 | 41 / 27 | 53 / 24 |
+  | shortest edge | 52 / 43 | 46 / 35 | 39 / 25 | diverges / 24 |
+  | diameter | 53 / 45 | 48 / 37 | 43 / 27 | 69 / 24 |
+
+  (AIR / LU on the void channel. The diffusive boxes do not move, 39 and 35, since tau
+  is 1/sigma_t there. On quads V^(1/2) is the shortest edge.) In `verify_cgk`,
+  h_Omega is the most accurate on every exact-SN benchmark. With the shortest edge
+  the SAAF-LS void slab at 40 cells is 3.10e-3 against 2.97e-3 (zeta 0.5) and
+  4.03e-3 against 3.49e-3 (zeta 2). The thin/thick slab at 16 cells is 8.09e-2
+  against 7.82e-2. The pure-absorber order runs are 1-4% worse. The finest meshes
+  agree to within a few percent, and the slab counts go up at zeta 2 (up to 14
+  against 9). The diameter sits between the two. One iteration on the channel does
+  not pay for that, so h_Omega stays.
+
+`-diag_scale` on a scattering
 problem stalls (`cg_box_50_st2` does not converge in 500; the DG0 twin goes 7 ->
 83): it scales the assembled operator but not the matrix-free scatter, the caveat
 it has on every backend. Without scattering it is consistent and harmless (the void

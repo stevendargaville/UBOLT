@@ -45,7 +45,8 @@ hex cube, triangles and tets go 34 / 32 / 40 / 43 -> 6 / 7 / 8 / 9 (DG0+DSA now 
 5 on all four meshes' DG0 twins, through the consistent D). 6b CG-SUPG landed 28 Sep
 2026 (the Phase 6 item: `mesh.discretisation: "cg_supg"`, consistent SUPG = SAAF-tau,
 verified against the SAAF-LS void slab and the thin/thick slab benchmarks; its
-follow-ups - a CG DSA first - are under it). Next up: a CG DSA, or one of the open questions carried as checkboxes since 27 Sep 2026: per-group
+follow-ups - a CG DSA first - are under it; its two iteration gaps against DG0 and
+Wang's cell size were investigated 28 Sep 2026, no code change). Next up: a CG DSA, or one of the open questions carried as checkboxes since 27 Sep 2026: per-group
 cached Mat/KSP for the DSA (in the Phase 4 postscript 5 DSA notes; void masking, the
 other, is done), and the follow-ups the 27 Sep 2026 round left (the simplex +1 - a
 stronger cheap DSA inner solve was looked at and closed with no change; the list at the end of Phase 6 - the void-bridging
@@ -647,23 +648,49 @@ now direct and tested (see that item).
       outflow minus inflow) is what pins the weak boundary terms' scale - the first
       cut had the face coefficient divided by the area twice and passed everything
       else. Counts: the DG0 twins' except the diffusive quad box (39 vs 29) and the
-      void channel (47 vs 26). Tables in
+      void channel (47 vs 26), investigated below. Tables in
       docs/dev/testing.md, "CG-SUPG verification and iteration counts".
   - [ ] DSA for CG-SUPG. `-precon_dsa` is refused on the backend today. Candidates:
     Wang's consistent DSA for SAAF-tau (P0-projected, NSE 176, 2014), or a
     continuous P1 diffusion operator on the same vertices (restriction/prolongation
     would then be the identity in space). The diffusive CG recipes (39/35) show the
-    same scattering-dominated need DG0 had before its DSA.
+    same scattering-dominated need DG0 had before its DSA; the 39 against DG0's 29 is
+    PCAIR's (item below), which is what the DSA should close.
   - [ ] `-matfree_removal`, `-precon_stream` and `-precon_ref_shift` on CG. All three
     assume a group-independent streaming matrix; with tau = min(1/sigma_t, h/zeta) the
     SUPG streaming part depends on the group. A sigma-independent tau (h/zeta only)
     would restore it at the cost of the thick diffusion limit; not done.
-  - [ ] The CG void channel takes 47 against DG0's 26 and the diffusive quad box 39
-    against 29 (every other CG twin is within 1 of DG0). Not investigated.
+  - [x] The CG void channel takes 47 against DG0's 26 and the diffusive quad box 39
+    against 29 (every other CG twin is within 1 of DG0). INVESTIGATED 28 Sep 2026, no
+    code change - two different causes, neither a bug (an exact LU streaming inverse
+    splits each count into discretisation and PCAIR; tables in docs/dev/testing.md,
+    "CG-SUPG verification and iteration counts"):
+    - Diffusive box: PCAIR's accuracy. Under LU CG ties DG0 (25 / 24). In thick cells
+      tau = 1/sigma_t, so the SUPG removal term cancels the skew part of the streaming
+      and the operator is dominated by sigma_t times the CONSISTENT mass matrix, not
+      diagonally dominant on Q1 (off-diagonals 20/36 against 16/36; P1 triangles sit at
+      equality, their gap is smaller, 35 against LU 25). A throwaway lumped-removal
+      switch put AIR within 2 of LU, but lumping only the removal doubles the LU count
+      (25 -> 50) and gives up SUPG consistency, so it is not the fix. No PCAIR knob
+      does better than 35. The fix is the CG DSA above.
+    - Void channel: mostly the discretisation (LU 38 against 21), SUPG streamline
+      diffusion in the thin cells - any channel with sigma_t <= 1 behaves the same, and
+      the LU count follows tau = h/zeta there: zeta 0.125 / 0.5 / 2 / 8 / 32 give LU
+      45 / 38 / 27 / 24 / 23, AIR 52 / 47 / 41 / 53 / diverges (AIR needs the
+      stabilisation the outer iteration pays for). Candidates, not tried: a void tau
+      not scaled by h/zeta, the CG DSA (Wang's cell size tried, below: 46 against 47).
   - [ ] SUPG is not adjoint-consistent: no `A^T = P A P` on this backend, so the
     half-quadrature transposed PC (blocked on PFLARE anyway) would not carry over.
-  - [ ] h_Omega is the Tezduyar/Shakib element length along Omega; Wang's SAAF-tau uses
-    a cell size. On a strip the two differ by 1/|mu| - not compared.
+  - [x] h_Omega is the Tezduyar/Shakib element length along Omega; Wang's SAAF-tau uses
+    a cell size. COMPARED 28 Sep 2026, kept h_Omega (throwaway switch, reverted; table
+    in docs/dev/testing.md, "CG-SUPG verification and iteration counts"). On a square
+    quad h_Omega = dx / max(|mu|, |eta|), so a fixed h only rescales tau per angle, and
+    it behaves like a shift in zeta. On the void channel (AIR / LU, zeta 0.5) the
+    shortest edge (= V^(1/dim) on quads) gives 46 / 35 against 47 / 38, the diameter
+    48 / 37. The diffusive boxes do not change, because tau = 1/sigma_t there. With the
+    shortest edge every exact-SN benchmark in verify_cgk is less accurate (coarsest
+    mesh 2-18% worse RMS, finest within a few percent) and the slab counts go up at
+    zeta 2. One iteration does not pay for that.
 - BCs: consume the existing `BCSpec` with real "Face Sets" label values (the structured
   backends' FACE_* ids already match the box-mesh convention, so square meshes carry
   over unchanged) — see the reflective-BC postscript below for the label/physics split
