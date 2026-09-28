@@ -1,0 +1,72 @@
+{
+ "_comment": "Benchmark B of verify_cgk as a solve: Hammer, Morel & Wang's thin/thick slab (arXiv 1902.08729 s III.B) - [0, 1] Sigma_a 0.1, [1, 2] Sigma_a 10, Source 1 everywhere, vacuum both ends - as a 64 x 1 quasi-1D CG-SUPG strip with reflective y faces, S8",
+ "dimension": 2,
+ "mesh": {
+  "type": "unstructured",
+  "discretisation": "cg_supg",
+  "n_cells": [
+   64,
+   1
+  ],
+  "lengths": [
+   2.0,
+   0.03125
+  ]
+ },
+ "sn_order": 8,
+ "materials": {
+  "n_groups": 1,
+  "materials": [
+   {
+    "id": 0,
+    "name": "thin",
+    "Sigma_t": [
+     0.1
+    ],
+    "Sigma_s": [
+     [
+      0.0
+     ]
+    ],
+    "Source": [
+     1.0
+    ]
+   },
+   {
+    "id": 1,
+    "name": "thick",
+    "Sigma_t": [
+     10.0
+    ],
+    "Sigma_s": [
+     [
+      0.0
+     ]
+    ],
+    "Source": [
+     1.0
+    ]
+   }
+  ]
+ },
+ "regions": {
+  "background": "thin",
+  "paint": [
+   {
+    "material": "thick",
+    "box": [
+     1,
+     2,
+     -1.0,
+     1.03125
+    ]
+   }
+  ]
+ },
+ "boundary_conditions": {
+  "left": "vacuum",
+  "right": "vacuum",
+  "bottom": "reflect",
+  "top": "reflect"
+ }
+}

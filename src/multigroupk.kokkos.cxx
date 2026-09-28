@@ -33,13 +33,27 @@ PetscErrorCode GroupXSections::create(const PhaseSpace &ps)
 {
    PetscFunctionBeginUser;
 
+   PetscCall(ps.check_decomposed());
+   PetscCall(create(ps.n_groups, ps.local_cells));
+
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+PetscErrorCode GroupXSections::create(PetscInt n_groups, PetscInt n_entries)
+{
+   PetscFunctionBeginUser;
+
    // We allocate device memory below, and PETSc brings Kokkos up lazily
    PetscCall(PetscKokkosInitializeCheck());
 
-   PetscCall(ps.check_decomposed());
+   PetscCheck(n_groups > 0 && n_entries >= 0, PETSC_COMM_SELF, PETSC_ERR_ARG_OUTOFRANGE, \
+      "GroupXSections needs a positive group count and a non-negative size, was given %" PetscInt_FMT \
+      " groups over %" PetscInt_FMT " entries", n_groups, n_entries);
 
-   n_groups_ = ps.n_groups;
-   local_cells_ = ps.local_cells;
+   n_groups_ = n_groups;
+   local_cells_ = n_entries;
 
    // Zero initialised, so a group pair that is never set simply does not couple
    sigma_t_d_ = PetscScalar2DRightKokkosView("sigma_t_d", n_groups_, local_cells_);

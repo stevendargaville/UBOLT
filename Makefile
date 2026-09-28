@@ -104,9 +104,11 @@ OBJS := $(SRCDIR)/sn_quadraturek.o \
 		  $(SRCDIR)/structured_fd_2dk.o \
 		  $(SRCDIR)/structured_fd_3dk.o \
 		  $(SRCDIR)/unstructured_dgk.o \
+		  $(SRCDIR)/unstructured_cgk.o \
 		  $(SRCDIR)/material_speck.o \
 		  $(SRCDIR)/problem_speck.o \
 		  $(SRCDIR)/termsk.o \
+		  $(SRCDIR)/terms_cgk.o \
 		  $(SRCDIR)/multigroupk.o \
 		  $(SRCDIR)/transport_operatork.o \
 		  $(SRCDIR)/block_inversek.o \
@@ -137,9 +139,9 @@ $(SRCDIR)/sn_quadraturek.o: $(SRCDIR)/sn_lqn_table.hpp
 $(SRCDIR)/unstructured_dgk.o $(SRCDIR)/unstructured_cgk.o: $(SRCDIR)/plex_commonk.hpp
 
 # Define a variable containing all the tests
-export TEST_TARGETS = transportk verify_2dk verify_3dk verify_quadraturek verify_plexk
+export TEST_TARGETS = transportk verify_2dk verify_3dk verify_quadraturek verify_plexk verify_cgk
 # Define a variable containing all the tests that the make check runs
-export CHECK_TARGETS = transportk verify_2dk verify_3dk verify_quadraturek verify_plexk
+export CHECK_TARGETS = transportk verify_2dk verify_3dk verify_quadraturek verify_plexk verify_cgk
 
 # Output the library - either static or dynamic
 ifeq ($(PETSC_USE_SHARED_LIBRARIES),0)

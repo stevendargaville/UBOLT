@@ -5,6 +5,7 @@
 #include "ubolt/phase_space.hpp"
 #include "ubolt/discretisation.hpp"
 #include "ubolt/sn_quadrature.hpp"
+#include "ubolt/unstructured_cg.hpp"
 #include <petscvec.h>
 
 // One extra field to write alongside the scalar flux: a name and one value per
@@ -45,5 +46,16 @@ struct UboltCellField {
 PETSC_EXTERN PetscErrorCode UboltWriteScalarFluxVTK(const PhaseSpace &ps, \
    const Discretisation &disc, const AngularQuadrature &quad, Vec psi, PetscInt n_extra, \
    const UboltCellField *extra, const char *filename);
+
+// The CG-SUPG backend's sibling: its unknowns live on VERTICES, so the scalar
+// flux is written as VTU POINT data, the array "scalar_flux.nodal" (PETSc's
+// writer always appends a component name to a point array; every vertex once -
+// each rank writes the
+// cells it owns and their vertices, the overlap vertices' values brought in
+// from their owners). The extra fields are per LOCAL ELEMENT here - what
+// GroupXSections holds on this backend and UboltFillElementSource writes -
+// and go out as CELL data on the owned elements. .vtu only
+PETSC_EXTERN PetscErrorCode UboltWriteScalarFluxVTKCG(const PhaseSpace &ps, const UnstructuredCG &disc, \
+   const AngularQuadrature &quad, Vec psi, PetscInt n_extra, const UboltCellField *extra, const char *filename);
 
 #endif

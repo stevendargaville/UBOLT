@@ -226,3 +226,148 @@ PetscErrorCode UboltWriteScalarFluxVTK(const PhaseSpace &ps, \
 
    PetscFunctionReturn(PETSC_SUCCESS);
 }
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+// A dof-1 twin of the CG backend's mesh with its one dof on every point of the
+// stratum [start, end) - vertices for the flux, cells for the extras - under
+// one empty-named field (see WritePlexVTU for why), and a "vtk" label on the
+// owned cells so each is written once
+static PetscErrorCode CreateStratumTwin(DM dm, PetscInt start, PetscInt end, const std::vector<PetscInt> &cell_owned, \
+   const char *component, DM *twin)
+{
+   MPI_Comm comm = PetscObjectComm((PetscObject)dm);
+   PetscSection sec = NULL;
+   DMLabel vtk_label = NULL;
+   PetscInt p_start = 0, p_end = 0, c_start = 0, c_end = 0;
+
+   PetscFunctionBeginUser;
+
+   PetscCall(DMClone(dm, twin));
+   PetscCall(DMPlexGetChart(*twin, &p_start, &p_end));
+   PetscCall(DMPlexGetHeightStratum(*twin, 0, &c_start, &c_end));
+   PetscCall(PetscSectionCreate(comm, &sec));
+   PetscCall(PetscSectionSetNumFields(sec, 1));
+   PetscCall(PetscSectionSetFieldName(sec, 0, ""));
+   // PETSc's VTU writer names a POINT array vec name + field name + "." +
+   // component name whatever the component count, so it gets a real name
+   if (component) PetscCall(PetscSectionSetComponentName(sec, 0, 0, component));
+   PetscCall(PetscSectionSetChart(sec, p_start, p_end));
+   for (PetscInt p = start; p < end; p++) {
+      PetscCall(PetscSectionSetDof(sec, p, 1));
+      PetscCall(PetscSectionSetFieldDof(sec, p, 0, 1));
+   }
+   PetscCall(PetscSectionSetUp(sec));
+   PetscCall(DMSetLocalSection(*twin, sec));
+   PetscCall(PetscSectionDestroy(&sec));
+
+   PetscCall(DMCreateLabel(*twin, "vtk"));
+   PetscCall(DMGetLabel(*twin, "vtk", &vtk_label));
+   for (PetscInt c = c_start; c < c_end; c++) {
+      if (cell_owned[c - c_start]) PetscCall(DMLabelSetValue(vtk_label, c, 1));
+   }
+
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+PetscErrorCode UboltWriteScalarFluxVTKCG(const PhaseSpace &ps, const UnstructuredCG &disc, \
+   const AngularQuadrature &quad, Vec psi, PetscInt n_extra, const UboltCellField *extra, const char *filename)
+{
+   MPI_Comm comm = PetscObjectComm((PetscObject)psi);
+   PetscBool is_vtu = PETSC_FALSE;
+   PetscInt local_rows = 0, v_start = 0, v_end = 0, c_start = 0, c_end = 0, rstart = 0;
+   DM vertex_twin = NULL, cell_twin = NULL;
+   PetscSection gsec = NULL, lsec = NULL;
+   PetscViewer viewer = NULL;
+   Vec flux_global = NULL, flux_local = NULL;
+
+   PetscFunctionBeginUser;
+
+   PetscCall(ps.check_decomposed());
+   PetscCheck(quad.n_angles() == ps.n_angles, comm, PETSC_ERR_ARG_INCOMP, \
+      "quadrature has %" PetscInt_FMT " angles but the phase space has %" PetscInt_FMT, \
+      quad.n_angles(), ps.n_angles);
+   PetscCall(VecGetLocalSize(psi, &local_rows));
+   PetscCheck(local_rows == ps.local_rows(), comm, PETSC_ERR_ARG_INCOMP, \
+      "psi has %" PetscInt_FMT " local rows but the phase space says %" PetscInt_FMT, \
+      local_rows, ps.local_rows());
+   PetscCheck(n_extra == 0 || extra, comm, PETSC_ERR_ARG_NULL, \
+      "%" PetscInt_FMT " extra fields asked for but none given", n_extra);
+   for (PetscInt f = 0; f < n_extra; f++) {
+      PetscCheck((PetscInt)extra[f].values.extent(0) == disc.n_local_elements(), comm, PETSC_ERR_ARG_INCOMP, \
+         "extra field '%s' covers %" PetscInt_FMT " elements but there are %" PetscInt_FMT \
+         " local elements", extra[f].name, (PetscInt)extra[f].values.extent(0), disc.n_local_elements());
+   }
+   PetscCall(PetscStrendswith(filename, ".vtu", &is_vtu));
+   PetscCheck(is_vtu, comm, PETSC_ERR_ARG_WRONG, "'%s': a scalar flux on the unstructured (DMPlex) backend " \
+      "writes the VTK unstructured format, so the filename must end in .vtu", filename);
+
+   PetscCall(DMPlexGetDepthStratum(disc.dm(), 0, &v_start, &v_end));
+   PetscCall(DMPlexGetHeightStratum(disc.dm(), 0, &c_start, &c_end));
+   const std::vector<PetscInt> &cell_owned = disc.element_owned_host();
+
+   // The flux per owned vertex, into the vertex twin's global Vec by its own
+   // global section, then out to the local Vec - the overlap vertices of the
+   // owned cells are written too, so they need their owners' values
+   PetscScalar2DKokkosView scalar_flux_d("scalar_flux_d", ps.local_nodes(), 1);
+   PetscCall(UboltAngularIntegral(psi, ps.n_angles, quad.w_d(), scalar_flux_d));
+   auto flux_h = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), scalar_flux_d);
+
+   PetscCall(CreateStratumTwin(disc.dm(), v_start, v_end, cell_owned, "nodal", &vertex_twin));
+   PetscCall(DMGetGlobalSection(vertex_twin, &gsec));
+   PetscCall(DMCreateGlobalVector(vertex_twin, &flux_global));
+   PetscCall(VecGetOwnershipRange(flux_global, &rstart, NULL));
+   {
+      PetscScalar *a = nullptr;
+      const std::vector<PetscInt> &owned_lv = disc.owned_local_vertex_host();
+      PetscCall(VecGetArray(flux_global, &a));
+      for (PetscInt k = 0; k < ps.local_cells; k++) {
+         PetscInt g = 0;
+         PetscCall(PetscSectionGetOffset(gsec, v_start + owned_lv[k], &g));
+         PetscCheck(g >= 0, PETSC_COMM_SELF, PETSC_ERR_PLIB, "owned vertex %" PetscInt_FMT " has no global offset", k);
+         a[g - rstart] = flux_h.data()[k];
+      }
+      PetscCall(VecRestoreArray(flux_global, &a));
+   }
+   PetscCall(DMCreateLocalVector(vertex_twin, &flux_local));
+   PetscCall(DMGlobalToLocal(vertex_twin, flux_global, INSERT_VALUES, flux_local));
+   PetscCall(VecDestroy(&flux_global));
+   PetscCall(PetscObjectSetName((PetscObject)flux_local, "scalar_flux"));
+
+   // Fields from two grids (the vertex twin and the cell twin) in one file:
+   // queued through PetscViewerVTKAddField directly with checkdm off, since
+   // VecView would refuse the second grid. The writer reads each field
+   // through its own Vec's DM; the viewer takes over the local Vecs
+   PetscCall(PetscViewerVTKOpen(comm, filename, FILE_MODE_WRITE, &viewer));
+   PetscCall(PetscViewerVTKAddField(viewer, (PetscObject)vertex_twin, DMPlexVTKWriteAll, 0, PETSC_VTK_POINT_FIELD, \
+      PETSC_FALSE, (PetscObject)flux_local));
+
+   if (n_extra > 0) {
+      PetscCall(CreateStratumTwin(disc.dm(), c_start, c_end, cell_owned, NULL, &cell_twin));
+      PetscCall(DMGetLocalSection(cell_twin, &lsec));
+      for (PetscInt f = 0; f < n_extra; f++) {
+         Vec loc = NULL;
+         PetscScalar *a = nullptr;
+         auto values_h = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), extra[f].values);
+         PetscCall(DMCreateLocalVector(cell_twin, &loc));
+         PetscCall(PetscObjectSetName((PetscObject)loc, extra[f].name));
+         PetscCall(VecGetArray(loc, &a));
+         for (PetscInt c = c_start; c < c_end; c++) {
+            PetscInt off = 0;
+            PetscCall(PetscSectionGetOffset(lsec, c, &off));
+            a[off] = values_h(c - c_start);
+         }
+         PetscCall(VecRestoreArray(loc, &a));
+         PetscCall(PetscViewerVTKAddField(viewer, (PetscObject)vertex_twin, DMPlexVTKWriteAll, 0, \
+            PETSC_VTK_CELL_FIELD, PETSC_FALSE, (PetscObject)loc));
+      }
+   }
+
+   PetscCall(PetscViewerDestroy(&viewer));
+   PetscCall(DMDestroy(&cell_twin));
+   PetscCall(DMDestroy(&vertex_twin));
+
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
