@@ -1,132 +1,34 @@
 #include "ubolt/unstructured_dg.hpp"
+#include "plex_commonk.hpp"
 #include "petsc_kokkos.hpp"
 #include <petscdmplex.h>
 #include <petscsf.h>
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-// Which height-0 points of the local mesh this rank OWNS: everything that is
-// not a leaf of the point SF. After a distribution with overlap the local mesh
-// also holds the neighbouring ranks' cells across the partition boundary - the
-// ghosts the upwind columns point into - and those are the SF's leaves. An SF
-// with no graph (one rank, never distributed) has no leaves at all
-static PetscErrorCode MarkOwnedCells(DM dm, PetscInt c_start, PetscInt c_end, std::vector<PetscInt> &owned)
-{
-   PetscSF sf = NULL;
-   PetscInt n_roots = 0, n_leaves = 0;
-   const PetscInt *leaves = nullptr;
-
-   PetscFunctionBeginUser;
-
-   owned.assign(c_end - c_start, 1);
-   PetscCall(DMGetPointSF(dm, &sf));
-   PetscCall(PetscSFGetGraph(sf, &n_roots, &n_leaves, &leaves, NULL));
-   if (n_roots >= 0) {
-      for (PetscInt l = 0; l < n_leaves; l++) {
-         const PetscInt p = leaves ? leaves[l] : l;
-         if (p >= c_start && p < c_end) owned[p - c_start] = 0;
-      }
-   }
-
-   PetscFunctionReturn(PETSC_SUCCESS);
-}
-
-// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
 // Build (or read) the mesh and distribute it with a one-cell, face-adjacent
-// overlap
-//
-// As in the DMDA backends we deliberately do NOT call DMSetFromOptions: it
-// would expose -dm_plex_box_faces, -dm_refine and friends, any of which could
-// resize the mesh out from under the PhaseSpace that every other object is
-// about to be sized from
+// overlap - the shared UboltCreatePlexMesh (plex_commonk.hpp) does the work
 PetscErrorCode UnstructuredDG::create_mesh(MPI_Comm comm, const PlexMeshSpec &mesh)
 {
-   DM dm = NULL, dm_dist = NULL;
-   PetscPartitioner part = NULL;
-   PetscInt dm_dim = 0, n_owned = 0;
+   PetscInt n_owned = 0;
    std::vector<PetscInt> owned;
 
    PetscFunctionBeginUser;
 
    PetscCheck(!dm_, comm, PETSC_ERR_ARG_WRONGSTATE, "create_mesh has already built this backend's mesh");
-   PetscCheck(mesh.dimension == 2 || mesh.dimension == 3, comm, PETSC_ERR_ARG_OUTOFRANGE, \
-      "the unstructured backend is 2D or 3D, was asked for dimension %" PetscInt_FMT \
-      " (the FD slab is the 1D backend)", mesh.dimension);
 
    comm_ = comm;
 
-   if (!mesh.file.empty()) {
-
-      // Interpolated, so the faces exist as points - the DG0 fluxes live on
-      // them. Gmsh files come with "Cell Sets" and "Face Sets" labels from
-      // their physical groups
-      PetscCall(DMPlexCreateFromFile(comm, mesh.file.c_str(), "ubolt_mesh", PETSC_TRUE, &dm));
-
-   } else {
-
-      for (PetscInt d = 0; d < mesh.dimension; d++) {
-         PetscCheck(mesh.n_cells[d] > 0 && mesh.lengths[d] > 0.0, comm, PETSC_ERR_ARG_OUTOFRANGE, \
-            "box axis %" PetscInt_FMT " needs a positive cell count and length, was given %" \
-            PetscInt_FMT " cells over %g", d, mesh.n_cells[d], (double)mesh.lengths[d]);
-      }
-      // A simplex box is a generated mesh: PETSc triangulates the box
-      // surface with an external mesher, so it has to have been configured in
-      if (mesh.simplex && mesh.dimension == 2) {
-#if !defined(PETSC_HAVE_TRIANGLE)
-         SETERRQ(comm, PETSC_ERR_SUP, "a 2D simplex box mesh needs PETSc configured with " \
-            "--download-triangle");
-#endif
-      }
-      if (mesh.simplex && mesh.dimension == 3) {
-#if !defined(PETSC_HAVE_CTETGEN) && !defined(PETSC_HAVE_TETGEN)
-         SETERRQ(comm, PETSC_ERR_SUP, "a 3D simplex box mesh needs PETSc configured with " \
-            "--download-ctetgen");
-#endif
-      }
-
-      // Interpolated, which is also what gives the box its "Face Sets" label
-      // with PETSc's box ids (DMPlexSetBoxLabel_Internal in plexcreate.c) -
-      // for simplex and tensor cells alike
-      const PetscReal lower[3] = {0.0, 0.0, 0.0};
-      const DMBoundaryType periodicity[3] = {DM_BOUNDARY_NONE, DM_BOUNDARY_NONE, DM_BOUNDARY_NONE};
-      PetscCall(DMPlexCreateBoxMesh(comm, mesh.dimension, mesh.simplex, mesh.n_cells, lower, mesh.lengths, \
-         periodicity, PETSC_TRUE, 0, PETSC_FALSE, &dm));
-   }
-
-   PetscCall(DMGetDimension(dm, &dm_dim));
-   PetscCheck(dm_dim == mesh.dimension, comm, PETSC_ERR_ARG_INCOMP, \
-      "the mesh is %" PetscInt_FMT "D but dimension %" PetscInt_FMT " was asked for", dm_dim, mesh.dimension);
-
-   // Face adjacency (cone, not closure), set BEFORE distributing: the overlap
-   // is then the face neighbours only - what the upwind flux reads and nothing
-   // more. The default (closure) adjacency would also bring in every cell
-   // sharing a vertex
-   PetscCall(DMSetAdjacency(dm, PETSC_DEFAULT, PETSC_TRUE, PETSC_FALSE));
-
-   // Simple rather than whatever PETSc would pick: deterministic across
-   // machines and CI images (ParMETIS may be absent there) and so iteration
-   // counts pinned in parallel stay put. -petscpartitioner_type still wins
-   PetscCall(DMPlexGetPartitioner(dm, &part));
-   PetscCall(PetscPartitionerSetType(part, PETSCPARTITIONERSIMPLE));
-   PetscCall(PetscPartitionerSetFromOptions(part));
-
-   // On one rank there is nothing to distribute and PETSc hands back NULL:
-   // the serial mesh is the mesh
-   PetscCall(DMPlexDistribute(dm, 1, NULL, &dm_dist));
-   if (dm_dist) {
-      PetscCall(DMDestroy(&dm));
-      dm = dm_dist;
-   }
-   PetscCall(DMGetCoordinatesLocalSetUp(dm));
-   PetscCall(DMViewFromOptions(dm, NULL, "-ubolt_dm_view"));
-
-   dm_ = dm;
-   dim_ = dm_dim;
+   // Face adjacency (cone, not closure): the overlap is then the face
+   // neighbours only - what the upwind flux reads and nothing more. The
+   // default (closure) adjacency would also bring in every cell sharing a
+   // vertex
+   PetscCall(UboltCreatePlexMesh(comm, mesh, PETSC_TRUE, PETSC_FALSE, &dm_));
+   dim_ = mesh.dimension;
 
    // The mesh decides the global cell count - count once, cached
    PetscCall(DMPlexGetHeightStratum(dm_, 0, &c_start_, &c_end_));
-   PetscCall(MarkOwnedCells(dm_, c_start_, c_end_, owned));
+   PetscCall(MarkOwnedPoints(dm_, c_start_, c_end_, owned));
    for (const PetscInt o : owned) n_owned += o;
    PetscCallMPI(MPI_Allreduce(&n_owned, &n_global_cells_, 1, MPIU_INT, MPI_SUM, comm_));
 
@@ -134,23 +36,6 @@ PetscErrorCode UnstructuredDG::create_mesh(MPI_Comm comm, const PlexMeshSpec &me
 }
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-// Where a cell's first dof sits in the GLOBAL numbering. The global section
-// encodes a point this rank does not own - an overlap ghost - as -(g + 1), so
-// the one lookup serves owned cells and the ghost neighbours a column points
-// into alike
-static PetscErrorCode GlobalCellOffset(PetscSection gsec, PetscInt c, PetscInt *g_out, PetscBool *is_owned)
-{
-   PetscInt g = 0;
-
-   PetscFunctionBeginUser;
-
-   PetscCall(PetscSectionGetOffset(gsec, c, &g));
-   *is_owned = (PetscBool)(g >= 0);
-   *g_out = (g >= 0) ? g : -(g + 1);
-
-   PetscFunctionReturn(PETSC_SUCCESS);
-}
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -185,7 +70,7 @@ static PetscErrorCode CheckPlexLayout(DM dm, PetscSection gsec, const PhaseSpace
    for (PetscInt c = c_start; c < c_end; c++) {
       PetscInt g = 0, dof = 0;
       PetscBool is_owned = PETSC_FALSE;
-      PetscCall(GlobalCellOffset(gsec, c, &g, &is_owned));
+      PetscCall(GlobalPointOffset(gsec, c, &g, &is_owned));
       PetscCall(PetscSectionGetDof(gsec, c, &dof));
       // A ghost's dof is encoded as -(dof + 1) in a global section too
       if (dof < 0) dof = -(dof + 1);
@@ -216,67 +101,6 @@ static PetscErrorCode CheckPlexLayout(DM dm, PetscSection gsec, const PhaseSpace
    PetscFunctionReturn(PETSC_SUCCESS);
 }
 
-// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-// A boundary configuration create() cannot build (a reflective face that is
-// not axis-aligned, a reflection partner that is itself a boundary row, a
-// window of the wrong shape) is found by whichever rank owns the offending
-// cell - but create() is collective, and a rank that returned early would
-// leave the others waiting in the next collective call. So the failure is
-// recorded, create() carries on to this point on every rank, and everybody
-// errors together: the rank that found it with its message, the rest pointing
-// at it
-static PetscErrorCode CollectiveFailure(MPI_Comm comm, PetscBool local_fail, const char *message)
-{
-   PetscMPIInt local = local_fail ? 1 : 0, any = 0;
-
-   PetscFunctionBeginUser;
-
-   PetscCallMPI(MPI_Allreduce(&local, &any, 1, MPI_INT, MPI_MAX, comm));
-   PetscCheck(!local_fail, PETSC_COMM_SELF, PETSC_ERR_SUP, "%s", message);
-   PetscCheck(!any, comm, PETSC_ERR_SUP, "the unstructured backend cannot build this boundary " \
-      "configuration - another rank's error says why");
-
-   PetscFunctionReturn(PETSC_SUCCESS);
-}
-
-// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-// The dominant axis of a face normal: the one its largest component is on,
-// lowest axis on a tie. On a box every boundary face is axis-aligned and this
-// is simply its axis
-static inline PetscInt DominantAxis(const PetscScalar *n, PetscInt dim)
-{
-   PetscInt best = 0;
-   for (PetscInt d = 1; d < dim; d++) {
-      if (PetscAbsScalar(n[d]) > PetscAbsScalar(n[best])) best = d;
-   }
-   return best;
-}
-
-// Omega_a . nA_f - the upwind test. Written with the same terms in the same
-// order as the kernels in StreamingTermDG0, so the host classification and the
-// device fill agree on the sign; where they could not (|s| at rounding level on
-// a face tangent to the ordinate) the coefficient concerned is itself at
-// rounding level
-static inline PetscScalar FaceFlux(const PetscScalar *omega, PetscInt a, const PetscScalar *nA, PetscInt k)
-{
-   return omega[3 * a] * nA[3 * k] + omega[3 * a + 1] * nA[3 * k + 1] + omega[3 * a + 2] * nA[3 * k + 2];
-}
-
-// Does a face whose centroid has these tangential coordinates let this face
-// family's inflow in? Inclusive at both ends, one [lo, hi] pair per tangential
-// axis in ascending axis order - the structured backends' test, with the face
-// centroid standing in for the boundary cell's centre (they coincide on a
-// quad/hex box)
-static inline bool InWindow(const BCFace &face, const PetscReal *t, PetscInt n_t)
-{
-   if (face.n_window_pairs == 0) return true;
-   for (PetscInt p = 0; p < n_t; p++) {
-      if (t[p] < face.window[2 * p] || t[p] > face.window[2 * p + 1]) return false;
-   }
-   return true;
-}
 
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -564,7 +388,7 @@ PetscErrorCode UnstructuredDG::create_common(PhaseSpace &ps, PetscInt quad_dim, 
    PetscCall(PetscSectionDestroy(&sec));
    PetscCall(DMGetGlobalSection(dm_, &gsec));
 
-   PetscCall(MarkOwnedCells(dm_, c_start_, c_end_, owned));
+   PetscCall(MarkOwnedPoints(dm_, c_start_, c_end_, owned));
    PetscCall(CheckPlexLayout(dm_, gsec, ps, c_start_, c_end_, owned, &rstart));
 
    cell_of_local_.clear();
@@ -667,7 +491,7 @@ PetscErrorCode UnstructuredDG::create_common(PhaseSpace &ps, PetscInt quad_dim, 
             const PetscInt other = (support[0] == c) ? support[1] : support[0];
             PetscInt g = 0;
             PetscBool is_owned = PETSC_FALSE;
-            PetscCall(GlobalCellOffset(gsec, other, &g, &is_owned));
+            PetscCall(GlobalPointOffset(gsec, other, &g, &is_owned));
             face_neighbour_row_h_.push_back(g);
             face_label_h_.push_back(-1);
 
@@ -1204,64 +1028,15 @@ PetscErrorCode UnstructuredDG::scalar_flux_gradient(Vec psi, const AngularQuadra
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-// A free function rather than a local lambda: an extended device lambda can't
-// be defined inside another lambda. The boxes ride along as flat views -
-// 2 * dim (lo, hi) values per box, axis by axis - because a view of structs is
-// not one of the typedefs types.hpp allows
-static void PaintBoxesKernel(PetscIntKokkosView mat_id_d, PetscScalarKokkosView centroid_d, \
-   PetscScalarKokkosView box_lohi_d, PetscIntKokkosView box_material_d, PetscInt n_boxes, \
-   PetscInt dim, PetscInt local_cells)
-{
-   Kokkos::parallel_for(
-      Kokkos::RangePolicy<>(0, local_cells), KOKKOS_LAMBDA(PetscInt c) {
-
-         PetscInt m = mat_id_d(c);
-         for (PetscInt b = 0; b < n_boxes; b++) {
-            bool inside = true;
-            for (PetscInt d = 0; d < dim; d++) {
-               const PetscScalar x = centroid_d(3 * c + d);
-               if (PetscRealPart(x) < PetscRealPart(box_lohi_d(2 * dim * b + 2 * d)) || \
-                   PetscRealPart(x) > PetscRealPart(box_lohi_d(2 * dim * b + 2 * d + 1))) inside = false;
-            }
-            if (inside) m = box_material_d(b);
-         }
-         mat_id_d(c) = m;
-      });
-}
-
-// Upload the flattened boxes and paint them over mat_id_d, later ones winning
+// Paint the flattened boxes over mat_id_d, later ones winning - the shared
+// PaintFlatBoxes (plex_commonk.hpp) over the owned cells' centroids
 PetscErrorCode UnstructuredDG::paint_flat_boxes(PetscInt n_boxes, const std::vector<PetscScalar> &box_lohi, \
    const std::vector<PetscInt> &box_material, PetscIntKokkosView &mat_id_d) const
 {
    PetscFunctionBeginUser;
 
-   // We allocate device memory below, and PETSc brings Kokkos up lazily
-   PetscCall(PetscKokkosInitializeCheck());
-
    PetscCall(ps_.check_decomposed());
-   PetscCheck((PetscInt)mat_id_d.extent(0) == ps_.local_cells, PETSC_COMM_SELF, PETSC_ERR_ARG_INCOMP, \
-      "mat_id_d covers %" PetscInt_FMT " cells but there are %" PetscInt_FMT " local cells", \
-      (PetscInt)mat_id_d.extent(0), ps_.local_cells);
-   for (PetscInt b = 0; b < n_boxes; b++) {
-      PetscCheck(box_material[b] >= 0, comm_, PETSC_ERR_ARG_OUTOFRANGE, \
-         "box %" PetscInt_FMT "'s material index %" PetscInt_FMT " is negative", b, box_material[b]);
-      for (PetscInt d = 0; d < dim_; d++) {
-         PetscCheck(PetscRealPart(box_lohi[2 * dim_ * b + 2 * d]) <= PetscRealPart(box_lohi[2 * dim_ * b + 2 * d + 1]), \
-            comm_, PETSC_ERR_ARG_OUTOFRANGE, "box %" PetscInt_FMT " is inside out on axis %" PetscInt_FMT \
-            " - give each axis as lo, hi with lo <= hi", b, d);
-      }
-   }
-
-   PetscScalarKokkosView box_lohi_d("box_lohi_d", 2 * dim_ * n_boxes);
-   PetscIntKokkosView box_material_d("box_material_d", n_boxes);
-   if (n_boxes > 0) {
-      PetscScalarKokkosViewHostUnmanaged box_lohi_h(const_cast<PetscScalar *>(box_lohi.data()), 2 * dim_ * n_boxes);
-      PetscIntKokkosViewHostUnmanaged box_material_h(const_cast<PetscInt *>(box_material.data()), n_boxes);
-      Kokkos::deep_copy(box_lohi_d, box_lohi_h);
-      Kokkos::deep_copy(box_material_d, box_material_h);
-   }
-
-   PaintBoxesKernel(mat_id_d, centroid_d_, box_lohi_d, box_material_d, n_boxes, dim_, ps_.local_cells);
+   PetscCall(PaintFlatBoxes(comm_, dim_, ps_.local_cells, centroid_d_, n_boxes, box_lohi, box_material, mat_id_d));
 
    PetscFunctionReturn(PETSC_SUCCESS);
 }
@@ -1276,15 +1051,9 @@ PetscErrorCode UnstructuredDG::paint_boxes_over(const std::vector<MaterialBox2D>
 
    PetscCheck(dim_ == 2, comm_, PETSC_ERR_ARG_INCOMP, "2D boxes painted onto a %" PetscInt_FMT "D mesh", dim_);
 
-   std::vector<PetscScalar> box_lohi(4 * n_boxes);
-   std::vector<PetscInt> box_material(n_boxes);
-   for (PetscInt b = 0; b < n_boxes; b++) {
-      box_lohi[4 * b]     = boxes[b].x0;
-      box_lohi[4 * b + 1] = boxes[b].x1;
-      box_lohi[4 * b + 2] = boxes[b].y0;
-      box_lohi[4 * b + 3] = boxes[b].y1;
-      box_material[b] = boxes[b].material;
-   }
+   std::vector<PetscScalar> box_lohi;
+   std::vector<PetscInt> box_material;
+   FlattenBoxes(boxes, box_lohi, box_material);
    PetscCall(paint_flat_boxes(n_boxes, box_lohi, box_material, mat_id_d));
 
    PetscFunctionReturn(PETSC_SUCCESS);
@@ -1300,17 +1069,9 @@ PetscErrorCode UnstructuredDG::paint_boxes_over(const std::vector<MaterialBox3D>
 
    PetscCheck(dim_ == 3, comm_, PETSC_ERR_ARG_INCOMP, "3D boxes painted onto a %" PetscInt_FMT "D mesh", dim_);
 
-   std::vector<PetscScalar> box_lohi(6 * n_boxes);
-   std::vector<PetscInt> box_material(n_boxes);
-   for (PetscInt b = 0; b < n_boxes; b++) {
-      box_lohi[6 * b]     = boxes[b].x0;
-      box_lohi[6 * b + 1] = boxes[b].x1;
-      box_lohi[6 * b + 2] = boxes[b].y0;
-      box_lohi[6 * b + 3] = boxes[b].y1;
-      box_lohi[6 * b + 4] = boxes[b].z0;
-      box_lohi[6 * b + 5] = boxes[b].z1;
-      box_material[b] = boxes[b].material;
-   }
+   std::vector<PetscScalar> box_lohi;
+   std::vector<PetscInt> box_material;
+   FlattenBoxes(boxes, box_lohi, box_material);
    PetscCall(paint_flat_boxes(n_boxes, box_lohi, box_material, mat_id_d));
 
    PetscFunctionReturn(PETSC_SUCCESS);
@@ -1369,39 +1130,10 @@ PetscErrorCode UnstructuredDG::paint_boxes(PetscInt background_material, const s
 PetscErrorCode UnstructuredDG::paint_cell_sets(PetscInt background_material, \
    const std::map<PetscInt, PetscInt> &label_to_material, PetscIntKokkosView &mat_id_d) const
 {
-   DMLabel cell_sets = NULL;
-
    PetscFunctionBeginUser;
 
-   // We allocate device memory below, and PETSc brings Kokkos up lazily
-   PetscCall(PetscKokkosInitializeCheck());
-
    PetscCall(ps_.check_decomposed());
-   PetscCheck(background_material >= 0, comm_, PETSC_ERR_ARG_OUTOFRANGE, \
-      "background material index %" PetscInt_FMT " is negative", background_material);
-   for (const auto &entry : label_to_material) {
-      PetscCheck(entry.second >= 0, comm_, PETSC_ERR_ARG_OUTOFRANGE, "cell set %" PetscInt_FMT \
-         " maps to a negative material index %" PetscInt_FMT, entry.first, entry.second);
-   }
-
-   PetscCall(DMGetLabel(dm_, "Cell Sets", &cell_sets));
-   PetscCheck(cell_sets || label_to_material.empty(), comm_, PETSC_ERR_ARG_WRONG, \
-      "cell sets were given materials but the mesh has no \"Cell Sets\" label");
-
-   const PetscInt local_cells = ps_.local_cells;
-   std::vector<PetscInt> mat_id(local_cells, background_material);
-   if (cell_sets) {
-      for (PetscInt k = 0; k < local_cells; k++) {
-         PetscInt value = -1;
-         PetscCall(DMLabelGetValue(cell_sets, cell_of_local_[k], &value));
-         const auto found = label_to_material.find(value);
-         if (found != label_to_material.end()) mat_id[k] = found->second;
-      }
-   }
-
-   mat_id_d = PetscIntKokkosView("mat_id_d", local_cells);
-   PetscIntKokkosViewHostUnmanaged mat_id_h(mat_id.data(), local_cells);
-   Kokkos::deep_copy(mat_id_d, mat_id_h);
+   PetscCall(PaintCellSets(dm_, comm_, background_material, label_to_material, cell_of_local_, mat_id_d));
 
    PetscFunctionReturn(PETSC_SUCCESS);
 }
