@@ -30,6 +30,7 @@
 // ubolt.hpp pulls in petscvec_kokkos.hpp which must come before any other
 // PETSc header in a C++ file (see docs/dev/kokkos.md)
 #include "ubolt/ubolt.hpp"
+#include "petsc_kokkos.hpp"
 #include <petscsys.h>
 #include <vector>
 
@@ -48,7 +49,8 @@ static std::vector<PetscScalar> WeightsToHost(const AngularQuadrature &quad)
 {
    const PetscInt n_angles = quad.n_angles();
    auto mirror = Kokkos::create_mirror_view(quad.w_d());
-   Kokkos::deep_copy(mirror, quad.w_d());
+   Kokkos::deep_copy(PetscGetKokkosExecutionSpace(), mirror, quad.w_d());
+   PetscGetKokkosExecutionSpace().fence();
 
    std::vector<PetscScalar> w(n_angles);
    for (PetscInt a = 0; a < n_angles; a++) w[a] = mirror(a, 0);

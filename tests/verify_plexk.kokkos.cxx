@@ -94,6 +94,7 @@
 // ubolt.hpp pulls in petscvec_kokkos.hpp which must come before any other
 // PETSc header in a C++ file (see docs/dev/kokkos.md)
 #include "ubolt/ubolt.hpp"
+#include "petsc_kokkos.hpp"
 #include <petscksp.h>
 #include <petscdmplex.h>
 #include "pflare.h"
@@ -223,9 +224,13 @@ static PetscErrorCode BoundaryToVec(const BoundaryInfo &boundary, RowField field
 
    PetscFunctionBeginUser;
 
-   auto is_bc_h = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), boundary.is_bc_row_d);
-   auto reflect_h = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), boundary.reflect_slot_d);
-   auto dirichlet_h = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), boundary.dirichlet_value_d);
+   auto is_bc_h = Kokkos::create_mirror_view(Kokkos::HostSpace(), boundary.is_bc_row_d);
+   auto reflect_h = Kokkos::create_mirror_view(Kokkos::HostSpace(), boundary.reflect_slot_d);
+   auto dirichlet_h = Kokkos::create_mirror_view(Kokkos::HostSpace(), boundary.dirichlet_value_d);
+   Kokkos::deep_copy(PetscGetKokkosExecutionSpace(), is_bc_h, boundary.is_bc_row_d);
+   Kokkos::deep_copy(PetscGetKokkosExecutionSpace(), reflect_h, boundary.reflect_slot_d);
+   Kokkos::deep_copy(PetscGetKokkosExecutionSpace(), dirichlet_h, boundary.dirichlet_value_d);
+   PetscGetKokkosExecutionSpace().fence();
 
    PetscCall(VecGetLocalSize(v, &n));
    PetscCall(VecGetArray(v, &v_a));
@@ -580,8 +585,11 @@ static PetscErrorCode CheckGeometry(const char *desc, const UnstructuredDG &disc
    PetscFunctionBeginUser;
 
    const std::vector<PetscReal> &vol_h = disc.volume_host();
-   auto offset_h = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), disc.cell_face_offset_d());
-   auto nA_h = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), disc.face_nA_d());
+   auto offset_h = Kokkos::create_mirror_view(Kokkos::HostSpace(), disc.cell_face_offset_d());
+   auto nA_h = Kokkos::create_mirror_view(Kokkos::HostSpace(), disc.face_nA_d());
+   Kokkos::deep_copy(PetscGetKokkosExecutionSpace(), offset_h, disc.cell_face_offset_d());
+   Kokkos::deep_copy(PetscGetKokkosExecutionSpace(), nA_h, disc.face_nA_d());
+   PetscGetKokkosExecutionSpace().fence();
 
    for (PetscReal v : vol_h) volume += v;
    PetscCallMPI(MPI_Allreduce(&volume, &total, 1, MPIU_REAL, MPI_SUM, PETSC_COMM_WORLD));
@@ -991,14 +999,18 @@ static PetscErrorCode SolveOnPlex(const char *desc, const PlexMeshSpec &mesh, Pe
    {
       PetscScalar2DKokkosView phi_d("phi_d", ps.local_cells, 1);
       PetscCall(UboltAngularIntegral(psi, ps.n_angles, quad.w_d(), phi_d));
-      auto phi_h = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), phi_d);
+      auto phi_h = Kokkos::create_mirror_view(Kokkos::HostSpace(), phi_d);
+      Kokkos::deep_copy(PetscGetKokkosExecutionSpace(), phi_h, phi_d);
+      PetscGetKokkosExecutionSpace().fence();
       PetscReal local = 0.0;
       for (PetscInt c = 0; c < ps.local_cells; c++) local += disc.volume_host()[c] * PetscRealPart(phi_h(c, 0));
       PetscCallMPI(MPI_Allreduce(&local, &result->integral, 1, MPIU_REAL, MPI_SUM, PETSC_COMM_WORLD));
    }
    result->n_cells = disc.n_global_cells();
    {
-      auto mat_h = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), mat_id_d);
+      auto mat_h = Kokkos::create_mirror_view(Kokkos::HostSpace(), mat_id_d);
+      Kokkos::deep_copy(PetscGetKokkosExecutionSpace(), mat_h, mat_id_d);
+      PetscGetKokkosExecutionSpace().fence();
       PetscReal local = 0.0;
       for (PetscInt c = 0; c < ps.local_cells; c++) local += (mat_h(c) == 1) ? disc.volume_host()[c] * PetscRealPart(source) : 0.0;
       PetscCallMPI(MPI_Allreduce(&local, &result->source_integral, 1, MPIU_REAL, MPI_SUM, PETSC_COMM_WORLD));
@@ -1370,8 +1382,11 @@ static PetscErrorCode CheckSlantedReflect(PetscBool ghost, PetscBool *ok)
 
    // Count the row classes off the boundary info
    {
-      auto is_bc_h = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), disc.boundary_info().is_bc_row_d);
-      auto reflect_h = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), disc.boundary_info().reflect_slot_d);
+      auto is_bc_h = Kokkos::create_mirror_view(Kokkos::HostSpace(), disc.boundary_info().is_bc_row_d);
+      auto reflect_h = Kokkos::create_mirror_view(Kokkos::HostSpace(), disc.boundary_info().reflect_slot_d);
+      Kokkos::deep_copy(PetscGetKokkosExecutionSpace(), is_bc_h, disc.boundary_info().is_bc_row_d);
+      Kokkos::deep_copy(PetscGetKokkosExecutionSpace(), reflect_h, disc.boundary_info().reflect_slot_d);
+      PetscGetKokkosExecutionSpace().fence();
       PetscInt local[2] = {0, 0}, global[2] = {0, 0};
       for (PetscInt r = 0; r < ps.local_rows(); r++) {
          if (!is_bc_h(r)) continue;
@@ -1557,8 +1572,11 @@ static PetscErrorCode CheckComposedBlocks(const char *where, const PhaseSpace &p
    PetscCall(blocks_asm.setup(op_asm.assembled_mat()));
    PetscCall(blocks_mf.setup(op_mf.assembled_mat(), diag));
 
-   auto inv_asm = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), blocks_asm.inverse_d());
-   auto inv_mf = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), blocks_mf.inverse_d());
+   auto inv_asm = Kokkos::create_mirror_view(Kokkos::HostSpace(), blocks_asm.inverse_d());
+   auto inv_mf = Kokkos::create_mirror_view(Kokkos::HostSpace(), blocks_mf.inverse_d());
+   Kokkos::deep_copy(PetscGetKokkosExecutionSpace(), inv_asm, blocks_asm.inverse_d());
+   Kokkos::deep_copy(PetscGetKokkosExecutionSpace(), inv_mf, blocks_mf.inverse_d());
+   PetscGetKokkosExecutionSpace().fence();
    for (size_t k = 0; k < inv_asm.extent(0); k++) {
       diff = PetscMax(diff, PetscAbsScalar(inv_asm(k) - inv_mf(k)));
       norm = PetscMax(norm, PetscAbsScalar(inv_asm(k)));
@@ -1570,7 +1588,9 @@ static PetscErrorCode CheckComposedBlocks(const char *where, const PhaseSpace &p
    // (otherwise the check could not see the diagonal being dropped)
    PetscReal diff_bare = 0.0;
    PetscCall(blocks_mf.setup(op_mf.assembled_mat()));
-   auto inv_bare = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), blocks_mf.inverse_d());
+   auto inv_bare = Kokkos::create_mirror_view(Kokkos::HostSpace(), blocks_mf.inverse_d());
+   Kokkos::deep_copy(PetscGetKokkosExecutionSpace(), inv_bare, blocks_mf.inverse_d());
+   PetscGetKokkosExecutionSpace().fence();
    for (size_t k = 0; k < inv_asm.extent(0); k++) diff_bare = PetscMax(diff_bare, PetscAbsScalar(inv_asm(k) - inv_bare(k)));
    PetscCallMPI(MPIU_Allreduce(MPI_IN_PLACE, &diff_bare, 1, MPIU_REAL, MPIU_MAX, PETSC_COMM_WORLD));
 
@@ -1692,7 +1712,8 @@ static PetscErrorCode CheckGhostSimplex(PetscInt dim, PetscInt n, const char *fi
       PetscScalarKokkosView sigma_t_d("sigma_t_d", ps.local_cells);
       auto sigma_t_h = Kokkos::create_mirror_view(sigma_t_d);
       for (PetscInt c = 0; c < ps.local_cells; c++) sigma_t_h(c) = 1.0 + 0.25 * (PetscScalar)(c % 7);
-      Kokkos::deep_copy(sigma_t_d, sigma_t_h);
+      Kokkos::deep_copy(PetscGetKokkosExecutionSpace(), sigma_t_d, sigma_t_h);
+      PetscGetKokkosExecutionSpace().fence();
       PetscCall(removal.create(ps, disc, sigma_t_d));
       PetscCall(op.create(disc));
       PetscCall(op.add_term(&streaming));
@@ -1759,7 +1780,7 @@ static PetscErrorCode CheckGhostSimplex(PetscInt dim, PetscInt n, const char *fi
       TransportOperator op_b;
       RemovalTerm removal_b;
       PetscScalarKokkosView sigma_t_d("sigma_t_d", ps.local_cells);
-      Kokkos::deep_copy(sigma_t_d, (PetscScalar)sigma_t);
+      Kokkos::deep_copy(PetscGetKokkosExecutionSpace(), sigma_t_d, (PetscScalar)sigma_t);
       PetscCall(removal_b.create(ps, disc, sigma_t_d));
       PetscCall(op_b.create(disc));
       PetscCall(op_b.add_term(&streaming));
@@ -1859,7 +1880,9 @@ static PetscErrorCode CheckDG1(const char *where, const PlexMeshSpec &mesh, cons
 
    // DG1 has no boundary-condition rows at all
    {
-      auto is_bc_h = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), disc.boundary_info().is_bc_row_d);
+      auto is_bc_h = Kokkos::create_mirror_view(Kokkos::HostSpace(), disc.boundary_info().is_bc_row_d);
+      Kokkos::deep_copy(PetscGetKokkosExecutionSpace(), is_bc_h, disc.boundary_info().is_bc_row_d);
+      PetscGetKokkosExecutionSpace().fence();
       PetscInt n_bc = 0;
       for (PetscInt r = 0; r < ps.local_rows(); r++) n_bc += is_bc_h(r);
       PetscCallMPI(MPIU_Allreduce(MPI_IN_PLACE, &n_bc, 1, MPIU_INT, MPI_SUM, PETSC_COMM_WORLD));
@@ -1881,7 +1904,8 @@ static PetscErrorCode CheckDG1(const char *where, const PlexMeshSpec &mesh, cons
       PetscScalarKokkosView sigma_t_d("sigma_t_d", ps.local_cells);
       auto sigma_t_h = Kokkos::create_mirror_view(sigma_t_d);
       for (PetscInt c = 0; c < ps.local_cells; c++) sigma_t_h(c) = 1.0 + 0.25 * (PetscScalar)(c % 7);
-      Kokkos::deep_copy(sigma_t_d, sigma_t_h);
+      Kokkos::deep_copy(PetscGetKokkosExecutionSpace(), sigma_t_d, sigma_t_h);
+      PetscGetKokkosExecutionSpace().fence();
       PetscCall(removal.create(ps, disc, sigma_t_d));
       PetscCall(op.create(disc));
       PetscCall(op.add_term(&streaming));
@@ -1947,7 +1971,7 @@ static PetscErrorCode CheckDG1(const char *where, const PlexMeshSpec &mesh, cons
       PetscReal resid = 0.0, scale = 0.0;
 
       PetscScalarKokkosView sigma_t_d("sigma_t_d", ps.local_cells);
-      Kokkos::deep_copy(sigma_t_d, (PetscScalar)sigma_t);
+      Kokkos::deep_copy(PetscGetKokkosExecutionSpace(), sigma_t_d, (PetscScalar)sigma_t);
       PetscCall(removal.create(ps, disc, sigma_t_d));
       PetscCall(op.create(disc));
       PetscCall(op.add_term(&streaming));
@@ -2002,7 +2026,9 @@ static PetscErrorCode CheckDG1(const char *where, const PlexMeshSpec &mesh, cons
       // The projection, per owned cell: basis 0 is the value at the centroid
       // (the cell average of a linear field), and the slopes c solve
       // sum_k c_k grad phi_{1+k} = b
-      auto grad_h = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), disc.basis_grad_d());
+      auto grad_h = Kokkos::create_mirror_view(Kokkos::HostSpace(), disc.basis_grad_d());
+      Kokkos::deep_copy(PetscGetKokkosExecutionSpace(), grad_h, disc.basis_grad_d());
+      PetscGetKokkosExecutionSpace().fence();
       const std::vector<PetscReal> &cen = disc.centroid_host();
       {
          PetscScalar *p;
@@ -2153,7 +2179,9 @@ static PetscErrorCode CheckDG1Order(const char *where, PetscBool simplex, PetscI
       if (!converged) converged_all = PETSC_FALSE;
 
       // The cell average of the scalar flux, from basis 0 of each cell
-      auto w_h = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), quad.w_d());
+      auto w_h = Kokkos::create_mirror_view(Kokkos::HostSpace(), quad.w_d());
+      Kokkos::deep_copy(PetscGetKokkosExecutionSpace(), w_h, quad.w_d());
+      PetscGetKokkosExecutionSpace().fence();
       const PetscScalar *mu = quad.mu_host();
       const PetscScalar psi_in = inflow / quad.sum_weights();
       PetscReal sum[2] = {0.0, 0.0};
