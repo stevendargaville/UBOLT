@@ -5,13 +5,13 @@
 #include "ubolt/phase_space.hpp"
 #include "ubolt/discretisation.hpp"
 #include "ubolt/sn_quadrature.hpp"
-#include "ubolt/unstructured_cg.hpp"
 #include <petscvec.h>
 
 // One extra field to write alongside the scalar flux: a name and one value per
-// LOCAL cell, in the backends' local cell order (what GroupXSections::sigma_t
-// and UboltFillCellSource hand back). The name is what the field is labelled
-// with in the file
+// material entry - the local cells in the backends' local cell order, the
+// local elements on CG-SUPG - i.e. what GroupXSections::sigma_t and
+// UboltFillCellSource hand back. The name is what the field is labelled with
+// in the file
 struct UboltCellField {
    const char *name;
    PetscScalarKokkosView values;
@@ -35,27 +35,17 @@ struct UboltCellField {
 // - a DMDA backend (the structured ones) is a structured grid: .vts or .vtr.
 //   The twin is DMDACreateCompatibleDMDA, which also carries over the mesh
 //   coordinates the backend set
-// - the DMPlex backend (UnstructuredDG) is an unstructured grid: .vtu. The
-//   twin is a DMClone with one dof per cell, and only OWNED cells are written
-//   (PETSc's VTU writer would otherwise write the one-cell overlap twice)
-// The wrong extension for the backend is an error saying which one to use.
-// Every field rides the same twin DM, which is what lets them share one file
+// - a DMPlex backend is an unstructured grid: .vtu. The twin is a DMClone
+//   with one dof per cell, and only OWNED cells are written (PETSc's VTU
+//   writer would otherwise write the overlap twice). On CG-SUPG the unknowns
+//   live on vertices, so the flux is POINT data, "scalar_flux.nodal" (PETSc
+//   appends a component name to a point array), and the extras are cell data
+// The wrong extension for the backend is an error saying which one to use
 //
 // Collective on psi's communicator. Allocates its own device scratch, so this
 // is for after a solve, not inside one
 PETSC_EXTERN PetscErrorCode UboltWriteScalarFluxVTK(const PhaseSpace &ps, \
    const Discretisation &disc, const AngularQuadrature &quad, Vec psi, PetscInt n_extra, \
    const UboltCellField *extra, const char *filename);
-
-// The CG-SUPG backend's sibling: its unknowns live on VERTICES, so the scalar
-// flux is written as VTU POINT data, the array "scalar_flux.nodal" (PETSc's
-// writer always appends a component name to a point array; every vertex once -
-// each rank writes the
-// cells it owns and their vertices, the overlap vertices' values brought in
-// from their owners). The extra fields are per LOCAL ELEMENT here - what
-// GroupXSections holds on this backend and UboltFillElementSource writes -
-// and go out as CELL data on the owned elements. .vtu only
-PETSC_EXTERN PetscErrorCode UboltWriteScalarFluxVTKCG(const PhaseSpace &ps, const UnstructuredCG &disc, \
-   const AngularQuadrature &quad, Vec psi, PetscInt n_extra, const UboltCellField *extra, const char *filename);
 
 #endif

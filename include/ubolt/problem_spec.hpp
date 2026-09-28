@@ -7,6 +7,7 @@
 #include "ubolt/structured_fd_1d.hpp"
 #include "ubolt/structured_fd_2d.hpp"
 #include "ubolt/structured_fd_3d.hpp"
+#include "ubolt/plex_mesh_spec.hpp"
 #include <map>
 #include <string>
 #include <vector>
@@ -32,6 +33,8 @@
 // has no comments)
 //
 // See docs/problem_files.md for the full schema of both files
+enum class BackendKind { STRUCTURED_FD, UNSTRUCTURED_DG, UNSTRUCTURED_CG };
+
 class PETSC_VISIBILITY_PUBLIC ProblemSpec {
 public:
    // Rank 0 reads and resolves the file(s) and broadcasts one JSON string;
@@ -40,30 +43,21 @@ public:
    PetscErrorCode create(MPI_Comm comm, const char *problem_path);
 
    PetscInt dimension = 0;
-   // mesh.type: PETSC_FALSE ("structured", the default) is the DMDA finite
-   // difference backends; PETSC_TRUE ("unstructured") is the DG backend on a
-   // DMPlex, 2D and 3D only. These are plain fields on purpose - this header
-   // does not include the unstructured backend, the driver builds its mesh
-   // description from them
-   PetscBool mesh_unstructured = PETSC_FALSE;
-   // Unstructured box only: triangles/tets instead of quads/hexes
-   PetscBool mesh_simplex = PETSC_FALSE;
-   // Unstructured only: the DG order, 0 (one dof per cell) or 1 (linear).
-   // Always 1 on a cg_supg mesh (P1/Q1)
-   PetscInt mesh_order = 0;
-   // Unstructured only: mesh.discretisation "cg_supg" - continuous Galerkin
-   // with consistent SUPG (UnstructuredCG) instead of upwind DG
-   PetscBool mesh_cg_supg = PETSC_FALSE;
-   // cg_supg only: the thin-cell SUPG parameter, tau = min(1 / sigma_t, h / zeta)
+   // mesh.type + mesh.discretisation: "structured" (the default) is the DMDA
+   // finite difference backends; "unstructured" is a DMPlex, 2D and 3D only,
+   // with upwind DG (the default) or "cg_supg"
+   BackendKind backend = BackendKind::STRUCTURED_FD;
+   // The DG order, 0 (one dof per cell) or 1 (linear); always 1 on CG-SUPG
+   // (P1/Q1) and 0 on the structured backends
+   PetscInt order = 0;
+   // CG-SUPG only: the thin-cell parameter, tau = min(1 / sigma_t, h / zeta)
    PetscReal supg_zeta = 0.5;
-   // Unstructured only: a mesh file PETSc reads (Gmsh .msh, ...), resolved
-   // relative to the problem file's directory exactly as a materials path is.
-   // Empty = a box built in code, described by n_cells_* / length_* below;
-   // non-empty = the file decides the mesh and n_cells_* / length_* stay 0
-   std::string mesh_file;
-   // Only the first `dimension` axes mean anything
-   PetscInt n_cells_x = 0, n_cells_y = 0, n_cells_z = 0;
-   PetscReal length_x = 0.0, length_y = 0.0, length_z = 0.0;
+   // The mesh: n_cells / lengths on every structured mesh and an unstructured
+   // box (only the first `dimension` axes mean anything), or on an
+   // unstructured mesh a file PETSc reads, resolved relative to the problem
+   // file's directory exactly as a materials path is (n_cells / lengths then
+   // stay 0). simplex and file are unstructured only
+   PlexMeshSpec mesh;
    // The SN order, NOT the ordinate count: how many ordinates an order is, is
    // the quadrature's business and differs by dimension (S4 is 4 ordinates in
    // 1D, 12 in 2D, 24 in 3D). So is WHICH orders exist - any even one in 1D,
@@ -94,18 +88,17 @@ public:
    // Keyed with the dimension's FACE_* ids, ready for the backend's create.
    // On an unstructured mesh the face names map onto the same ids (they are
    // PETSc's box "Face Sets" values) and integer keys are "Face Sets" values
-   // stored as given, so an id is an id whichever way the file spelled it.
-   // n_reflect_faces lets a driver ask "all faces reflective?" (the
-   // infinite-medium check) without re-walking the spec. It counts reflective
-   // LABEL IDS, which is a face count on a box (one id per face) but not
-   // necessarily on a file mesh, where one "Face Sets" value can cover any
-   // number of boundary faces
+   // stored as given, so an id is an id whichever way the file spelled it
    BCSpec bcs;
-   PetscInt n_reflect_faces = 0;
 
    // Scalar flux output path, empty = no output. .vts/.vtr on a structured
    // mesh, .vtu on an unstructured one - the parser checks which
    std::string flux_vtk;
+
+   // That extension check, for a name from anywhere else (the driver's
+   // -flux_vtk override): errors unless `filename` suits this backend.
+   // `source` says where the name came from, e.g. "-flux_vtk"
+   PetscErrorCode check_flux_vtk(const std::string &filename, const char *source) const;
 };
 
 #endif

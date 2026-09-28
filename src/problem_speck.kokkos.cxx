@@ -313,7 +313,7 @@ static PetscErrorCode ParseLabelKey(const std::string &key, const char *what, co
 // family string - "vacuum" meaning a cold vacuum face, inflow 0 - or an
 // object carrying that family plus what a vacuum face lets in
 static PetscErrorCode ParseFaceBC(const json &v, const char *name, PetscInt id, PetscInt dimension, \
-   const char *file, BCSpec &bcs, PetscInt *n_reflect_faces)
+   const char *file, BCSpec &bcs)
 {
    PetscFunctionBeginUser;
 
@@ -340,7 +340,6 @@ static PetscErrorCode ParseFaceBC(const json &v, const char *name, PetscInt id, 
          "reflective - a \"reflect\" face takes no \"inflow\" or \"window\"", \
          file, name);
       bcs.set(id, BCType::REFLECT);
-      (*n_reflect_faces)++;
       PetscFunctionReturn(PETSC_SUCCESS);
    }
 
@@ -433,28 +432,30 @@ PetscErrorCode ProblemSpec::create(MPI_Comm comm, const char *problem_path)
    // ~~~~~~~~~~~~~
    PetscCheck(root.contains("mesh") && root.at("mesh").is_object(), PETSC_COMM_SELF, \
       PETSC_ERR_ARG_WRONG, "%s: missing required object \"mesh\"", problem_path);
-   const json &mesh = root.at("mesh");
+   const json &mesh_j = root.at("mesh");
+   mesh.dimension = dimension;
 
-   if (mesh.contains("type")) {
-      const json &t = mesh.at("type");
+   PetscBool unstructured = PETSC_FALSE;
+   if (mesh_j.contains("type")) {
+      const json &t = mesh_j.at("type");
       PetscCheck(t.is_string() && (t.get<std::string>() == "structured" || \
          t.get<std::string>() == "unstructured"), PETSC_COMM_SELF, PETSC_ERR_ARG_WRONG, \
          "%s: mesh \"type\" must be \"structured\" (the default) or \"unstructured\"", problem_path);
-      mesh_unstructured = (t.get<std::string>() == "unstructured") ? PETSC_TRUE : PETSC_FALSE;
+      unstructured = (t.get<std::string>() == "unstructured") ? PETSC_TRUE : PETSC_FALSE;
    }
 
-   if (!mesh_unstructured) {
+   if (!unstructured) {
       // Name the missing "type" rather than calling the key a typo - these
       // are real keys, just not for this backend
       for (const char *k : {"file", "simplex", "order", "discretisation", "supg_zeta"}) {
-         PetscCheck(!mesh.contains(k), PETSC_COMM_SELF, PETSC_ERR_ARG_WRONG, \
+         PetscCheck(!mesh_j.contains(k), PETSC_COMM_SELF, PETSC_ERR_ARG_WRONG, \
             "%s: mesh \"%s\" is for an unstructured mesh only - add \"type\": \"unstructured\" " \
             "to \"mesh\"", problem_path, k);
       }
-      PetscCall(JsonCheckKeys(mesh, "\"mesh\"", problem_path, {"type", "n_cells", "lengths"}));
+      PetscCall(JsonCheckKeys(mesh_j, "\"mesh\"", problem_path, {"type", "n_cells", "lengths"}));
    }
    else {
-      PetscCall(JsonCheckKeys(mesh, "\"mesh\"", problem_path, \
+      PetscCall(JsonCheckKeys(mesh_j, "\"mesh\"", problem_path, \
          {"type", "n_cells", "lengths", "simplex", "file", "order", "discretisation", "supg_zeta"}));
       PetscCheck(dimension >= 2, PETSC_COMM_SELF, PETSC_ERR_ARG_OUTOFRANGE, \
          "%s: an unstructured mesh must have dimension 2 or 3, was given %" PetscInt_FMT \
@@ -464,99 +465,96 @@ PetscErrorCode ProblemSpec::create(MPI_Comm comm, const char *problem_path)
 
    // Which unstructured discretisation: upwind DG (the default) or
    // continuous Galerkin with consistent SUPG
-   if (mesh_unstructured && mesh.contains("discretisation")) {
-      const json &t = mesh.at("discretisation");
+   if (unstructured) backend = BackendKind::UNSTRUCTURED_DG;
+   if (unstructured && mesh_j.contains("discretisation")) {
+      const json &t = mesh_j.at("discretisation");
       PetscCheck(t.is_string() && (t.get<std::string>() == "dg" || t.get<std::string>() == "cg_supg"), \
          PETSC_COMM_SELF, PETSC_ERR_ARG_WRONG, "%s: mesh \"discretisation\" must be \"dg\" (the default) " \
          "or \"cg_supg\"", problem_path);
-      mesh_cg_supg = (t.get<std::string>() == "cg_supg") ? PETSC_TRUE : PETSC_FALSE;
+      if (t.get<std::string>() == "cg_supg") backend = BackendKind::UNSTRUCTURED_CG;
    }
+   const PetscBool cg_supg = (backend == BackendKind::UNSTRUCTURED_CG) ? PETSC_TRUE : PETSC_FALSE;
 
    // The order of the unstructured backend: DG 0 (the default) or 1; CG is
    // linear only (P1/Q1), so 1 - its default - is the one value it takes
-   if (mesh_cg_supg) mesh_order = 1;
-   if (mesh_unstructured && mesh.contains("order")) {
-      const json &o = mesh.at("order");
+   if (cg_supg) order = 1;
+   if (unstructured && mesh_j.contains("order")) {
+      const json &o = mesh_j.at("order");
       PetscCheck(o.is_number_integer() && (o.get<std::int64_t>() == 0 || o.get<std::int64_t>() == 1), \
          PETSC_COMM_SELF, PETSC_ERR_ARG_WRONG, "%s: mesh \"order\" must be 0 (DG0, the default) or 1 (DG1)", \
          problem_path);
-      mesh_order = (PetscInt)o.get<std::int64_t>();
-      PetscCheck(!mesh_cg_supg || mesh_order == 1, PETSC_COMM_SELF, PETSC_ERR_ARG_WRONG, \
+      order = (PetscInt)o.get<std::int64_t>();
+      PetscCheck(!cg_supg || order == 1, PETSC_COMM_SELF, PETSC_ERR_ARG_WRONG, \
          "%s: a \"cg_supg\" mesh is linear (P1/Q1) - \"order\" can only be 1 there, or left out", problem_path);
    }
 
    // The SUPG thin-cell parameter: tau = min(1 / sigma_t, h / zeta). It
    // changes the solution, so it is the problem's, not a solver knob
-   if (mesh_unstructured && mesh.contains("supg_zeta")) {
-      PetscCheck(mesh_cg_supg, PETSC_COMM_SELF, PETSC_ERR_ARG_WRONG, \
+   if (unstructured && mesh_j.contains("supg_zeta")) {
+      PetscCheck(cg_supg, PETSC_COMM_SELF, PETSC_ERR_ARG_WRONG, \
          "%s: mesh \"supg_zeta\" is for a \"cg_supg\" mesh only", problem_path);
-      PetscCheck(mesh.at("supg_zeta").is_number(), PETSC_COMM_SELF, PETSC_ERR_ARG_WRONG, \
+      PetscCheck(mesh_j.at("supg_zeta").is_number(), PETSC_COMM_SELF, PETSC_ERR_ARG_WRONG, \
          "%s: mesh \"supg_zeta\" must be a number", problem_path);
-      supg_zeta = (PetscReal)mesh.at("supg_zeta").get<double>();
+      supg_zeta = (PetscReal)mesh_j.at("supg_zeta").get<double>();
       PetscCheck(supg_zeta > 0.0, PETSC_COMM_SELF, PETSC_ERR_ARG_OUTOFRANGE, \
          "%s: mesh \"supg_zeta\" must be positive, was given %g", problem_path, (double)supg_zeta);
    }
 
-   if (mesh_unstructured && mesh.contains("file")) {
+   if (unstructured && mesh_j.contains("file")) {
       // The file decides the mesh - sizes alongside it would be ignored, and
       // an ignored key is a lie about the problem
       for (const char *k : {"n_cells", "lengths", "simplex"}) {
-         PetscCheck(!mesh.contains(k), PETSC_COMM_SELF, PETSC_ERR_ARG_WRONG, \
+         PetscCheck(!mesh_j.contains(k), PETSC_COMM_SELF, PETSC_ERR_ARG_WRONG, \
             "%s: mesh has both \"file\" and \"%s\" - a mesh file decides its own cells, so " \
             "\"n_cells\", \"lengths\" and \"simplex\" describe a box and cannot go with it", \
             problem_path, k);
       }
-      PetscCheck(mesh.at("file").is_string() && !mesh.at("file").get<std::string>().empty(), \
+      PetscCheck(mesh_j.at("file").is_string() && !mesh_j.at("file").get<std::string>().empty(), \
          PETSC_COMM_SELF, PETSC_ERR_ARG_WRONG, "%s: mesh \"file\" must be a non-empty path string", \
          problem_path);
       // Relative to the problem file's directory, the materials rule. Every
       // rank resolves the same broadcast bytes the same way; rank 0 checks the
       // file opens and says so for everyone, so a bad path fails here, naming
       // the problem file, rather than deep inside the mesh reader
-      mesh_file = ResolveRelative(problem_path, mesh.at("file").get<std::string>());
+      mesh.file = ResolveRelative(problem_path, mesh_j.at("file").get<std::string>());
       PetscInt opens = 0;
-      if (rank == 0) opens = std::ifstream(mesh_file).good() ? 1 : 0;
+      if (rank == 0) opens = std::ifstream(mesh.file).good() ? 1 : 0;
       PetscCallMPI(MPI_Bcast(&opens, 1, MPIU_INT, 0, comm));
       PetscCheck(opens, PETSC_COMM_SELF, PETSC_ERR_FILE_OPEN, \
          "%s: could not open mesh \"file\" %s (a relative path is relative to the problem " \
-         "file's directory)", problem_path, mesh_file.c_str());
+         "file's directory)", problem_path, mesh.file.c_str());
    }
    else {
 
-      if (mesh_unstructured && mesh.contains("simplex")) {
-         PetscCheck(mesh.at("simplex").is_boolean(), PETSC_COMM_SELF, PETSC_ERR_ARG_WRONG, \
+      if (unstructured && mesh_j.contains("simplex")) {
+         PetscCheck(mesh_j.at("simplex").is_boolean(), PETSC_COMM_SELF, PETSC_ERR_ARG_WRONG, \
             "%s: mesh \"simplex\" must be true or false", problem_path);
-         mesh_simplex = mesh.at("simplex").get<bool>() ? PETSC_TRUE : PETSC_FALSE;
+         mesh.simplex = mesh_j.at("simplex").get<bool>() ? PETSC_TRUE : PETSC_FALSE;
       }
 
-      PetscCheck(mesh.contains("n_cells"), PETSC_COMM_SELF, PETSC_ERR_ARG_WRONG, \
+      PetscCheck(mesh_j.contains("n_cells"), PETSC_COMM_SELF, PETSC_ERR_ARG_WRONG, \
          "%s: mesh is missing \"n_cells\"", problem_path);
-      const json &n_cells = mesh.at("n_cells");
+      const json &n_cells = mesh_j.at("n_cells");
       PetscCheck(n_cells.is_array() && n_cells.size() == dim, PETSC_COMM_SELF, PETSC_ERR_ARG_WRONG, \
          "%s: mesh \"n_cells\" must be an array of %zu integers", problem_path, dim);
       for (size_t d = 0; d < dim; d++) {
-         PetscInt n = 0;
          PetscCheck(n_cells.at(d).is_number_integer(), PETSC_COMM_SELF, PETSC_ERR_ARG_WRONG, \
             "%s: mesh \"n_cells\"[%zu] must be an integer", problem_path, d);
          const std::int64_t raw = n_cells.at(d).get<std::int64_t>();
          PetscCheck(raw > 0 && raw <= std::numeric_limits<PetscInt>::max(), PETSC_COMM_SELF, \
             PETSC_ERR_ARG_OUTOFRANGE, "%s: mesh \"n_cells\"[%zu] must be a positive PetscInt", \
             problem_path, d);
-         n = (PetscInt)raw;
-         if (d == 0) n_cells_x = n;
-         else if (d == 1) n_cells_y = n;
-         else n_cells_z = n;
+         mesh.n_cells[d] = (PetscInt)raw;
       }
 
-      PetscCheck(mesh.contains("lengths"), PETSC_COMM_SELF, PETSC_ERR_ARG_WRONG, \
+      PetscCheck(mesh_j.contains("lengths"), PETSC_COMM_SELF, PETSC_ERR_ARG_WRONG, \
          "%s: mesh is missing \"lengths\"", problem_path);
-      PetscCall(JsonGetRealArray(mesh.at("lengths"), "lengths", problem_path, dim, vals));
-      length_x = (PetscReal)PetscRealPart(vals[0]);
-      if (dimension >= 2) length_y = (PetscReal)PetscRealPart(vals[1]);
-      if (dimension >= 3) length_z = (PetscReal)PetscRealPart(vals[2]);
-      PetscCheck(length_x > 0.0 && (dimension < 2 || length_y > 0.0) && \
-         (dimension < 3 || length_z > 0.0), PETSC_COMM_SELF, \
-         PETSC_ERR_ARG_OUTOFRANGE, "%s: mesh lengths must be positive", problem_path);
+      PetscCall(JsonGetRealArray(mesh_j.at("lengths"), "lengths", problem_path, dim, vals));
+      for (size_t d = 0; d < dim; d++) {
+         mesh.lengths[d] = (PetscReal)PetscRealPart(vals[d]);
+         PetscCheck(mesh.lengths[d] > 0.0, PETSC_COMM_SELF, PETSC_ERR_ARG_OUTOFRANGE, \
+            "%s: mesh lengths must be positive", problem_path);
+      }
    }
 
    // The SN order, not the ordinate count - which orders exist is the
@@ -579,7 +577,7 @@ PetscErrorCode ProblemSpec::create(MPI_Comm comm, const char *problem_path)
    }
    // CG-SUPG imposes every boundary condition weakly: there is no
    // Dirichlet-cell row on a vertex shared by several faces' worth of angles
-   PetscCheck(!mesh_cg_supg || bcs.ghost_flux_vacuum(), PETSC_COMM_SELF, PETSC_ERR_ARG_WRONG, \
+   PetscCheck(!cg_supg || bcs.ghost_flux_vacuum(), PETSC_COMM_SELF, PETSC_ERR_ARG_WRONG, \
       "%s: a \"cg_supg\" mesh imposes its boundary conditions weakly - \"vacuum_treatment\": " \
       "\"dirichlet_cell\" does not apply, drop it", problem_path);
    PetscCheck(sn_order > 0 && sn_order % 2 == 0, PETSC_COMM_SELF, PETSC_ERR_ARG_OUTOFRANGE, \
@@ -601,11 +599,11 @@ PetscErrorCode ProblemSpec::create(MPI_Comm comm, const char *problem_path)
       PetscCheck(root.at("regions").is_object(), PETSC_COMM_SELF, PETSC_ERR_ARG_WRONG, \
          "%s: \"regions\" must be an object", problem_path);
       const json &regions = root.at("regions");
-      PetscCheck(mesh_unstructured || !regions.contains("cell_sets"), PETSC_COMM_SELF, \
+      PetscCheck(unstructured || !regions.contains("cell_sets"), PETSC_COMM_SELF, \
          PETSC_ERR_ARG_WRONG, "%s: regions \"cell_sets\" paints by \"Cell Sets\" label value, " \
          "which only an unstructured mesh has - add \"type\": \"unstructured\" to \"mesh\", or " \
          "paint boxes instead", problem_path);
-      if (mesh_unstructured) PetscCall(JsonCheckKeys(regions, "\"regions\"", problem_path, \
+      if (unstructured) PetscCall(JsonCheckKeys(regions, "\"regions\"", problem_path, \
          {"background", "cell_sets", "paint"}));
       else PetscCall(JsonCheckKeys(regions, "\"regions\"", problem_path, {"background", "paint"}));
 
@@ -703,7 +701,7 @@ PetscErrorCode ProblemSpec::create(MPI_Comm comm, const char *problem_path)
       const Face *faces = (dimension == 1) ? faces_1d : ((dimension == 2) ? faces_2d : faces_3d);
       const size_t n_faces = 2 * (size_t)dimension;
 
-      if (!mesh_unstructured) {
+      if (!unstructured) {
 
          // A "Face Sets" value is a real key, just not for this backend - say
          // so rather than calling it a typo
@@ -727,7 +725,7 @@ PetscErrorCode ProblemSpec::create(MPI_Comm comm, const char *problem_path)
          for (size_t f = 0; f < n_faces; f++) {
             if (!bcj.contains(faces[f].name)) continue;
             PetscCall(ParseFaceBC(bcj.at(faces[f].name), faces[f].name, faces[f].id, dimension, \
-               problem_path, bcs, &n_reflect_faces));
+               problem_path, bcs));
          }
       }
       else {
@@ -760,8 +758,7 @@ PetscErrorCode ProblemSpec::create(MPI_Comm comm, const char *problem_path)
             key_of_id[id] = item.key();
          }
          for (const auto &[id, key] : key_of_id) {
-            PetscCall(ParseFaceBC(bcj.at(key), key.c_str(), id, dimension, problem_path, bcs, \
-               &n_reflect_faces));
+            PetscCall(ParseFaceBC(bcj.at(key), key.c_str(), id, dimension, problem_path, bcs));
          }
       }
    }
@@ -778,20 +775,31 @@ PetscErrorCode ProblemSpec::create(MPI_Comm comm, const char *problem_path)
          PetscCheck(output.at("flux_vtk").is_string(), PETSC_COMM_SELF, PETSC_ERR_ARG_WRONG, \
             "%s: output \"flux_vtk\" must be a string", problem_path);
          flux_vtk = output.at("flux_vtk").get<std::string>();
-         // The writer picks its format off the DM, so the extension has to
-         // match the backend - checked here, where the file can be named
-         const auto ends_with = [&](const char *ext) {
-            const size_t n = strlen(ext);
-            return flux_vtk.size() > n && flux_vtk.compare(flux_vtk.size() - n, n, ext) == 0;
-         };
-         if (mesh_unstructured) PetscCheck(ends_with(".vtu"), PETSC_COMM_SELF, PETSC_ERR_ARG_WRONG, \
-            "%s: output \"flux_vtk\" \"%s\" must end in .vtu on an unstructured mesh (.vts/.vtr " \
-            "are the structured backends' formats)", problem_path, flux_vtk.c_str());
-         else PetscCheck(ends_with(".vts") || ends_with(".vtr"), PETSC_COMM_SELF, PETSC_ERR_ARG_WRONG, \
-            "%s: output \"flux_vtk\" \"%s\" must end in .vts or .vtr on a structured mesh (.vtu is " \
-            "the unstructured backend's format)", problem_path, flux_vtk.c_str());
+         PetscCall(check_flux_vtk(flux_vtk, (std::string(problem_path) + ": output \"flux_vtk\"").c_str()));
       }
    }
+
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+// The writer picks its format off the DM, so the extension has to match the
+// backend - checked where the file is named, not after the solve
+PetscErrorCode ProblemSpec::check_flux_vtk(const std::string &filename, const char *source) const
+{
+   PetscFunctionBeginUser;
+
+   const auto ends_with = [&](const char *ext) {
+      const size_t n = strlen(ext);
+      return filename.size() > n && filename.compare(filename.size() - n, n, ext) == 0;
+   };
+   if (backend != BackendKind::STRUCTURED_FD) PetscCheck(ends_with(".vtu"), PETSC_COMM_SELF, PETSC_ERR_ARG_WRONG, \
+      "%s \"%s\" must end in .vtu on an unstructured mesh (.vts/.vtr " \
+      "are the structured backends' formats)", source, filename.c_str());
+   else PetscCheck(ends_with(".vts") || ends_with(".vtr"), PETSC_COMM_SELF, PETSC_ERR_ARG_WRONG, \
+      "%s \"%s\" must end in .vts or .vtr on a structured mesh (.vtu is " \
+      "the unstructured backend's format)", source, filename.c_str());
 
    PetscFunctionReturn(PETSC_SUCCESS);
 }
