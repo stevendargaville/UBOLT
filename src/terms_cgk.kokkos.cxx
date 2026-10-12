@@ -251,6 +251,11 @@ PetscErrorCode GroupTransferCG::create(const PhaseSpace &ps, const UnstructuredC
    PetscCall(VecDestroy(&unused_local));
    phi_.assign(ps.n_groups, NULL);
    phi_set_.assign(ps.n_groups, PETSC_FALSE);
+   phi_owned_.assign(ps.n_groups, NULL);
+   for (PetscInt g = 0; g < ps.n_groups; g++) {
+      PetscCall(VecDuplicate(phi_global_, &phi_owned_[g]));
+      PetscCall(VecSet(phi_owned_[g], 0.0));
+   }
 
    PetscFunctionReturn(PETSC_SUCCESS);
 }
@@ -260,6 +265,7 @@ PetscErrorCode GroupTransferCG::destroy()
    PetscFunctionBeginUser;
 
    for (auto &v : phi_) PetscCall(VecDestroy(&v));
+   for (auto &v : phi_owned_) PetscCall(VecDestroy(&v));
    PetscCall(VecDestroy(&phi_global_));
 
    PetscFunctionReturn(PETSC_SUCCESS);
@@ -276,7 +282,7 @@ PetscErrorCode GroupTransferCG::add_external(PetscInt g, Vec b) const
    PetscFunctionReturn(PETSC_SUCCESS);
 }
 
-PetscErrorCode GroupTransferCG::set_scalar_flux(PetscInt g, Vec psi_g)
+PetscErrorCode GroupTransferCG::set_scalar_flux(PetscInt g, Vec psi_g, PetscReal *change_sq, PetscReal *norm_sq)
 {
    Vec unused_global = NULL;
 
@@ -284,6 +290,8 @@ PetscErrorCode GroupTransferCG::set_scalar_flux(PetscInt g, Vec psi_g)
 
    PetscCheck(g >= 0 && g < (PetscInt)phi_.size(), PETSC_COMM_SELF, PETSC_ERR_ARG_OUTOFRANGE, \
       "group %" PetscInt_FMT " out of range, n_groups is %" PetscInt_FMT, g, (PetscInt)phi_.size());
+   PetscCheck((change_sq == nullptr) == (norm_sq == nullptr), PETSC_COMM_SELF, PETSC_ERR_ARG_NULL, \
+      "set_scalar_flux measures the change and the norm together: pass both or neither");
 
    if (!phi_[g]) {
       PetscCall(disc_->create_nodal_vecs(&unused_global, &phi_[g]));
@@ -291,6 +299,19 @@ PetscErrorCode GroupTransferCG::set_scalar_flux(PetscInt g, Vec psi_g)
    }
    PetscCall(UboltAngularIntegral(psi_g, n_angles_, w_d_, scalar_flux_d_));
    PetscCall(NodalFromScalarFlux(scalar_flux_d_, phi_global_));
+   // Measured on the OWNED vertices (phi_global_ is the owned nodal Vec), so a
+   // vertex shared between ranks counts once. The owned copy is kept on every
+   // call, measured or not, so it is always the previous cached flux (zero
+   // before the group's first set)
+   if (change_sq) {
+      PetscReal change = 0.0, norm = 0.0;
+      PetscCall(VecAXPY(phi_owned_[g], -1.0, phi_global_));
+      PetscCall(VecNorm(phi_owned_[g], NORM_2, &change));
+      PetscCall(VecNorm(phi_global_, NORM_2, &norm));
+      *change_sq += change * change;
+      *norm_sq += norm * norm;
+   }
+   PetscCall(VecCopy(phi_global_, phi_owned_[g]));
    PetscCall(disc_->nodal_global_to_local(phi_global_, phi_[g]));
    phi_set_[g] = PETSC_TRUE;
 

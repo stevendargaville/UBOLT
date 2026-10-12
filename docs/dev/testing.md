@@ -27,6 +27,15 @@ this file used to carry went.
   multigroup recipe pins the **max over the groups**. A single group getting slower
   without exceeding that max will not fail the recipe — the multigroup baselines below
   are what pin the per-group counts.
+- Upscatter recipes pin a second count: `-outer_max_it`, the number of sweeps the outer
+  iteration over the thermal groups takes to bring its error estimate,
+  change * rho / (1 - rho), below `-outer_rtol` (the first sweep included; never fewer
+  than 3; running out fails the run, like a non-converged inner solve). Their
+  `-ksp_max_it` is the max over every inner solve of every sweep - in practice the first
+  sweep's, since later sweeps warm start from the last sweep's psi and need fewer. Both
+  are pinned on the local opt count like any other, and both are mirrored in
+  `iteration_counts.md` (`k / n`). The exact oracle for the outer iteration is the
+  infinite-medium check on the `*_up*_inf_medium` files (`verification.md`, "Upscatter").
 - The drivers return 1 unless `KSPGetConvergedReason() > 0` (since Phase 1a), so a
   non-converged solve fails the recipe on its own — no `-ksp_error_if_not_converged`
   or `-on_error_abort` is needed for pass/fail (CI sets `-on_error_abort` in
@@ -34,12 +43,12 @@ this file used to carry went.
   diagnostics go to stderr so they never appear in a captured baseline. The four st=2
   `-diag_scale` lines of `capture_baselines` carry `|| true` (see "Single-group
   baselines" below for which of them still fail to converge).
-- Targets: `make check` (fast sanity, 18 runs: the five `verify_*` drivers and 13 solves)
+- Targets: `make check` (fast sanity, 19 runs: the five `verify_*` drivers and 14 solves)
   < `make tests_short` < `make tests` (`tests_short`, then `run_tests_serial` and
   `run_tests_parallel`). Parallel variants use `$(MPIEXEC) -n 2` — plus `-n 4` runs of
   the two painting identities and of the `verify_*` drivers — and are skipped under
   MPIUNI, including `run_check`'s single parallel line. `tests_short` is most of the
-  suite (353 of the 370 recipe lines `make tests` runs); the name is historical.
+  suite (370 of the 387 recipe lines `make tests` runs); the name is historical.
 - The `verify_*` drivers are the exception to "pass/fail is a pinned iteration count":
   they are discretisation and quadrature checks and their exit codes come from tolerances
   on numerical checks (`docs/dev/verification.md`). They print what they measured against

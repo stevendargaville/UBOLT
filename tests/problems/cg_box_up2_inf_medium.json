@@ -1,0 +1,32 @@
+{
+ "_comment": "The CG-SUPG twin of box_up2_inf_medium.json, which exercises GroupTransferCG under the upscatter outer iteration. 2 groups with upscatter into group 0, all faces reflective with absorption in every group: the exact discrete solution is the per-group constant of the 2x2 infinite-medium group system, checked by -check_inf_medium.",
+ "dimension": 2,
+ "mesh": {
+  "type": "unstructured",
+  "discretisation": "cg_supg",
+  "n_cells": [20, 20],
+  "lengths": [1.0, 1.0]
+ },
+ "sn_order": 2,
+ "materials": {
+  "n_groups": 2,
+  "materials": [
+   {
+    "id": 0,
+    "name": "up2",
+    "Sigma_t": [2.0, 3.0],
+    "Sigma_s": [
+     [1.0, 0.75],
+     [0.5, 2.0]
+    ],
+    "Source": [1.0, 1.0]
+   }
+  ]
+ },
+ "boundary_conditions": {
+  "left": "reflect",
+  "right": "reflect",
+  "bottom": "reflect",
+  "top": "reflect"
+ }
+}

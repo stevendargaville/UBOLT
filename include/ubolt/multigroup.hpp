@@ -60,27 +60,41 @@ private:
 // Not an OperatorTerm: it does not act on the unknowns of the group being
 // solved, it builds that group's rhs. The group sweep calls, per group g,
 //   add_external(g, b), then add_transfer(g_from, g, b) for every g_from
-//   already solved, solve, then set_scalar_flux(g, psi_g)
+//   with a cached flux, solve, then set_scalar_flux(g, psi_g, ...)
 // Every call ADDS to b and leaves the BC rows alone (their rhs belongs to the
 // boundary condition). One implementation per family of discretisation:
 // GroupTransfer (per node) and GroupTransferCG (SUPG-weighted)
 //
 // In the group Gauss-Seidel sweep the within-group block sigma_s(g -> g)
 // stays on the lhs and the off-diagonal blocks come here, evaluated with the
-// flux of whichever groups have already been solved. With downscatter only
-// that sweep is a block lower triangular solve, so one forward pass is exact
+// latest cached flux of every other group. With downscatter only that sweep
+// is a block lower triangular solve, so one forward pass is exact. With
+// upscatter the cache is what carries one sweep's flux into the next (the
+// outer iteration in tests/transportk): a group below g contributes its flux
+// from the previous sweep, and before the first sweep the driver caches a
+// zero flux (set_scalar_flux of a zero psi) for every group read before it is
+// solved
 class PETSC_VISIBILITY_PUBLIC GroupSource {
 public:
    virtual ~GroupSource() = default;
 
    // b += group g's external source
    virtual PetscErrorCode add_external(PetscInt g, Vec b) const = 0;
-   // Integrate group g's angular flux and keep it. Once per solved group:
-   // every group below it scatters from the same flux, so integrating on
-   // demand in add_transfer would redo it once per target
-   virtual PetscErrorCode set_scalar_flux(PetscInt g, Vec psi_g) = 0;
-   // b += the scatter from g_from into g_to. set_scalar_flux(g_from, ...)
-   // must have been called first
+   // Integrate group g's angular flux and keep it, replacing whatever was
+   // cached. Once per solved group: every group it scatters into reads the
+   // same flux, so integrating on demand in add_transfer would redo it once
+   // per target
+   //
+   // change_sq and norm_sq measure the overwrite, for an outer iteration's
+   // convergence test: both nullptr (nothing measured, no extra work) or both
+   // given. Then *change_sq += sum |phi_new - phi_old|^2 and
+   // *norm_sq += sum |phi_new|^2, each sum GLOBAL over psi_g's communicator
+   // with every node (CG: vertex) counted once, so a caller accumulates any
+   // number of groups and takes one square root. Measuring never changes the
+   // cached values
+   virtual PetscErrorCode set_scalar_flux(PetscInt g, Vec psi_g, PetscReal *change_sq, PetscReal *norm_sq) = 0;
+   // b += the scatter from g_from into g_to, either direction.
+   // set_scalar_flux(g_from, ...) must have been called first
    virtual PetscErrorCode add_transfer(PetscInt g_from, PetscInt g_to, Vec b) const = 0;
 };
 
@@ -97,7 +111,7 @@ public:
       const BoundaryInfo &boundary, const MaterialSpec &mats, const PetscIntKokkosView &mat_id_d);
 
    PetscErrorCode add_external(PetscInt g, Vec b) const override;
-   PetscErrorCode set_scalar_flux(PetscInt g, Vec psi_g) override;
+   PetscErrorCode set_scalar_flux(PetscInt g, Vec psi_g, PetscReal *change_sq, PetscReal *norm_sq) override;
    PetscErrorCode add_transfer(PetscInt g_from, PetscInt g_to, Vec b) const override;
 
 private:
@@ -115,7 +129,8 @@ private:
    // whose layout no longer matches the default one on a device backend
    std::vector<PetscScalar2DKokkosView> phi_;
    std::vector<PetscBool> phi_set_;
-   // Persistent scratch - never allocate device memory inside an apply
+   // Persistent scratch - never allocate device memory inside an apply. Also
+   // where a measured set_scalar_flux integrates before overwriting the cache
    PetscScalar2DKokkosView scalar_flux_d_;
 };
 

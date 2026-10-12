@@ -2917,3 +2917,45 @@ Two old recipes died with the option surface, both strictly subsumed: the "runti
 phase space sizes" slab run (every size is runtime-from-file on every run now) and the
 "multigroup with 1 group" run (a 1-group file IS the single-group path in the unified
 driver — there is no separate code path left to compare).
+
+## Upscatter: the outer iteration (2026-10-12)
+The outer iteration added new recipes only; no existing pin moved. Every pre-existing
+recipe of `make tests_short` was checked bitwise against main
+(`PETSC_OPTIONS=-ksp_monitor`, local opt arch, the `KSP Residual norm` lines diffed
+recipe by recipe): identical, both as first committed and after the review follow-up
+below. The 24 baselines are untouched.
+
+First version (superseded the same day): the outer test was the raw change below
+`-outer_rtol` (default 10x the inner rtol, a warning below it). Pins then, at PETSc's
+default inner rtol 1e-5: `slab_up3_layers` 9 / 16, `box_up3_layers` and its DG0 twin
+8 / 8, `cg_box_up3_layers` 8 / 9; the tight oracles as below except
+`slab_up3_inf_medium` 12 / 20.
+
+Review follow-up (same day): the raw change under-converges a slow thermal block (the
+error left is ~ change * rho / (1 - rho), ~6x the change at rho = 0.85), so the test is
+now on that estimate with rho the ratio of successive changes (first at sweep 3); the
+upscatter defaults became `-outer_rtol 1e-8` and an inner rtol of 1e-10 (unless
+`-ksp_rtol` is given); and `-outer_rtol` below the inner rtol is refused, since a
+warm-started inner solve whose rhs moves by less than its rtol takes 0 iterations and
+the outer iteration would converge falsely. The pins, local opt,
+`-ksp_max_it / -outer_max_it` (serial; -n 2 where it differs):
+
+| recipe | pin | note |
+|---|---|---|
+| `slab_up3_inf_medium` (tight) | 12 / 19 | first sweep 12, 10, 11; warm-started sweeps fall to 1-3 inner iterations; rho 0.250; error ~1e-11 |
+| `slab_up3_inf_medium -matfree_removal` (tight) | 8 / 19 | |
+| `box_up2_inf_medium` (tight) | 12 / 27 | no fast group (upscatter into group 0); rho 0.37; error ~1e-12 |
+| `box_up2_inf_medium -precon_dsa` (tight) | 9 / 27 | |
+| `cg_box_up2_inf_medium` (tight) | 14 / 27 (-n 2: 13 / 27) | error ~1e-12 |
+| `slab_up3_layers` | 16 / 34 | rho 0.586 |
+| `slab_up3_layers -precon_dsa` | 8 / 34 | |
+| `box_up3_layers`, `plex_box_up3_layers` | 15 / 15 | rho 0.284; the DG0 twin matches the structured counts |
+| `box_up3_layers -matfree_removal -precon_ref_shift` | 17 / 15 | |
+| `cg_box_up3_layers` | 16 / 16 | rho 0.315 |
+
+"Tight" is `-check_inf_medium -ksp_rtol 1e-12 -outer_rtol 1e-11`; the rest run at the
+upscatter defaults. The sweep counts are the same at -n 2 (the change norm is global;
+the per-sweep changes agree with serial to three digits). The infinite-medium sweep
+contractions are set by the files: 0.25 for `slab_up3_inf_medium` (0.656 before its
+upscatter was halved, 54 sweeps at `-outer_rtol 1e-10` on the raw change with an error
+of 6e-10, too close to the 1e-9 check to keep) and 0.375 for the `box_up2` pair.

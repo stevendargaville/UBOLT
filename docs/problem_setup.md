@@ -142,8 +142,11 @@ you:
   lhs matrix-free. A material with `Sigma_s[g][g] > Sigma_t[g]` is
   net-multiplying and probably a typo.
 - Groups are ordered high energy (0) to low, and `Sigma_s` is `[from][to]`:
-  row `g` is everything scattering OUT of `g`. The sweep is downscatter-only
-  today — anything below the diagonal is silently unused.
+  row `g` is everything scattering OUT of `g`. Anything below the diagonal is
+  upscatter: the driver then repeats the sweep over the thermal groups (from
+  the first group anything upscatters into) as an outer iteration until their
+  scalar flux settles (`-outer_rtol`, `-outer_max_it`). Without it one sweep
+  is exact.
 - A group whose `Sigma_t` equals its `Sigma_s[g][g]` has scattering ratio
   exactly 1 (no absorption). Fine with a vacuum face to leak through; singular
   if every face is reflective (see step 5).

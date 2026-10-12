@@ -8,12 +8,14 @@
 // site), the problem file, BuildBackend (the one per-backend switch: the
 // quadrature, the discretisation that owns the mesh and the decomposition, the
 // painting, the streaming term), the per-group xsections, the optional DSA,
-// the operator and its terms, the group Gauss-Seidel sweep, the checks, the
-// flux output.
+// the operator and its terms, the group Gauss-Seidel sweep (repeated over the
+// thermal groups as an outer iteration when the problem has upscatter), the
+// checks, the flux output.
 //
 // Knobs: -precon_stream, -matfree_removal, -precon_ref_shift / -precon_ref_k,
 // -precon_dsa (+ the -dsa_ family, see DSAPrecon), -precon_block_scale,
-// -diag_scale, -supg_zeta, and the verification ones, -check_inf_medium,
+// -diag_scale, -supg_zeta, the upscatter outer iteration's -outer_rtol /
+// -outer_max_it, and the verification ones, -check_inf_medium,
 // -check_matfree, -check_ref_shift, plus the -flux_vtk output override.
 //
 // Currently run with:
@@ -28,6 +30,7 @@
 #include <string>
 #include <vector>
 #include <cstring>
+#include <utility>
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -52,6 +55,56 @@ static PetscErrorCode InfMediumError(const PhaseSpace &ps, Vec psi, PetscScalar 
    }
    PetscCall(VecRestoreArrayRead(psi, &psi_a));
    PetscCallMPI(MPIU_Allreduce(&local_err, err, 1, MPIU_REAL, MPIU_MAX, PetscObjectComm((PetscObject)psi)));
+
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+// -check_inf_medium's per-group constants: material m's G x G group system
+//   (Sigma_t[g] - Sigma_s[g][g]) psi_g - sum_{g' != g} Sigma_s[g'][g] psi_g'
+//      = Source_g / sum_weights
+// by Gaussian elimination with partial pivoting, on the host. Tiny, and run
+// once. Downscatter only makes it lower triangular; upscatter fills in above
+// the diagonal. Singular when nothing is absorbed, which the check refuses
+static PetscErrorCode InfMediumConstants(const MaterialSpec &mats, PetscInt m, PetscScalar sum_weights, \
+   std::vector<PetscScalar> &psi)
+{
+   const PetscInt G = mats.n_groups();
+   std::vector<PetscScalar> a(G * G), rhs(G);
+
+   PetscFunctionBeginUser;
+
+   for (PetscInt g = 0; g < G; g++) {
+      for (PetscInt gp = 0; gp < G; gp++) {
+         const PetscScalar s = mats.sigma_s_host()[(m * G + gp) * G + g];
+         a[g * G + gp] = (gp == g) ? mats.sigma_t_host()[m * G + g] - s : -s;
+      }
+      rhs[g] = mats.source_host()[m * G + g] / sum_weights;
+   }
+   for (PetscInt k = 0; k < G; k++) {
+      PetscInt piv = k;
+      for (PetscInt i = k + 1; i < G; i++) {
+         if (PetscAbsScalar(a[i * G + k]) > PetscAbsScalar(a[piv * G + k])) piv = i;
+      }
+      PetscCheck(PetscAbsScalar(a[piv * G + k]) > 0.0, PETSC_COMM_WORLD, PETSC_ERR_ARG_INCOMP, \
+         "-check_inf_medium needs absorption: the infinite-medium group system is singular");
+      if (piv != k) {
+         for (PetscInt j = 0; j < G; j++) std::swap(a[k * G + j], a[piv * G + j]);
+         std::swap(rhs[k], rhs[piv]);
+      }
+      for (PetscInt i = k + 1; i < G; i++) {
+         const PetscScalar f = a[i * G + k] / a[k * G + k];
+         for (PetscInt j = k; j < G; j++) a[i * G + j] -= f * a[k * G + j];
+         rhs[i] -= f * rhs[k];
+      }
+   }
+   psi.assign(G, 0.0);
+   for (PetscInt k = G - 1; k >= 0; k--) {
+      PetscScalar sum = rhs[k];
+      for (PetscInt j = k + 1; j < G; j++) sum -= a[k * G + j] * psi[j];
+      psi[k] = sum / a[k * G + k];
+   }
 
    PetscFunctionReturn(PETSC_SUCCESS);
 }
@@ -476,8 +529,40 @@ int main(int argc, char **args) {
    PetscBool have_flux_cli = PETSC_FALSE;
    PetscCall(PetscOptionsGetString(NULL, NULL, "-flux_vtk", flux_vtk_cli, sizeof(flux_vtk_cli), \
       &have_flux_cli));
+   // The upscatter outer iteration (see the sweep below): repeat the sweep over
+   // the thermal groups until the ESTIMATED error left in their scalar flux,
+   // relative to the flux, drops below -outer_rtol (the estimate is explained at
+   // the test). A problem without upscatter has no outer iteration and reads
+   // neither option
+   //
+   // Default 1e-8. Under upscatter the inner KSP's rtol also defaults tighter,
+   // to 1e-10, unless -ksp_rtol is given: every inner solve leaves an error of
+   // order its rtol, and with warm-started inner solves a sweep whose rhs moves
+   // by less than the inner rtol takes 0 iterations, so phi does not move and
+   // the outer test would see a false convergence. Hence -outer_rtol below the
+   // (effective) inner rtol is refused, and the defaults keep two decades
+   // between them. A problem without upscatter keeps PETSc's default rtol
+   PetscReal outer_rtol = 1e-8;
+   PetscCall(PetscOptionsGetReal(NULL, NULL, "-outer_rtol", &outer_rtol, NULL));
+   PetscCheck(outer_rtol > 0.0, PETSC_COMM_WORLD, PETSC_ERR_ARG_OUTOFRANGE, \
+      "-outer_rtol must be positive, was given %g", (double)outer_rtol);
+   PetscBool have_ksp_rtol = PETSC_FALSE;
+   PetscCall(PetscOptionsHasName(NULL, NULL, "-ksp_rtol", &have_ksp_rtol));
+   // The most sweeps over the thermal groups, the first one included. Running
+   // out fails the run, like an inner solve that does not converge. Generous by
+   // default: a strongly upscattering thermal block converges slowly (each
+   // sweep removes a fraction 1 - rho of the error), and a recipe pins it to
+   // its own count anyway
+   PetscInt outer_max_it = 1000;
+   PetscCall(PetscOptionsGetInt(NULL, NULL, "-outer_max_it", &outer_max_it, NULL));
+   PetscCheck(outer_max_it >= 1, PETSC_COMM_WORLD, PETSC_ERR_ARG_OUTOFRANGE, \
+      "-outer_max_it must be at least 1, was given %" PetscInt_FMT, outer_max_it);
 
    KSPConvergedReason reason = KSP_CONVERGED_ITERATING;
+   // True unless an outer iteration ran out of sweeps
+   PetscBool outer_ok = PETSC_TRUE;
+   PetscInt outer_its = 0;
+   PetscReal outer_change = 0.0, outer_err_est = 0.0;
    PetscReal inf_medium_err = 0.0;
    PetscReal matfree_err = 0.0, matfree_diag_err = 0.0;
    PetscReal ref_shift_err = 0.0;
@@ -659,12 +744,25 @@ int main(int argc, char **args) {
       }
 
       // ~~~~~~~~~~~~~
-      // Sweep the groups: Gauss-Seidel with downscatter only. Groups are
-      // ordered high energy to low, the within-group scatter stays on the lhs
-      // (matrix-free) and everything scattering out of an already-solved group
-      // goes to the rhs. With no upscatter the group system is block lower
+      // Sweep the groups: block Gauss-Seidel. Groups are ordered high energy
+      // to low, the within-group scatter stays on the lhs (matrix-free) and
+      // every other group's scatter goes to the rhs, from its latest cached
+      // scalar flux. With downscatter only the group system is block lower
       // triangular, so one forward sweep is exact and there is no outer
-      // iteration - that arrives with upscatter
+      // iteration.
+      //
+      // With upscatter, g_up is the first group anything upscatters INTO (the
+      // smallest g_to of a nonzero Sigma_s[g_from][g_to], g_from > g_to, in any
+      // material). The groups above it see no upscatter, so the first sweep
+      // solves them once and for all; the thermal block g_up .. G-1 is then
+      // swept again and again - the outer iteration - until the estimated
+      // error left in its scalar flux is small (-outer_rtol, -outer_max_it; the
+      // estimate is at the test below). A thermal group's rhs
+      // takes every other group's flux: this sweep's above it, the last
+      // sweep's below it, and zero in the first sweep (cached before it).
+      // From the second sweep on each thermal group's KSP starts from its own
+      // psi of the last sweep, which is why the driver keeps one psi per
+      // group. Every inner solve still stops on the KSP's own residual test
       //
       // One solver per pmat: without -precon_ref_shift that is one for the
       // whole sweep, with it one per bin. A solver owns its KSP, its composite
@@ -672,94 +770,185 @@ int main(int argc, char **args) {
       // the mode costs - and each one is created lazily, the first time a group
       // that uses it comes round
       // ~~~~~~~~~~~~~
+      PetscInt g_up = n_groups;
+      for (PetscInt m = 0; m < spec.materials.n_materials(); m++) {
+         for (PetscInt g_from = 0; g_from < n_groups; g_from++) {
+            for (PetscInt g_to = 0; g_to < g_from; g_to++) {
+               if (spec.materials.sigma_s_host()[(m * n_groups + g_from) * n_groups + g_to] != (PetscScalar)0.0) \
+                  g_up = PetscMin(g_up, g_to);
+            }
+         }
+      }
+      const PetscBool upscatter = (PetscBool)(g_up < n_groups);
+      // The first sweep reads every thermal group below the one being solved
+      // before that group has been solved: cache a zero flux for each, through
+      // the same call that caches a solved one (psi is zero until solved)
+      if (upscatter) {
+         for (PetscInt g = g_up; g < n_groups; g++) {
+            PetscCall(VecSet(psi[g], 0.0));
+            PetscCall(group_source->set_scalar_flux(g, psi[g], nullptr, nullptr));
+         }
+      }
+
       std::vector<TransportSolver> solvers(precon_ref_shift ? ref_shift.n_bins() : 1);
       std::vector<PetscBool> solver_created(solvers.size(), PETSC_FALSE);
-      for (PetscInt g = 0; g < n_groups; g++) {
+      for (PetscInt outer = 0; ; outer++) {
 
-         // Point the terms at this group and refill the values. No
-         // re-preallocation - the sparsity is the discretisation's, not the
-         // group's. Under -matfree_removal there is nothing to refill: both
-         // re-pointed terms are matrix-free and read their xsections straight
-         // through, so the pointer swaps are the whole per-group update
-         PetscCall(op.set_group(xs, g));
-         if (!matfree_removal) PetscCall(op.assemble());
-         // The diffusion operator is built from the same two xsections, so it
-         // is refilled here rather than in TransportSolver::refresh() - the
-         // solver has no idea which group is being solved
-         if (precon_dsa) PetscCall(dsa.set_group(xs.sigma_t(g), xs.sigma_s(g, g)));
-
-         // Rhs: zero, then the per-face inflow onto the Dirichlet rows (the
-         // per-row value the backend computed at create - the winning face's
-         // inflow, windowed), the per-material external source over the non-BC
-         // rows, and everything downscattered out of the groups already
-         // solved. A reflective row's rhs is zero - UboltZeroReflectRows
-         // enforces that contract regardless of what the fills above wrote
-         // (add_transfer skips every BC row on its own)
-         PetscCall(VecSet(b, 0.0));
-         PetscCall(UboltFillInflow(disc->boundary_info(), b));
-         PetscCall(group_source->add_external(g, b));
-         PetscCall(UboltZeroReflectRows(disc->boundary_info(), b));
-         for (PetscInt g_from = 0; g_from < g; g_from++) PetscCall(group_source->add_transfer(g_from, g, b));
-
-         // Diagonally scale this group's assembled operator and rhs - AFTER
-         // the rhs is complete, and BEFORE the solver sees the matrix, so the
-         // removal shell caches the scaled blocks (create and refresh both
-         // read them off the assembled matrix)
-         if (diag_scale) {
-            PetscCall(MatGetDiagonal(op.assembled_mat(), diag_vec));
-            PetscCall(VecReciprocal(diag_vec));
-            PetscCall(MatDiagonalScale(op.assembled_mat(), diag_vec, PETSC_NULLPTR));
-            PetscCall(VecPointwiseMult(b, diag_vec, b));
+         // Sweeps after the first: warm start every thermal group from its own
+         // last psi. Every solver a thermal group uses exists by now, and a
+         // solver only fast groups use is never called again
+         if (outer == 1) {
+            for (size_t s = 0; s < solvers.size(); s++) {
+               if (solver_created[s]) PetscCall(KSPSetInitialGuessNonzero(solvers[s].ksp(), PETSC_TRUE));
+            }
          }
+         // The thermal block's change over this sweep, global sums of squares
+         PetscReal change_sq = 0.0, norm_sq = 0.0;
+         PetscInt sweep_its = 0;
 
-         // The shell only exists once something has been assembled. Pmat is
-         // this group's reference-shifted copy if there are any, the
-         // streaming-only copy if one was built, and otherwise the assembled
-         // matrix - which under -matfree_removal is streaming only in its own
-         // right
-         const PetscInt bin = precon_ref_shift ? ref_shift.bin_of_group(g) : 0;
-         TransportSolver &solver = solvers[bin];
-         if (!solver_created[bin]) {
-            Mat pmat = precon_ref_shift ? ref_shift.pmat(bin) : \
-               (streaming_mat ? streaming_mat : op.assembled_mat());
-            PetscCall(solver.create(PETSC_COMM_WORLD, op, pmat, precon_dsa ? &dsa : nullptr, \
-               precon_block_scale));
-            solver_created[bin] = PETSC_TRUE;
+         for (PetscInt g = (outer == 0 ? 0 : g_up); g < n_groups; g++) {
+
+            // Point the terms at this group and refill the values. No
+            // re-preallocation - the sparsity is the discretisation's, not the
+            // group's. Under -matfree_removal there is nothing to refill: both
+            // re-pointed terms are matrix-free and read their xsections straight
+            // through, so the pointer swaps are the whole per-group update
+            PetscCall(op.set_group(xs, g));
+            if (!matfree_removal) PetscCall(op.assemble());
+            // The diffusion operator is built from the same two xsections, so it
+            // is refilled here rather than in TransportSolver::refresh() - the
+            // solver has no idea which group is being solved
+            if (precon_dsa) PetscCall(dsa.set_group(xs.sigma_t(g), xs.sigma_s(g, g)));
+
+            // Rhs: zero, then the per-face inflow onto the Dirichlet rows (the
+            // per-row value the backend computed at create - the winning face's
+            // inflow, windowed), the per-material external source over the non-BC
+            // rows, and the transfer out of the other groups. A reflective row's
+            // rhs is zero - UboltZeroReflectRows enforces that contract
+            // regardless of what the fills above wrote (add_transfer skips every
+            // BC row on its own). A group above g_up only takes the groups above
+            // it, all solved already; a thermal group takes every other group
+            PetscCall(VecSet(b, 0.0));
+            PetscCall(UboltFillInflow(disc->boundary_info(), b));
+            PetscCall(group_source->add_external(g, b));
+            PetscCall(UboltZeroReflectRows(disc->boundary_info(), b));
+            const PetscInt g_from_end = (g >= g_up) ? n_groups : g;
+            for (PetscInt g_from = 0; g_from < g_from_end; g_from++) {
+               if (g_from != g) PetscCall(group_source->add_transfer(g_from, g, b));
+            }
+
+            // Diagonally scale this group's assembled operator and rhs - AFTER
+            // the rhs is complete, and BEFORE the solver sees the matrix, so the
+            // removal shell caches the scaled blocks (create and refresh both
+            // read them off the assembled matrix)
+            if (diag_scale) {
+               PetscCall(MatGetDiagonal(op.assembled_mat(), diag_vec));
+               PetscCall(VecReciprocal(diag_vec));
+               PetscCall(MatDiagonalScale(op.assembled_mat(), diag_vec, PETSC_NULLPTR));
+               PetscCall(VecPointwiseMult(b, diag_vec, b));
+            }
+
+            // The shell only exists once something has been assembled. Pmat is
+            // this group's reference-shifted copy if there are any, the
+            // streaming-only copy if one was built, and otherwise the assembled
+            // matrix - which under -matfree_removal is streaming only in its own
+            // right
+            const PetscInt bin = precon_ref_shift ? ref_shift.bin_of_group(g) : 0;
+            TransportSolver &solver = solvers[bin];
+            if (!solver_created[bin]) {
+               Mat pmat = precon_ref_shift ? ref_shift.pmat(bin) : \
+                  (streaming_mat ? streaming_mat : op.assembled_mat());
+               PetscCall(solver.create(PETSC_COMM_WORLD, op, pmat, precon_dsa ? &dsa : nullptr, \
+                  precon_block_scale));
+               solver_created[bin] = PETSC_TRUE;
+               // Under upscatter: the tighter inner default unless -ksp_rtol was
+               // given, then refuse an outer tolerance the inner solves cannot
+               // resolve (see -outer_rtol's parse). Never without upscatter, which
+               // keeps PETSc's default and its single sweep bitwise
+               if (upscatter) {
+                  PetscReal inner_rtol = 0.0;
+                  if (!have_ksp_rtol) PetscCall(KSPSetTolerances(solver.ksp(), 1e-10, PETSC_CURRENT, \
+                     PETSC_CURRENT, PETSC_CURRENT));
+                  PetscCall(KSPGetTolerances(solver.ksp(), &inner_rtol, NULL, NULL, NULL));
+                  PetscCheck(outer_rtol >= inner_rtol, PETSC_COMM_WORLD, PETSC_ERR_ARG_INCOMP, \
+                     "-outer_rtol %g is below the inner KSP rtol %g: a warm-started inner solve whose " \
+                     "rhs moves by less than its rtol takes no iterations, so the scalar flux stops " \
+                     "moving and the outer iteration would converge falsely. Raise -outer_rtol or " \
+                     "lower -ksp_rtol", (double)outer_rtol, (double)inner_rtol);
+               }
+            }
+            // sigma_t changed under the removal preconditioner
+            else PetscCall(solver.refresh());
+
+            PetscCall(solver.solve(b, psi[g]));
+            reason = solver.converged_reason();
+            if (reason <= 0) break;
+            PetscInt its = 0;
+            PetscCall(KSPGetIterationNumber(solver.ksp(), &its));
+            sweep_its += its;
+
+            // This group's scalar flux is fixed for this sweep, and every group
+            // it scatters into reads it. Integrate once here rather than once
+            // per target - and over the thermal block, measure how far it moved
+            const PetscBool measure = (PetscBool)(g >= g_up);
+            PetscCall(group_source->set_scalar_flux(g, psi[g], measure ? &change_sq : nullptr, \
+               measure ? &norm_sq : nullptr));
          }
-         // sigma_t changed under the removal preconditioner
-         else PetscCall(solver.refresh());
+         if (reason <= 0 || !upscatter) break;
 
-         PetscCall(solver.solve(b, psi[g]));
-         reason = solver.converged_reason();
-         if (reason <= 0) break;
-
-         // This group's scalar flux is fixed now, and every group below it
-         // scatters from it. Integrate once here rather than once per target
-         PetscCall(group_source->set_scalar_flux(g, psi[g]));
+         // The outer convergence test. The change, ||phi_new - phi_old|| /
+         // ||phi_new|| over the thermal block (the sums are already global),
+         // measures the step, not the error: with the sweep contracting the
+         // error by a factor rho, the error left is about
+         //   change * rho / (1 - rho)
+         // which for a slow thermal block (rho ~ 0.85) is ~6x the change. rho is
+         // estimated as the ratio of successive changes. The first sweep's change
+         // is measured against the zero it started from (it is 1) and says
+         // nothing, so the first ratio is sweep 3's change over sweep 2's. The
+         // test stops when the estimate is below -outer_rtol; never on the
+         // estimate while there is none yet or while rho >= 1 (not contracting,
+         // or noise); always on a change of exactly zero
+         outer_its = outer + 1;
+         const PetscReal change = norm_sq > 0.0 ? PetscSqrtReal(change_sq / norm_sq) : PetscSqrtReal(change_sq);
+         const PetscBool have_rho = (PetscBool)(outer >= 2 && outer_change > 0.0);
+         const PetscReal rho = have_rho ? change / outer_change : 0.0;
+         outer_change = change;
+         outer_err_est = (have_rho && rho < 1.0) ? change * rho / (1.0 - rho) : PETSC_INFINITY;
+         if (have_rho) {
+            PetscCall(PetscFPrintf(PETSC_COMM_WORLD, stderr, "outer %" PetscInt_FMT ": groups %" PetscInt_FMT \
+               "-%" PetscInt_FMT ", scalar flux change %.3e, rho %.3f, error estimate %.3e, %" PetscInt_FMT \
+               " inner iterations\n", outer_its, g_up, n_groups - 1, (double)change, (double)rho, \
+               (double)outer_err_est, sweep_its));
+         } else {
+            PetscCall(PetscFPrintf(PETSC_COMM_WORLD, stderr, "outer %" PetscInt_FMT ": groups %" PetscInt_FMT \
+               "-%" PetscInt_FMT ", scalar flux change %.3e, no rho yet, %" PetscInt_FMT " inner iterations\n", \
+               outer_its, outer == 0 ? (PetscInt)0 : g_up, n_groups - 1, (double)change, sweep_its));
+         }
+         if (change == 0.0 || outer_err_est < outer_rtol) break;
+         if (outer_its >= outer_max_it) {
+            outer_ok = PETSC_FALSE;
+            break;
+         }
       }
 
       // The infinite-medium check: uniform source, uniform xsections and no
       // boundary to leak through leave nothing for the streaming term to do,
       // so the exact discrete solution is constant in every cell and angle -
       // to solver tolerance, not discretisation error (at DG1: the constant on
-      // basis 0 and zero slope on the rest). Per group, by forward
-      // substitution down the sweep:
-      //   psi_g = (Source_g / sum_weights + sum_{g'<g} Sigma_s[g'][g] psi_g')
-      //           / (Sigma_t[g] - Sigma_s[g][g])
+      // basis 0 and zero slope on the rest). The per-group constants psi_g
+      // solve the G x G group system (InfMediumConstants)
+      //   (Sigma_t[g] - Sigma_s[g][g]) psi_g - sum_{g' != g} Sigma_s[g'][g] psi_g'
+      //      = Source_g / sum_weights
       // which is 1 / (sigma_t - sigma_s) for the single-group Source 2.0
       // slab files (sum_weights is 2 in 1D) and
-      // 1 / (sum_weights (sigma_t - sigma_s)) for the Source 1.0 box ones
-      if (check_inf_medium && reason > 0) {
-         std::vector<PetscScalar> expected(n_groups, 0.0);
+      // 1 / (sum_weights (sigma_t - sigma_s)) for the Source 1.0 box ones.
+      // With downscatter only it is lower triangular - forward substitution
+      // down the sweep - and with upscatter it is what the outer iteration
+      // converges to
+      if (check_inf_medium && reason > 0 && outer_ok) {
+         std::vector<PetscScalar> expected;
+         PetscCall(InfMediumConstants(spec.materials, bg, quad->sum_weights(), expected));
          for (PetscInt g = 0; g < n_groups; g++) {
-            PetscScalar coupled = spec.materials.source_host()[bg * n_groups + g] / quad->sum_weights();
-            for (PetscInt g_from = 0; g_from < g; g_from++) {
-               coupled += spec.materials.sigma_s_host()[(bg * n_groups + g_from) * n_groups + g] \
-                  * expected[g_from];
-            }
-            expected[g] = coupled / (spec.materials.sigma_t_host()[bg * n_groups + g] \
-               - spec.materials.sigma_s_host()[(bg * n_groups + g) * n_groups + g]);
-
             // A vacuum face's per-ordinate inflow has to be that constant, or
             // the constant is not the solution and the comparison is meaningless
             for (PetscInt f = 1; f <= 2 * spec.dimension; f++) {
@@ -778,14 +967,15 @@ int main(int argc, char **args) {
          }
       }
 
-      // Only a full sweep leaves every group's flux worth looking at. Each file
+      // Only a full sweep (and, with upscatter, a converged outer iteration)
+      // leaves every group's flux worth looking at. Each file
       // carries that group's scalar flux plus the two group-dependent inputs
       // that produced it - sigma_t and the external source - so the file says
       // what was solved without going back to the problem definition. A
       // single-group problem writes the filename as given, multigroup suffixes
       // _g<g> before the extension (the last dot of the file NAME, not of a
       // directory)
-      if (!flux_vtk.empty() && reason > 0) {
+      if (!flux_vtk.empty() && reason > 0 && outer_ok) {
          const char *slash = strrchr(flux_vtk.c_str(), '/');
          const char *dot = strrchr(slash ? slash + 1 : flux_vtk.c_str(), '.');
          const size_t base_len = dot ? (size_t)(dot - flux_vtk.c_str()) : flux_vtk.size();
@@ -833,6 +1023,12 @@ int main(int argc, char **args) {
    // stderr so they don't pollute the -ksp_monitor output the baselines in
    // tests/baselines are captured from
    if (reason <= 0) PetscCall(PetscFPrintf(PETSC_COMM_WORLD, stderr, "KSP did not converge: %s\n", KSPConvergedReasons[reason]));
+   // Every inner solve converged but the upscatter outer iteration ran out of
+   // sweeps (-outer_max_it) before the scalar flux settled to -outer_rtol
+   if (!outer_ok) PetscCall(PetscFPrintf(PETSC_COMM_WORLD, stderr, "outer iteration did not converge: " \
+      "scalar flux change %g, error estimate %g (inf: no contracting rho yet) after %" PetscInt_FMT \
+      " sweeps, against -outer_rtol %g\n", (double)outer_change, (double)outer_err_est, outer_its, \
+      (double)outer_rtol));
 
    // Print what the infinite-medium check measured, so a run drifting towards
    // failure is visible before it fails
@@ -857,5 +1053,5 @@ int main(int argc, char **args) {
       "tolerance 1e-12 - %s\n", (double)ref_shift_err, ref_shift_ok ? "pass" : "FAIL"));
 
    PetscCall(PetscFinalize());
-   return (reason > 0 && inf_medium_ok && matfree_ok && ref_shift_ok) ? 0 : 1;
+   return (reason > 0 && outer_ok && inf_medium_ok && matfree_ok && ref_shift_ok) ? 0 : 1;
 }

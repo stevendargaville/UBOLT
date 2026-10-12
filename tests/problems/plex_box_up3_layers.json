@@ -1,0 +1,30 @@
+{
+ "_comment": "The unstructured DG0 twin of box_up3_layers.json: the same 20x20 quad box, materials (materials/up3_layers.json, 3 groups with upscatter), paint, S2 and vacuum faces, only \"type\": \"unstructured\" added. Pins the upscatter outer iteration on the plex backend.",
+ "dimension": 2,
+ "mesh": {
+  "type": "unstructured",
+  "n_cells": [20, 20],
+  "lengths": [2.0, 2.0]
+ },
+ "sn_order": 2,
+ "materials": "materials/up3_layers.json",
+ "regions": {
+  "background": 0,
+  "paint": [
+   {
+    "material": "moderator",
+    "box": [1.0, 2.0, 0.0, 2.0]
+   },
+   {
+    "material": "moderator",
+    "box": [0.0, 2.0, 1.5, 2.0]
+   }
+  ]
+ },
+ "boundary_conditions": {
+  "left": "vacuum",
+  "right": "vacuum",
+  "bottom": "vacuum",
+  "top": "vacuum"
+ }
+}
