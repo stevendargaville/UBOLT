@@ -1,0 +1,23 @@
+{
+ "_comment": "1D slab, 3 groups with upscatter (materials/up3_layers.json): the sourced material with a moderator painted over its right half, vacuum (zero inflow) at both ends. Pins the upscatter outer iteration's sweep count and the per-group inner counts.",
+ "dimension": 1,
+ "mesh": {
+  "n_cells": [400],
+  "lengths": [4.0]
+ },
+ "sn_order": 4,
+ "materials": "materials/up3_layers.json",
+ "regions": {
+  "background": 0,
+  "paint": [
+   {
+    "material": "moderator",
+    "interval": [2.0, 4.0]
+   }
+  ]
+ },
+ "boundary_conditions": {
+  "left": "vacuum",
+  "right": "vacuum"
+ }
+}

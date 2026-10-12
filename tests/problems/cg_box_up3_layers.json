@@ -1,0 +1,31 @@
+{
+ "_comment": "The CG-SUPG twin of box_up3_layers.json (and of the DG0 plex_box_up3_layers.json): the same 20x20 quad box, materials (materials/up3_layers.json, 3 groups with upscatter), paint, S2 and vacuum faces, as mesh.discretisation cg_supg (zeta 0.5). Pins the upscatter outer iteration through GroupTransferCG.",
+ "dimension": 2,
+ "mesh": {
+  "type": "unstructured",
+  "discretisation": "cg_supg",
+  "n_cells": [20, 20],
+  "lengths": [2.0, 2.0]
+ },
+ "sn_order": 2,
+ "materials": "materials/up3_layers.json",
+ "regions": {
+  "background": 0,
+  "paint": [
+   {
+    "material": "moderator",
+    "box": [1.0, 2.0, 0.0, 2.0]
+   },
+   {
+    "material": "moderator",
+    "box": [0.0, 2.0, 1.5, 2.0]
+   }
+  ]
+ },
+ "boundary_conditions": {
+  "left": "vacuum",
+  "right": "vacuum",
+  "bottom": "vacuum",
+  "top": "vacuum"
+ }
+}

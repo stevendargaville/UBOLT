@@ -1,0 +1,28 @@
+{
+ "_comment": "3 groups with upscatter from group 2 into group 1 (thermal block 1-2, group 0 solved once): a sourced, moderately scattering material and a source-free, strongly scattering, strongly upscattering one (a moderator). For the upscatter outer-iteration regression recipes.",
+ "n_groups": 3,
+ "materials": [
+  {
+   "id": 0,
+   "name": "source",
+   "Sigma_t": [1.0, 1.5, 2.0],
+   "Sigma_s": [
+    [0.5, 0.25, 0.0],
+    [0.0, 1.0, 0.375],
+    [0.0, 0.25, 1.5]
+   ],
+   "Source": [1.0, 0.5, 0.0]
+  },
+  {
+   "id": 1,
+   "name": "moderator",
+   "Sigma_t": [2.0, 3.0, 4.0],
+   "Sigma_s": [
+    [1.25, 0.625, 0.0625],
+    [0.0, 2.0, 0.875],
+    [0.0, 0.75, 3.125]
+   ],
+   "Source": [0.0, 0.0, 0.0]
+  }
+ ]
+}

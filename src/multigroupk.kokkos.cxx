@@ -223,14 +223,46 @@ PetscErrorCode GroupTransfer::add_external(PetscInt g, Vec b) const
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-PetscErrorCode GroupTransfer::set_scalar_flux(PetscInt g, Vec psi_g)
+// cache = fresh, summing |fresh - cache|^2 and |fresh|^2 over the nodes on the
+// way. A copy, so the cached values are bit for bit the integral's
+static void OverwriteMeasured(PetscScalar2DKokkosView fresh_d, PetscScalar2DKokkosView cache_d, \
+   PetscInt local_nodes, PetscReal *change_sq, PetscReal *norm_sq)
+{
+   Kokkos::parallel_reduce(
+      Kokkos::RangePolicy<>(PetscGetKokkosExecutionSpace(), 0, local_nodes), \
+      KOKKOS_LAMBDA(PetscInt i, PetscReal &change, PetscReal &norm) {
+
+         const PetscScalar diff = fresh_d(i, 0) - cache_d(i, 0);
+         change += PetscRealPart(diff * PetscConj(diff));
+         norm += PetscRealPart(fresh_d(i, 0) * PetscConj(fresh_d(i, 0)));
+         cache_d(i, 0) = fresh_d(i, 0);
+      }, *change_sq, *norm_sq);
+}
+
+PetscErrorCode GroupTransfer::set_scalar_flux(PetscInt g, Vec psi_g, PetscReal *change_sq, PetscReal *norm_sq)
 {
    PetscFunctionBeginUser;
 
    PetscCheck(g >= 0 && g < (PetscInt)phi_.size(), PETSC_COMM_SELF, PETSC_ERR_ARG_OUTOFRANGE, \
       "group %" PetscInt_FMT " out of range, n_groups is %" PetscInt_FMT, g, (PetscInt)phi_.size());
+   PetscCheck((change_sq == nullptr) == (norm_sq == nullptr), PETSC_COMM_SELF, PETSC_ERR_ARG_NULL, \
+      "set_scalar_flux measures the change and the norm together: pass both or neither");
 
-   PetscCall(UboltAngularIntegral(psi_g, n_angles_, w_d_, phi_[g]));
+   if (!change_sq) {
+      PetscCall(UboltAngularIntegral(psi_g, n_angles_, w_d_, phi_[g]));
+   } else {
+      // Integrate into the scratch, then overwrite the cache from it. The
+      // nodes are this rank's own (the rows of psi_g are owned), so the local
+      // sums add up across ranks with nothing counted twice. The reduction
+      // into host scalars waits for the kernel
+      PetscReal sums[2] = {0.0, 0.0};
+      PetscCall(UboltAngularIntegral(psi_g, n_angles_, w_d_, scalar_flux_d_));
+      OverwriteMeasured(scalar_flux_d_, phi_[g], local_nodes_, &sums[0], &sums[1]);
+      PetscCallMPI(MPIU_Allreduce(MPI_IN_PLACE, sums, 2, MPIU_REAL, MPIU_SUM, \
+         PetscObjectComm((PetscObject)psi_g)));
+      *change_sq += sums[0];
+      *norm_sq += sums[1];
+   }
    phi_set_[g] = PETSC_TRUE;
 
    PetscFunctionReturn(PETSC_SUCCESS);

@@ -1,0 +1,29 @@
+{
+ "_comment": "2D box, 3 groups with upscatter (materials/up3_layers.json): the sourced material with a moderator painted over its right half and its top strip, vacuum (zero inflow) on every face. Pins the upscatter outer iteration's sweep count; plex_box_up3_layers.json and cg_box_up3_layers.json are its DG0 and CG-SUPG twins.",
+ "dimension": 2,
+ "mesh": {
+  "n_cells": [20, 20],
+  "lengths": [2.0, 2.0]
+ },
+ "sn_order": 2,
+ "materials": "materials/up3_layers.json",
+ "regions": {
+  "background": 0,
+  "paint": [
+   {
+    "material": "moderator",
+    "box": [1.0, 2.0, 0.0, 2.0]
+   },
+   {
+    "material": "moderator",
+    "box": [0.0, 2.0, 1.5, 2.0]
+   }
+  ]
+ },
+ "boundary_conditions": {
+  "left": "vacuum",
+  "right": "vacuum",
+  "bottom": "vacuum",
+  "top": "vacuum"
+ }
+}

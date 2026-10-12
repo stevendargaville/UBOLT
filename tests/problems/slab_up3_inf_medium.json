@@ -1,0 +1,29 @@
+{
+ "_comment": "1D slab, 3 groups with upscatter (group 2 into group 1, so groups 1-2 are the thermal block the outer iteration sweeps and group 0 is solved once), all faces reflective with absorption in every group: the exact discrete solution is the per-group constant of the 3x3 infinite-medium group system, checked by -check_inf_medium. Each thermal group scatters half of what it does not self-scatter into the other, which makes the infinite-medium sweep contract the error by 0.25 per sweep.",
+ "dimension": 1,
+ "mesh": {
+  "n_cells": [200],
+  "lengths": [1.0]
+ },
+ "sn_order": 4,
+ "materials": {
+  "n_groups": 3,
+  "materials": [
+   {
+    "id": 0,
+    "name": "up3",
+    "Sigma_t": [1.0, 2.0, 3.0],
+    "Sigma_s": [
+     [0.5, 0.25, 0.125],
+     [0.0, 1.0, 0.5],
+     [0.0, 0.5, 2.0]
+    ],
+    "Source": [2.0, 1.0, 0.5]
+   }
+  ]
+ },
+ "boundary_conditions": {
+  "left": "reflect",
+  "right": "reflect"
+ }
+}

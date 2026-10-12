@@ -100,6 +100,8 @@ endif
 	./transportk -problem problems/slab_mg4_t05.json -check_matfree -ksp_max_it 6
 	@echo "Check the reference-shifted pmat covering both group ratios exactly (the full-pmat count)"
 	./transportk -problem problems/slab_mg4_t05.json -matfree_removal -precon_ref_shift -precon_ref_k 2 -ksp_max_it 6
+	@echo "Check 1D slab, 3 groups with upscatter: the outer iteration against the infinite-medium solution"
+	./transportk -problem problems/slab_up3_inf_medium.json -check_inf_medium -ksp_rtol 1e-12 -outer_rtol 1e-11 -ksp_max_it 12 -outer_max_it 20
 	@echo "Check 2D box against the closed form and a reference matrix"
 	./verify_2dk
 	@echo "Check 2D box streaming/removal + matrix-free scatter with AIRG"
@@ -827,6 +829,36 @@ endif
 	./transportk -problem problems/cg_slab_saaf_ls_void.json -diag_scale -ksp_max_it 4
 	@echo "Test the thin/thick slab benchmark, CG-SUPG"
 	./transportk -problem problems/cg_slab_thin_thick.json -ksp_max_it 4
+#
+# Upscatter: the outer iteration (block Gauss-Seidel over the thermal groups,
+# see transportk). -ksp_max_it pins the max over every inner solve of every
+# sweep (the first sweep's, from a zero guess; later sweeps warm start) and
+# -outer_max_it the number of sweeps, the first included - running out of
+# sweeps fails the run. The *_inf_medium files are the exact oracle: the
+# per-group constants of the G x G infinite-medium group system, so they run
+# with tight inner and outer tolerances (the outer change cannot be resolved
+# below the inner rtol). The *_up3_layers files are heterogeneous regressions
+# at the default tolerances (-outer_rtol = 10x the inner rtol)
+	@echo "Test 1D slab, upscatter, matrix-free removal against the infinite-medium solution"
+	./transportk -problem problems/slab_up3_inf_medium.json -matfree_removal -check_inf_medium -ksp_rtol 1e-12 -outer_rtol 1e-11 -ksp_max_it 8 -outer_max_it 20
+	@echo "Test 2D box, upscatter into every group, against the infinite-medium solution"
+	./transportk -problem problems/box_up2_inf_medium.json -check_inf_medium -ksp_rtol 1e-12 -outer_rtol 1e-11 -ksp_max_it 12 -outer_max_it 27
+	@echo "Test 2D box, upscatter into every group, with the DSA correction against the infinite-medium solution"
+	./transportk -problem problems/box_up2_inf_medium.json -precon_dsa -check_inf_medium -ksp_rtol 1e-12 -outer_rtol 1e-11 -ksp_max_it 9 -outer_max_it 27
+	@echo "Test 2D unstructured quad box, CG-SUPG, upscatter against the infinite-medium solution"
+	./transportk -problem problems/cg_box_up2_inf_medium.json -check_inf_medium -ksp_rtol 1e-12 -outer_rtol 1e-11 -ksp_max_it 14 -outer_max_it 27
+	@echo "Test 1D slab, three groups with upscatter, a moderator painted over half the slab"
+	./transportk -problem problems/slab_up3_layers.json -ksp_max_it 9 -outer_max_it 16
+	@echo "Test 1D slab, three groups with upscatter, with the DSA correction"
+	./transportk -problem problems/slab_up3_layers.json -precon_dsa -ksp_max_it 4 -outer_max_it 16
+	@echo "Test 2D box, three groups with upscatter, a painted moderator"
+	./transportk -problem problems/box_up3_layers.json -ksp_max_it 8 -outer_max_it 8
+	@echo "Test 2D box, three groups with upscatter, reference-shifted pmats (one solver per bin, each warm started)"
+	./transportk -problem problems/box_up3_layers.json -matfree_removal -precon_ref_shift -ksp_max_it 9 -outer_max_it 8
+	@echo "Test 2D unstructured quad box, DG0, three groups with upscatter (the twin of box_up3_layers)"
+	./transportk -problem problems/plex_box_up3_layers.json -ksp_max_it 8 -outer_max_it 8
+	@echo "Test 2D unstructured quad box, CG-SUPG, three groups with upscatter"
+	./transportk -problem problems/cg_box_up3_layers.json -ksp_max_it 8 -outer_max_it 9
 
 # ~~~~~~~~~~~
 # ~~~~~~~~~~~
@@ -1163,6 +1195,23 @@ ifeq ($(PETSC_HAVE_TETMESHER),1)
 endif
 	@echo "Test the thin/thick slab benchmark, CG-SUPG, in parallel"
 	$(MPIEXEC) -n 2 ./transportk -problem problems/cg_slab_thin_thick.json -ksp_max_it 4
+#
+# Upscatter in parallel: the outer convergence measure is a global norm, so the
+# sweep counts match serial
+	@echo "Test 1D slab, upscatter against the infinite-medium solution in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/slab_up3_inf_medium.json -check_inf_medium -ksp_rtol 1e-12 -outer_rtol 1e-11 -ksp_max_it 12 -outer_max_it 20
+	@echo "Test 2D box, upscatter into every group, against the infinite-medium solution in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/box_up2_inf_medium.json -check_inf_medium -ksp_rtol 1e-12 -outer_rtol 1e-11 -ksp_max_it 12 -outer_max_it 27
+	@echo "Test 2D unstructured quad box, CG-SUPG, upscatter against the infinite-medium solution in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/cg_box_up2_inf_medium.json -check_inf_medium -ksp_rtol 1e-12 -outer_rtol 1e-11 -ksp_max_it 13 -outer_max_it 27
+	@echo "Test 1D slab, three groups with upscatter in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/slab_up3_layers.json -ksp_max_it 9 -outer_max_it 16
+	@echo "Test 2D box, three groups with upscatter in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/box_up3_layers.json -ksp_max_it 8 -outer_max_it 8
+	@echo "Test 2D unstructured quad box, DG0, three groups with upscatter in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_box_up3_layers.json -ksp_max_it 8 -outer_max_it 8
+	@echo "Test 2D unstructured quad box, CG-SUPG, three groups with upscatter in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/cg_box_up3_layers.json -ksp_max_it 8 -outer_max_it 9
 
 # ~~~~~~~~~~~
 # ~~~~~~~~~~~

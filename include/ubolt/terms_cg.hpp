@@ -100,7 +100,7 @@ public:
    PetscErrorCode create(const PhaseSpace &ps, const UnstructuredCG &disc, const AngularQuadrature &quad, \
       const GroupXSections &xs, const MaterialSpec &mats, const PetscIntKokkosView &mat_id_d);
    PetscErrorCode add_external(PetscInt g, Vec b) const override;
-   PetscErrorCode set_scalar_flux(PetscInt g, Vec psi_g) override;
+   PetscErrorCode set_scalar_flux(PetscInt g, Vec psi_g, PetscReal *change_sq, PetscReal *norm_sq) override;
    PetscErrorCode add_transfer(PetscInt g_from, PetscInt g_to, Vec b) const override;
    PetscErrorCode destroy();
 private:
@@ -117,6 +117,9 @@ private:
    Vec phi_global_ = NULL;
    // Per group, the nodal scalar flux over the LOCAL vertices
    std::vector<Vec> phi_;
+   // Per group, the same flux over the OWNED vertices: what a measured
+   // set_scalar_flux compares against, so a shared vertex counts once
+   std::vector<Vec> phi_owned_;
    std::vector<PetscBool> phi_set_;
 };
 
