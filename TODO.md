@@ -9,11 +9,17 @@ This file is what is open. The finished phases' narratives, every postscript, th
 notes and the pre-restructure "Current state" paragraph are in `docs/dev/history.md`,
 verbatim; "Where the notes live" at the end maps the names code comments use onto it.
 
-## Current state (updated 2026-09-28)
+## Current state (updated 2026-10-12)
 
 ### Next up
-- Extensions the refactor's seams now make local (not scheduled): upscatter (an outer
-  iteration over `GroupSource::add_transfer` + a norm), a time-derivative term
+- Upscatter is in (Oct 2026): the driver's group sweep repeats over the thermal groups
+  (from the first group anything upscatters into) as a block Gauss-Seidel outer
+  iteration, warm-starting each group's KSP from its last psi and stopping on the
+  relative scalar-flux change (`-outer_rtol`, default 10x the inner rtol;
+  `-outer_max_it`). Downscatter-only problems are bitwise unchanged. Not done: any
+  acceleration of the outer iteration (two-grid / grey diffusion), which a slowly
+  converging thermal block would want - see docs/architecture.md, the group sweep.
+- Extensions the refactor's seams now make local (not scheduled): a time-derivative term
   (`OperatorTerm` with a diagonal half and a rhs half), Pn/anisotropic scatter (widen
   `AngularQuadrature::w_d` plus a moment-to-discrete matrix), a new direction set (a
   subclass calling `set_weights` + `set_directions`) - see docs/architecture.md, "new
@@ -147,7 +153,7 @@ Done (1a-pre, 1a, 1b), then the Phase 1 postscript (negative-angle upwind sign).
 
 ### Phase 2 — Multigroup with sparsity reuse
 Done. Deferred out of it (carried into Phase 7 below): upscatter + the outer iteration it
-needs, and promoting the group loop into a MultigroupSolver. Spatially varying xsections
+needs (done Oct 2026), and promoting the group loop into a MultigroupSolver. Spatially varying xsections
 landed Aug 2026 (the per-region materials postscript).
 
 ### Phase 3 — DMDA adoption (behavior-preserving)
@@ -203,10 +209,13 @@ two CG items under Next up, and:
       G contiguous (local_cells, 1) arrays, so the whole `sum_g' sigma_s(g',g) phi(g')`
       contraction could become one batched kernel — a real gemm per cell if the xsections
       were spatially constant, a batched one as they are. Only worth it at large G.
-- [ ] Upscatter + the outer iteration it needs (deferred out of Phase 2). With downscatter
-      only the group system is block lower triangular and one forward sweep is exact;
-      upscatter will need `GroupTransfer`'s scalar-flux validity flag relaxed, since it
-      wants the previous iterate's flux.
+- [x] Upscatter + the outer iteration it needs (deferred out of Phase 2; done Oct 2026).
+      Block Gauss-Seidel over the thermal groups in `tests/transportk`, the cache
+      zero-initialised through `set_scalar_flux` (so the validity flag stays) and the
+      change measured while it is overwritten. Checked against the G x G
+      infinite-medium constants (`-check_inf_medium`, 1D/2D/CG) and pinned on painted
+      1D/2D/DG0/CG problems (`-outer_max_it` alongside `-ksp_max_it`). Open: acceleration
+      of the outer iteration (a grey / two-grid diffusion correction).
 - [ ] Promote the group loop out of `tests/transportk` into a MultigroupSolver - wait for
       a second sweep strategy (deferred out of Phase 2; the driver keeps it until then).
 

@@ -31,7 +31,8 @@ this way (this file describes only what the code does now).
 7. **`TransportSolver`**: KSP + the composite preconditioner, optionally with a
    caller-owned `DSAPrecon` and, under `-precon_ref_shift`, one solver per
    `RefShiftPmats` bin.
-8. **Group sweep** (in the driver): per group, re-point, refill, build the rhs, solve.
+8. **Group sweep** (in the driver): per group, re-point, refill, build the rhs, solve;
+   with upscatter, repeated over the thermal groups as an outer iteration.
 9. **Output**: `UboltWriteScalarFluxVTK` per group.
 
 Everything after step 3 takes the `Discretisation` / `AngularQuadrature` bases, except the
@@ -351,22 +352,47 @@ Groups are ordered high energy (0) to low. The driver's sweep, per group g:
    matrix is group-independent (`-matfree_removal`: streaming only, assembled once);
    `dsa.set_group(...)` if there is a DSA.
 2. Rhs: `VecSet(b, 0)`, `UboltFillInflow`, `GroupSource::add_external(g, b)`,
-   `UboltZeroReflectRows`, then `add_transfer(g_from, g, b)` for every solved
-   `g_from < g`.
+   `UboltZeroReflectRows`, then `add_transfer(g_from, g, b)`: for every `g_from < g`
+   above the thermal block, for every `g_from != g` inside it (below).
 3. Pick the solver (one, or the group's ref-shift bin); `create` it the first time,
    otherwise `refresh()` (the removal stage re-reads its blocks).
-4. `solve`, then `GroupSource::set_scalar_flux(g, psi_g)`: integrate once per solved
+4. `solve`, then `GroupSource::set_scalar_flux(g, psi_g, ...)`: integrate once per solved
    group (CG keeps the nodal flux owned + overlap, one halo exchange per group).
 
 With downscatter only the group system is block lower triangular and one forward sweep
 is exact. `GroupXSections` tables are LayoutRight with the group slowest, so a group
 slice is a contiguous per-cell view the single-group terms take unchanged.
 
+**Upscatter: the outer iteration.** `g_up` is the first group anything upscatters INTO
+(the smallest `g_to` of a nonzero `Sigma_s[g_from][g_to]`, `g_from > g_to`, in any
+material, read off the host tables). The groups above it see no upscatter, so the first
+sweep solves them once. The thermal block `g_up .. G-1` is then swept again until its
+scalar flux settles - block Gauss-Seidel with stored angular fluxes:
+
+- Before the first sweep every thermal group caches a zero flux (`set_scalar_flux` of
+  its zeroed psi), so the first sweep's upscatter reads zero and `add_transfer`'s
+  "was this group's flux ever set" check still holds. A thermal group's rhs takes every
+  other group's latest cached flux: this sweep's above it, the last sweep's below it.
+- From the second sweep each thermal group's KSP starts from its own psi of the last
+  sweep (`KSPSetInitialGuessNonzero`), which is why the driver keeps one psi Vec per
+  group. Every inner solve still stops on its own residual test; nothing stops it on a
+  count or on the flux change.
+- Convergence is measured while the cache is overwritten: `set_scalar_flux(g, psi_g,
+  &change_sq, &norm_sq)` accumulates the GLOBAL `||phi_new - phi_old||^2` and
+  `||phi_new||^2` (over owned nodes; `GroupTransferCG` over owned vertices, of which it
+  keeps a per-group copy). The outer iteration stops when `sqrt(change_sq / norm_sq)`
+  over the thermal block is below `-outer_rtol` (default 10x the inner rtol: each inner
+  solve leaves an error of that order, so a smaller change is not resolvable) and fails
+  the run after `-outer_max_it` sweeps (default 1000). One line per sweep goes to
+  stderr. With no upscatter (`g_up == G`) none of this runs: the single sweep, its rhs
+  and its zero initial guess are bitwise what they were before the outer iteration.
+- The change measures progress, not the error: the error is roughly
+  `change * rho / (1 - rho)`, rho the sweep's contraction, so a slowly converging
+  thermal block (rho near 1) wants a tighter `-outer_rtol`. Nothing accelerates the
+  outer iteration (no two-grid / grey diffusion correction).
+
 What each extension would touch:
 
-- **Upscatter**: `add_transfer` already works for any (g_from, g_to) and the cached
-  fluxes survive across sweeps. Missing: an outer iteration in the driver and a
-  convergence measure (e.g. the flux change computed while overwriting the cache).
 - **Time dependence (implicit Euler)**: the lhs `1/(v dt)` is a diagonal term like
   `RemovalTerm` (with `set_group`, `has_diagonal`/`add_diagonal`), or folded into an
   effective `sigma_t`; the rhs `psi_old/(v dt)` is a `GroupSource`-style contribution,

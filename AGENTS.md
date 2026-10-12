@@ -6,7 +6,8 @@ GPU-native: the streaming/removal operator is assembled on device through PETSc'
 (MATAIJKOKKOS), the scattering is applied matrix-free (MatShell + Kokkos), and the preconditioner is a
 PCComposite of a removal block-Jacobi shell + PCAIR on the streaming (+ an optional DSA stage).
 Energy groups are solved one at a time in a group Gauss-Seidel sweep: one preallocated matrix, a
-values-only refill per group. The long-form design is `docs/architecture.md`.
+values-only refill per group; with upscatter the sweep over the thermal groups repeats as an outer
+iteration. The long-form design is `docs/architecture.md`.
 
 ## Build
 1. `export PETSC_DIR=... PETSC_ARCH=...` (both required; tool shells may not inherit them). PFLARE is
@@ -23,10 +24,11 @@ values-only refill per group. The long-form design is `docs/architecture.md`.
    prerequisites, never flags.
 
 ## Test
-- `make check` (fast, 18 runs) < `make tests_short` < `make tests`, from the top directory. Run once and
+- `make check` (fast, 19 runs) < `make tests_short` < `make tests`, from the top directory. Run once and
   trust `make`'s exit code: 0 is a pass. Do not re-run to grep the output.
-- Solve recipes pin `-ksp_max_it` in `tests/Makefile`, the only source of truth for pins
-  (`docs/dev/iteration_counts.md` mirrors it). Pin the local opt arch's count; CI flags an arch needing +1.
+- Solve recipes pin `-ksp_max_it` (upscatter recipes also `-outer_max_it`) in `tests/Makefile`, the only
+  source of truth for pins (`docs/dev/iteration_counts.md` mirrors it). Pin the local opt arch's count; CI
+  flags an arch needing +1.
 - Every `verify_*` driver fails on numerical tolerances instead of an iteration count.
 - `tests/baselines/` (24 logs, 1D) are never regenerated casually. A numerically inert change proves it
   with the bitwise-capture procedure in `docs/dev/testing.md`.
@@ -82,7 +84,7 @@ values-only refill per group. The long-form design is `docs/architecture.md`.
 | `operator_term.hpp` | `OperatorTerm` | `assembled`/`matrix_free`, `set_group`, `assemble_add`/`apply_add`, `has_diagonal`/`add_diagonal` |
 | `terms.hpp` | `StructuredStreamingTerm` (`StreamingTerm1D`/`2D`/`3D`), `StreamingTermDG0`/`DG1`, `RemovalTerm`, `ScatteringTerm` | DG streaming takes no quadrature (reads the backend's); `RemovalTerm` can be matrix-free |
 | `terms_cg.hpp` | `SUPGTermCG`, `ScatteringTermCG`, `GroupTransferCG`, `UboltFillSourceCG` | CG siblings of the generic terms: SUPG couples a vertex's star and depends on angle |
-| `multigroup.hpp` | `GroupXSections`, `GroupSource`, `GroupTransfer` | Tables LayoutRight, group slowest; `GroupSource` = `add_external` / `set_scalar_flux` / `add_transfer` |
+| `multigroup.hpp` | `GroupXSections`, `GroupSource`, `GroupTransfer` | Tables LayoutRight, group slowest; `GroupSource` = `add_external` / `set_scalar_flux` (optionally measuring the change, for the outer iteration) / `add_transfer` |
 | `transport_operator.hpp` | `TransportOperator` | Assembled terms in one matrix + matrix-free terms behind a MatShell; `set_group`, `assemble`, `diagonal` |
 | `transport_solver.hpp` | `TransportSolver` | KSP + composite PC (0 removal, 1 PCAIR, 2 DSA); `refresh()` after each group's refill |
 | `block_inverse.hpp` | `ElementBlockInverse` | Inverse (cell, angle) n_basis blocks off the device CSR; the removal stage and `-precon_block_scale` |
@@ -95,7 +97,7 @@ values-only refill per group. The long-form design is `docs/architecture.md`.
 ## Codebase map: `tests/`
 | Path | What it is / checks |
 |---|---|
-| `transportk.kokkos.cxx` | THE solve driver and the library's example: any backend, dimension and group count; physics from `-problem`; `BuildBackend` is its one per-backend switch; the group sweep lives here |
+| `transportk.kokkos.cxx` | THE solve driver and the library's example: any backend, dimension and group count; physics from `-problem`; `BuildBackend` is its one per-backend switch; the group sweep and the upscatter outer iteration live here |
 | `verify_quadraturek` | The generated quadrature sets against their defining moment conditions |
 | `verify_2dk`, `verify_3dk` | Structured discretisation: pure-streaming closed form, shell vs reference matrix, library rhs, `A^T = P A P` under ghost-flux |
 | `verify_plexk` | DG0 plex vs its structured twin to rounding, DG1 order/identities, `ElementBlockInverse`, plex DSA incl. voids; serial and -n 2/4 (index of checks in its header) |
@@ -121,7 +123,9 @@ values-only refill per group. The long-form design is `docs/architecture.md`.
 | `-precon_block_scale` | PCAIR on `D^{-1} pmat` (`ElementBlockInverse`) | Default ON on DG and CG, OFF structured |
 | `-diag_scale` | Diagonally scale the assembled operator and rhs | Refused with `-matfree_removal` and `-precon_dsa` |
 | `-supg_zeta <z>` | Override `mesh.supg_zeta` | cg_supg only |
-| `-check_inf_medium` | Solution vs the infinite-medium constant (1e-9) | Box mesh, no paint, absorption, unwindowed vacuum faces |
+| `-outer_rtol <r>` | Upscatter outer iteration: stop when the thermal block's relative scalar-flux change per sweep is below r | Default 10x the inner `-ksp_rtol`; warns if set below it; unused without upscatter |
+| `-outer_max_it <n>` | Upscatter outer iteration: the most sweeps (the first included); running out fails the run | Default 1000; unused without upscatter |
+| `-check_inf_medium` | Solution vs the infinite-medium constants, the G x G group system (1e-9) | Box mesh, no paint, absorption, unwindowed vacuum faces |
 | `-check_matfree` | Matrix-free vs assembled removal: matvec (1e-13), diagonal (exact) | Refused on cg_supg |
 | `-check_ref_shift` | Each shifted pmat vs its group's full operator (1e-12) | Needs `-precon_ref_shift` |
 | `-flux_vtk <file>` | Overrides `output.flux_vtk`; multigroup writes `_g<g>` per group | Extension checked against the backend before the solve |

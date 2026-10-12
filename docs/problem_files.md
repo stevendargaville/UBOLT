@@ -14,6 +14,7 @@ the same file solves identically under any solver configuration, and the
 solver is configured the way PETSc always is: `-ksp_*`, `-pc_*`,
 `-sub_1_pc_air_*` and friends on the command line, plus the driver's own
 strategy and verification knobs (`-precon_stream`, `-precon_block_scale`, `-diag_scale`,
+`-outer_rtol` / `-outer_max_it` for the upscatter outer iteration,
 `-check_inf_medium`, and `-flux_vtk` as an output override). Nothing physical
 can be set from the command line, so a problem file names a reproducible
 problem, full stop.
@@ -396,7 +397,7 @@ Per material:
 | `id` | required; ids must be DENSE `0..n-1` - they are the `MaterialSpec` indices, because the tables reach device kernels |
 | `name` | optional string; lets regions reference the material by name |
 | `Sigma_t` | required, `[n_groups]`: the total xsection, including scattering. `0` is a VOID (give it a zero `Sigma_s` row too): the transport handles it as pure streaming, and `-precon_dsa` gives void cells a free-flight diffusion coefficient (or masks them out of its correction; see below) |
-| `Sigma_s` | required, `[n_groups][n_groups]` indexed `[from][to]`: row `g` is everything scattering OUT of group `g`; the diagonal is the within-group scatter that stays on the lhs. Groups are ordered high energy (0) to low. The driver's forward sweep consumes the upper triangle only - upscatter entries (below the diagonal) are silently unused until an outer iteration arrives |
+| `Sigma_s` | required, `[n_groups][n_groups]` indexed `[from][to]`: row `g` is everything scattering OUT of group `g`; the diagonal is the within-group scatter that stays on the lhs. Groups are ordered high energy (0) to low. Entries below the diagonal are upscatter: the driver then iterates the sweep over the thermal groups (from the first group anything upscatters into) until their scalar flux settles (`-outer_rtol`, `-outer_max_it`); with none, one forward sweep is exact |
 | `Source` | optional, `[n_groups]`: UBOLT's one extension - the external source as an isotropic, angle-integrated strength, shared over the ordinates as `Source / sum_weights` by `UboltFillSource`. Absent = zero (void) |
 | `Sigma_f`, `Nu`, `Chi` | accepted, ignored - UBOLT is a fixed-source solver today; these come back with a fission phase |
 

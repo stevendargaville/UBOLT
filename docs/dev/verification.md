@@ -135,7 +135,10 @@ check**: with every face reflective (or a vacuum face feeding in exactly the
 infinite-medium flux, see the ghost-flux section), a uniform source and uniform xsections, the exact
 discrete solution is constant in every cell and angle — no discretisation error, so
 `-check_inf_medium` compares against 1e-9 under `-ksp_rtol 1e-12` (lands at ~1e-13).
-The constant is per group, by forward substitution down the sweep:
+The constant is per group, the solution of the G x G infinite-medium group system
+`(Sigma_t[g] - Sigma_s[g][g]) psi_g - sum_{g' != g} Sigma_s[g'][g] psi_g' =
+Source_g / sum_weights` (Gaussian elimination on the host, `InfMediumConstants`). With
+downscatter only that is forward substitution down the sweep,
 `psi_g = (Source_g / sum_weights + sum_{g'<g} Sigma_s[g'][g] psi_g') /
 (Sigma_t[g] - Sigma_s[g][g])` — which is the retired `slab_1dk`'s
 `1 / (sigma_t - sigma_s)` for the Source 2.0 slab files (its VecSet source was per-angle
@@ -149,6 +152,26 @@ constants in the operator's kernel. Hence the all-reflect problem files carry ab
 (within-group `Sigma_s` 1.0 under `Sigma_t` 2.0 — `slab_inf_medium.json`,
 `box_50_inf_medium.json`), and the multigroup reflective file keeps the right face
 vacuum — the last group always has ratio 1 (no downscatter out of it).
+
+## Upscatter: the outer iteration against the infinite-medium oracle
+With upscatter the same oracle checks the whole outer iteration (the zero-cached first
+sweep, the every-other-group rhs, the warm starts, the global change norm): the
+constants are the G x G system above, now with entries above the diagonal, and the
+check refuses a singular one. The upscatter files are all-reflective (a vacuum face's
+inflow is one number for every group, which a multigroup constant cannot match):
+`slab_up3_inf_medium.json` (3 groups, upscatter 2 -> 1: group 0 solved once, an
+infinite-medium sweep contraction of 0.25), `box_up2_inf_medium.json` (2 groups,
+upscatter into group 0, so there is no fast group; 0.375) and its CG-SUPG twin
+`cg_box_up2_inf_medium.json` (`GroupTransferCG`'s owned-vertex change). They run with
+`-ksp_rtol 1e-12 -outer_rtol 1e-11` and land at ~1e-12 against 1e-9, serial and at -n 2,
+where the per-sweep changes agree with serial to three digits (the norm is global). An
+outer tolerance cannot usefully go below the inner rtol: at `-outer_rtol 1e-13` the last
+sweeps converge in 0-1 inner iterations and the change reads zero.
+
+The downscatter-only path is bitwise unchanged by the outer iteration (same single sweep,
+same rhs, zero initial guess; the measured `set_scalar_flux` is only called on thermal
+groups): `PETSC_OPTIONS=-ksp_monitor make tests_short` on main and on the change, opt
+arch, diffs clean on every pre-existing recipe (2026-10-12).
 
 ## Ghost-flux vacuum treatment
 `"vacuum_treatment": "ghost_flux"` (see `docs/problem_files.md`) changes only the
