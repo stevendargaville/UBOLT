@@ -163,10 +163,14 @@ inflow is one number for every group, which a multigroup constant cannot match):
 infinite-medium sweep contraction of 0.25), `box_up2_inf_medium.json` (2 groups,
 upscatter into group 0, so there is no fast group; 0.375) and its CG-SUPG twin
 `cg_box_up2_inf_medium.json` (`GroupTransferCG`'s owned-vertex change). They run with
-`-ksp_rtol 1e-12 -outer_rtol 1e-11` and land at ~1e-12 against 1e-9, serial and at -n 2,
-where the per-sweep changes agree with serial to three digits (the norm is global). An
-outer tolerance cannot usefully go below the inner rtol: at `-outer_rtol 1e-13` the last
-sweeps converge in 0-1 inner iterations and the change reads zero.
+`-ksp_rtol 1e-12 -outer_rtol 1e-11` and land at ~1e-11 or below against 1e-9, serial and
+at -n 2, where the per-sweep changes agree with serial to three digits (the norm is
+global). The outer test is on the error estimate change * rho / (1 - rho); the rho it
+estimates from successive changes matches the files' contractions (0.250 and 0.37).
+An outer tolerance cannot usefully go below the inner rtol: at `-outer_rtol 1e-13`
+(measured before the refusal existed) the last sweeps converged in 0-1 inner
+iterations and the change read zero - a false convergence, which is why the driver now
+refuses `-outer_rtol` below the effective inner rtol.
 
 The downscatter-only path is bitwise unchanged by the outer iteration (same single sweep,
 same rhs, zero initial guess; the measured `set_scalar_flux` is only called on thermal

@@ -28,8 +28,9 @@ this file used to carry went.
   without exceeding that max will not fail the recipe — the multigroup baselines below
   are what pin the per-group counts.
 - Upscatter recipes pin a second count: `-outer_max_it`, the number of sweeps the outer
-  iteration over the thermal groups takes to reach `-outer_rtol` (the first sweep
-  included; running out fails the run, like a non-converged inner solve). Their
+  iteration over the thermal groups takes to bring its error estimate,
+  change * rho / (1 - rho), below `-outer_rtol` (the first sweep included; never fewer
+  than 3; running out fails the run, like a non-converged inner solve). Their
   `-ksp_max_it` is the max over every inner solve of every sweep - in practice the first
   sweep's, since later sweeps warm start from the last sweep's psi and need fewer. Both
   are pinned on the local opt count like any other, and both are mirrored in

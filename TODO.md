@@ -14,9 +14,10 @@ verbatim; "Where the notes live" at the end maps the names code comments use ont
 ### Next up
 - Upscatter is in (Oct 2026): the driver's group sweep repeats over the thermal groups
   (from the first group anything upscatters into) as a block Gauss-Seidel outer
-  iteration, warm-starting each group's KSP from its last psi and stopping on the
-  relative scalar-flux change (`-outer_rtol`, default 10x the inner rtol;
-  `-outer_max_it`). Downscatter-only problems are bitwise unchanged. Not done: any
+  iteration, warm-starting each group's KSP from its last psi and stopping on an
+  error estimate, change * rho / (1 - rho) with rho from successive changes
+  (`-outer_rtol`, default 1e-8, refused below the inner rtol, which defaults to
+  1e-10 under upscatter; `-outer_max_it`). Downscatter-only problems are bitwise unchanged. Not done: any
   acceleration of the outer iteration (two-grid / grey diffusion), which a slowly
   converging thermal block would want - see docs/architecture.md, the group sweep.
 - Extensions the refactor's seams now make local (not scheduled): a time-derivative term
@@ -212,7 +213,8 @@ two CG items under Next up, and:
 - [x] Upscatter + the outer iteration it needs (deferred out of Phase 2; done Oct 2026).
       Block Gauss-Seidel over the thermal groups in `tests/transportk`, the cache
       zero-initialised through `set_scalar_flux` (so the validity flag stays) and the
-      change measured while it is overwritten. Checked against the G x G
+      change measured while it is overwritten; the stop is on the error estimate
+      change * rho / (1 - rho). Checked against the G x G
       infinite-medium constants (`-check_inf_medium`, 1D/2D/CG) and pinned on painted
       1D/2D/DG0/CG problems (`-outer_max_it` alongside `-ksp_max_it`). Open: acceleration
       of the outer iteration (a grey / two-grid diffusion correction).

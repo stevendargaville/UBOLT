@@ -380,16 +380,23 @@ scalar flux settles - block Gauss-Seidel with stored angular fluxes:
 - Convergence is measured while the cache is overwritten: `set_scalar_flux(g, psi_g,
   &change_sq, &norm_sq)` accumulates the GLOBAL `||phi_new - phi_old||^2` and
   `||phi_new||^2` (over owned nodes; `GroupTransferCG` over owned vertices, of which it
-  keeps a per-group copy). The outer iteration stops when `sqrt(change_sq / norm_sq)`
-  over the thermal block is below `-outer_rtol` (default 10x the inner rtol: each inner
-  solve leaves an error of that order, so a smaller change is not resolvable) and fails
-  the run after `-outer_max_it` sweeps (default 1000). One line per sweep goes to
-  stderr. With no upscatter (`g_up == G`) none of this runs: the single sweep, its rhs
-  and its zero initial guess are bitwise what they were before the outer iteration.
-- The change measures progress, not the error: the error is roughly
-  `change * rho / (1 - rho)`, rho the sweep's contraction, so a slowly converging
-  thermal block (rho near 1) wants a tighter `-outer_rtol`. Nothing accelerates the
-  outer iteration (no two-grid / grey diffusion correction).
+  keeps a per-group copy). The change, `sqrt(change_sq / norm_sq)` over the thermal
+  block, measures the step, not the error: with the sweep contracting the error by
+  rho, the error left is about `change * rho / (1 - rho)` (~6x the change at
+  rho = 0.85). rho is the ratio of successive changes; sweep 1's change is against
+  zero and meaningless, so the first estimate is at sweep 3. The outer iteration stops
+  when that estimate is below `-outer_rtol` (default 1e-8), never on it while rho >= 1
+  (not contracting, or noise), always on a change of exactly zero, and fails the run
+  after `-outer_max_it` sweeps (default 1000). One line per sweep goes to stderr
+  (change, rho, estimate, inner iterations).
+- Under upscatter the inner KSP rtol defaults to 1e-10 unless `-ksp_rtol` is given, and
+  an `-outer_rtol` below the effective inner rtol is refused: a warm-started inner solve
+  whose rhs moves by less than its rtol takes no iterations, phi stops moving and the
+  outer iteration would converge falsely. With no upscatter (`g_up == G`) none of this
+  runs: PETSc's default rtol, the single sweep, its rhs and its zero initial guess are
+  bitwise what they were before the outer iteration.
+- Nothing accelerates the outer iteration (no two-grid / grey diffusion correction), so
+  a thermal block with rho near 1 takes many sweeps.
 
 What each extension would touch:
 

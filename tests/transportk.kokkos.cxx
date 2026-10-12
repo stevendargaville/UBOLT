@@ -530,23 +530,24 @@ int main(int argc, char **args) {
    PetscCall(PetscOptionsGetString(NULL, NULL, "-flux_vtk", flux_vtk_cli, sizeof(flux_vtk_cli), \
       &have_flux_cli));
    // The upscatter outer iteration (see the sweep below): repeat the sweep over
-   // the thermal groups until the relative change of their scalar flux from one
-   // sweep to the next, ||phi_new - phi_old|| / ||phi_new||, drops below
-   // -outer_rtol. A problem without upscatter has no outer iteration and reads
+   // the thermal groups until the ESTIMATED error left in their scalar flux,
+   // relative to the flux, drops below -outer_rtol (the estimate is explained at
+   // the test). A problem without upscatter has no outer iteration and reads
    // neither option
    //
-   // Unset, -outer_rtol is 10x the inner KSP's rtol (read off the solver, so it
-   // follows -ksp_rtol). Every inner solve leaves an error of order rtol
-   // relative to its group's flux, so the sweep-to-sweep change cannot be
-   // resolved below that: a smaller outer tolerance would be decided by the
-   // inner solves' noise, not by the outer convergence. The factor 10 keeps the
-   // test clear of that floor. Set below the inner rtol it is accepted with a
-   // warning
-   PetscReal outer_rtol = 0.0;
-   PetscBool have_outer_rtol = PETSC_FALSE;
-   PetscCall(PetscOptionsGetReal(NULL, NULL, "-outer_rtol", &outer_rtol, &have_outer_rtol));
-   PetscCheck(!have_outer_rtol || outer_rtol > 0.0, PETSC_COMM_WORLD, PETSC_ERR_ARG_OUTOFRANGE, \
+   // Default 1e-8. Under upscatter the inner KSP's rtol also defaults tighter,
+   // to 1e-10, unless -ksp_rtol is given: every inner solve leaves an error of
+   // order its rtol, and with warm-started inner solves a sweep whose rhs moves
+   // by less than the inner rtol takes 0 iterations, so phi does not move and
+   // the outer test would see a false convergence. Hence -outer_rtol below the
+   // (effective) inner rtol is refused, and the defaults keep two decades
+   // between them. A problem without upscatter keeps PETSc's default rtol
+   PetscReal outer_rtol = 1e-8;
+   PetscCall(PetscOptionsGetReal(NULL, NULL, "-outer_rtol", &outer_rtol, NULL));
+   PetscCheck(outer_rtol > 0.0, PETSC_COMM_WORLD, PETSC_ERR_ARG_OUTOFRANGE, \
       "-outer_rtol must be positive, was given %g", (double)outer_rtol);
+   PetscBool have_ksp_rtol = PETSC_FALSE;
+   PetscCall(PetscOptionsHasName(NULL, NULL, "-ksp_rtol", &have_ksp_rtol));
    // The most sweeps over the thermal groups, the first one included. Running
    // out fails the run, like an inner solve that does not converge. Generous by
    // default: a strongly upscattering thermal block converges slowly (each
@@ -561,7 +562,7 @@ int main(int argc, char **args) {
    // True unless an outer iteration ran out of sweeps
    PetscBool outer_ok = PETSC_TRUE;
    PetscInt outer_its = 0;
-   PetscReal outer_change = 0.0;
+   PetscReal outer_change = 0.0, outer_err_est = 0.0;
    PetscReal inf_medium_err = 0.0;
    PetscReal matfree_err = 0.0, matfree_diag_err = 0.0;
    PetscReal ref_shift_err = 0.0;
@@ -754,8 +755,9 @@ int main(int argc, char **args) {
       // smallest g_to of a nonzero Sigma_s[g_from][g_to], g_from > g_to, in any
       // material). The groups above it see no upscatter, so the first sweep
       // solves them once and for all; the thermal block g_up .. G-1 is then
-      // swept again and again - the outer iteration - until its scalar flux
-      // stops changing (-outer_rtol, -outer_max_it). A thermal group's rhs
+      // swept again and again - the outer iteration - until the estimated
+      // error left in its scalar flux is small (-outer_rtol, -outer_max_it; the
+      // estimate is at the test below). A thermal group's rhs
       // takes every other group's flux: this sweep's above it, the last
       // sweep's below it, and zero in the first sweep (cached before it).
       // From the second sweep on each thermal group's KSP starts from its own
@@ -859,6 +861,21 @@ int main(int argc, char **args) {
                PetscCall(solver.create(PETSC_COMM_WORLD, op, pmat, precon_dsa ? &dsa : nullptr, \
                   precon_block_scale));
                solver_created[bin] = PETSC_TRUE;
+               // Under upscatter: the tighter inner default unless -ksp_rtol was
+               // given, then refuse an outer tolerance the inner solves cannot
+               // resolve (see -outer_rtol's parse). Never without upscatter, which
+               // keeps PETSc's default and its single sweep bitwise
+               if (upscatter) {
+                  PetscReal inner_rtol = 0.0;
+                  if (!have_ksp_rtol) PetscCall(KSPSetTolerances(solver.ksp(), 1e-10, PETSC_CURRENT, \
+                     PETSC_CURRENT, PETSC_CURRENT));
+                  PetscCall(KSPGetTolerances(solver.ksp(), &inner_rtol, NULL, NULL, NULL));
+                  PetscCheck(outer_rtol >= inner_rtol, PETSC_COMM_WORLD, PETSC_ERR_ARG_INCOMP, \
+                     "-outer_rtol %g is below the inner KSP rtol %g: a warm-started inner solve whose " \
+                     "rhs moves by less than its rtol takes no iterations, so the scalar flux stops " \
+                     "moving and the outer iteration would converge falsely. Raise -outer_rtol or " \
+                     "lower -ksp_rtol", (double)outer_rtol, (double)inner_rtol);
+               }
             }
             // sigma_t changed under the removal preconditioner
             else PetscCall(solver.refresh());
@@ -879,26 +896,35 @@ int main(int argc, char **args) {
          }
          if (reason <= 0 || !upscatter) break;
 
-         // The outer convergence test, on the relative change of the thermal
-         // block's scalar flux (the sums are already global). The first sweep
-         // measures against the zero it started from, so its change is 1
+         // The outer convergence test. The change, ||phi_new - phi_old|| /
+         // ||phi_new|| over the thermal block (the sums are already global),
+         // measures the step, not the error: with the sweep contracting the
+         // error by a factor rho, the error left is about
+         //   change * rho / (1 - rho)
+         // which for a slow thermal block (rho ~ 0.85) is ~6x the change. rho is
+         // estimated as the ratio of successive changes. The first sweep's change
+         // is measured against the zero it started from (it is 1) and says
+         // nothing, so the first ratio is sweep 3's change over sweep 2's. The
+         // test stops when the estimate is below -outer_rtol; never on the
+         // estimate while there is none yet or while rho >= 1 (not contracting,
+         // or noise); always on a change of exactly zero
          outer_its = outer + 1;
-         outer_change = norm_sq > 0.0 ? PetscSqrtReal(change_sq / norm_sq) : PetscSqrtReal(change_sq);
-         // The default tolerance, or the warning, against the inner rtol: every
-         // thermal group has a solver by now, all from the same options
-         if (outer == 0) {
-            PetscReal inner_rtol = 0.0;
-            const PetscInt bin = precon_ref_shift ? ref_shift.bin_of_group(g_up) : 0;
-            PetscCall(KSPGetTolerances(solvers[bin].ksp(), &inner_rtol, NULL, NULL, NULL));
-            if (!have_outer_rtol) outer_rtol = 10.0 * inner_rtol;
-            else if (outer_rtol < inner_rtol) PetscCall(PetscFPrintf(PETSC_COMM_WORLD, stderr, \
-               "warning: -outer_rtol %g is below the inner rtol %g, which bounds how far the " \
-               "scalar flux change can be resolved\n", (double)outer_rtol, (double)inner_rtol));
+         const PetscReal change = norm_sq > 0.0 ? PetscSqrtReal(change_sq / norm_sq) : PetscSqrtReal(change_sq);
+         const PetscBool have_rho = (PetscBool)(outer >= 2 && outer_change > 0.0);
+         const PetscReal rho = have_rho ? change / outer_change : 0.0;
+         outer_change = change;
+         outer_err_est = (have_rho && rho < 1.0) ? change * rho / (1.0 - rho) : PETSC_INFINITY;
+         if (have_rho) {
+            PetscCall(PetscFPrintf(PETSC_COMM_WORLD, stderr, "outer %" PetscInt_FMT ": groups %" PetscInt_FMT \
+               "-%" PetscInt_FMT ", scalar flux change %.3e, rho %.3f, error estimate %.3e, %" PetscInt_FMT \
+               " inner iterations\n", outer_its, g_up, n_groups - 1, (double)change, (double)rho, \
+               (double)outer_err_est, sweep_its));
+         } else {
+            PetscCall(PetscFPrintf(PETSC_COMM_WORLD, stderr, "outer %" PetscInt_FMT ": groups %" PetscInt_FMT \
+               "-%" PetscInt_FMT ", scalar flux change %.3e, no rho yet, %" PetscInt_FMT " inner iterations\n", \
+               outer_its, outer == 0 ? (PetscInt)0 : g_up, n_groups - 1, (double)change, sweep_its));
          }
-         PetscCall(PetscFPrintf(PETSC_COMM_WORLD, stderr, "outer %" PetscInt_FMT ": groups %" PetscInt_FMT \
-            "-%" PetscInt_FMT ", scalar flux change %.3e, %" PetscInt_FMT " inner iterations\n", outer_its, \
-            outer == 0 ? (PetscInt)0 : g_up, n_groups - 1, (double)outer_change, sweep_its));
-         if (outer_change < outer_rtol) break;
+         if (change == 0.0 || outer_err_est < outer_rtol) break;
          if (outer_its >= outer_max_it) {
             outer_ok = PETSC_FALSE;
             break;
@@ -1000,8 +1026,9 @@ int main(int argc, char **args) {
    // Every inner solve converged but the upscatter outer iteration ran out of
    // sweeps (-outer_max_it) before the scalar flux settled to -outer_rtol
    if (!outer_ok) PetscCall(PetscFPrintf(PETSC_COMM_WORLD, stderr, "outer iteration did not converge: " \
-      "scalar flux change %g after %" PetscInt_FMT " sweeps, against -outer_rtol %g\n", \
-      (double)outer_change, outer_its, (double)outer_rtol));
+      "scalar flux change %g, error estimate %g (inf: no contracting rho yet) after %" PetscInt_FMT \
+      " sweeps, against -outer_rtol %g\n", (double)outer_change, (double)outer_err_est, outer_its, \
+      (double)outer_rtol));
 
    // Print what the infinite-medium check measured, so a run drifting towards
    // failure is visible before it fails

@@ -123,7 +123,7 @@ iteration. The long-form design is `docs/architecture.md`.
 | `-precon_block_scale` | PCAIR on `D^{-1} pmat` (`ElementBlockInverse`) | Default ON on DG and CG, OFF structured |
 | `-diag_scale` | Diagonally scale the assembled operator and rhs | Refused with `-matfree_removal` and `-precon_dsa` |
 | `-supg_zeta <z>` | Override `mesh.supg_zeta` | cg_supg only |
-| `-outer_rtol <r>` | Upscatter outer iteration: stop when the thermal block's relative scalar-flux change per sweep is below r | Default 10x the inner `-ksp_rtol`; warns if set below it; unused without upscatter |
+| `-outer_rtol <r>` | Upscatter outer iteration: stop when the estimated relative error of the thermal scalar flux, change * rho / (1 - rho) (rho from successive changes, so never before sweep 3), is below r | Default 1e-8; refused below the inner rtol; under upscatter the inner rtol defaults to 1e-10 unless `-ksp_rtol` is given; unused without upscatter |
 | `-outer_max_it <n>` | Upscatter outer iteration: the most sweeps (the first included); running out fails the run | Default 1000; unused without upscatter |
 | `-check_inf_medium` | Solution vs the infinite-medium constants, the G x G group system (1e-9) | Box mesh, no paint, absorption, unwindowed vacuum faces |
 | `-check_matfree` | Matrix-free vs assembled removal: matvec (1e-13), diagonal (exact) | Refused on cg_supg |
