@@ -53,7 +53,7 @@ Not pins: `make baselines` captures these at `-ksp_max_it 200` and a refactor di
 | `slab_diffusive` |  | 23 | 23 | - | short |  |
 | `slab_diffusive` | `-precon_dsa` | 6 | 6 | - | short |  |
 | `slab_inf_medium` | `-check_inf_medium -ksp_rtol 1e-12` | 10 | 11 | - | short |  |
-| `slab_inf_medium` | `-matfree_removal -check_inf_medium -ksp_rtol 1e-12` | 19 | 26 | - | short |  |
+| `slab_inf_medium` | `-matfree_removal -check_inf_medium -ksp_rtol 1e-12` | 20 | 26 | - | short | np=1: local opt 19, the 64-bit CI image more |
 | `slab_inf_medium` | `-precon_dsa -check_inf_medium -ksp_rtol 1e-12` | 9 | 10 | - | short |  |
 | `slab_inf_medium_ghost` | `-check_inf_medium -ksp_rtol 1e-12` | 8 | 8 | - | short |  |
 | `slab_inf_medium_ghost` | `-matfree_removal -check_inf_medium -ksp_rtol 1e-12` | 18 | - | - | short | np=1: local opt 17, the 64-bit CI image 18 |
@@ -185,7 +185,7 @@ Not pins: `make baselines` captures these at `-ksp_max_it 200` and a refactor di
 | `cube_10_absorber` |  | 4 | 4 | - | short |  |
 | `cube_10_cold` |  | 4 | 4 | - | short |  |
 | `cube_10_identity` |  | 6 | - | 6 | short |  |
-| `cube_10_inf_medium` | `-check_inf_medium -ksp_rtol 1e-12` | 10 | 10 | - | short |  |
+| `cube_10_inf_medium` | `-check_inf_medium -ksp_rtol 1e-12` | 11 | 10 | - | short | np=1: local opt 10, the OpenMP CI image more |
 | `cube_10_inf_medium` | `-precon_dsa -check_inf_medium -ksp_rtol 1e-12` | 8 | 8 | - | short |  |
 | `cube_10_inf_medium_ghost` | `-check_inf_medium -ksp_rtol 1e-12` | 11 | 11 | - | short |  |
 | `cube_10_inf_medium_ghost` | `-matfree_removal -check_inf_medium -ksp_rtol 1e-12` | 22 | - | - | short |  |
@@ -233,7 +233,7 @@ Not pins: `make baselines` captures these at `-ksp_max_it 200` and a refactor di
 | `plex_box_up2_inf_medium` | `-check_inf_medium -ksp_rtol 1e-12 -outer_rtol 1e-11 -outer_store moments -outer_recon none` | 2 / 27 | 2 / 27 | - | short | upscatter, moments store |
 | `plex_box_up3_layers` |  | 11 / 16 | 11 / 16 | - | short | upscatter |
 | `plex_box_up3_layers` | `-outer_store moments` | 11 / 16 | 11 / 16 | - | short | upscatter, moments store |
-| `plex_box_void_channel` |  | 30 | - | - | short |  |
+| `plex_box_void_channel` |  | 31 | - | - | short | np=1: local opt 30, the opt CI image more |
 | `plex_box_void_channel` | `-matfree_removal -precon_ref_shift -precon_dsa` | 6 | 6 | - | short |  |
 | `plex_box_void_channel` | `-precon_dsa` | 6 | 6 | - | short |  |
 | `plex_box_void_channel` | `-precon_dsa -dsa_void_bridge 0` | 8 | - | - | short |  |

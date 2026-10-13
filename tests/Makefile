@@ -180,7 +180,7 @@ run_tests_short_serial:
 	@echo "Test 1D slab, reflective face with one MatSetValuesCOO per term"
 	./transportk -problem problems/slab_st2_reflect_left.json -ksp_max_it 8 -ubolt_coo_two_call
 	@echo "Test 1D slab, matrix-free removal against the infinite-medium solution (all faces reflective)"
-	./transportk -problem problems/slab_inf_medium.json -matfree_removal -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 19
+	./transportk -problem problems/slab_inf_medium.json -matfree_removal -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 20
 #
 # The ghost-flux vacuum treatment (the default since Sep 2026; these files
 # still say "vacuum_treatment": "ghost_flux" explicitly, the oracle is theirs).
@@ -460,7 +460,7 @@ run_tests_short_serial:
 	@echo "Test 3D cube with a void duct with the void-masked DSA correction"
 	./transportk -problem problems/cube_void_duct.json -precon_dsa -dsa_void_bridge 0 -ksp_max_it 7
 	@echo "Test 2D unstructured quad box with a void channel WITHOUT the DSA correction (the reference)"
-	./transportk -problem problems/plex_box_void_channel.json -ksp_max_it 30
+	./transportk -problem problems/plex_box_void_channel.json -ksp_max_it 31
 	@echo "Test 2D unstructured quad box with a void channel with the void-bridged DSA correction"
 	./transportk -problem problems/plex_box_void_channel.json -precon_dsa -ksp_max_it 6
 	@echo "Test 2D unstructured quad box with a void channel with the void-masked DSA correction"
@@ -570,7 +570,7 @@ run_tests_short_serial:
 	@echo "Test 3D cube, matrix-free removal against the assembled operator (reflective corner)"
 	./transportk -problem problems/cube_10_reflect_3faces.json -check_matfree -ksp_max_it 5
 	@echo "Test 3D cube, all faces reflective against the infinite-medium solution"
-	./transportk -problem problems/cube_10_inf_medium.json -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 10
+	./transportk -problem problems/cube_10_inf_medium.json -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 11
 	@echo "Test 3D cube, ghost-flux vacuum + reflective faces against the infinite-medium solution"
 	./transportk -problem problems/cube_10_inf_medium_ghost.json -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 11
 	@echo "Test 3D cube, ghost-flux vacuum + reflective faces, matrix-free removal against the infinite-medium solution"
