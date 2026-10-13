@@ -375,7 +375,7 @@ scalar flux settles - block Gauss-Seidel with stored angular fluxes:
   other group's latest cached flux: this sweep's above it, the last sweep's below it.
 - From the second sweep each thermal group's KSP starts from its own psi of the last
   sweep (`KSPSetInitialGuessNonzero`), which is why the driver keeps one psi Vec per
-  group. Every inner solve still stops on its own residual test (at the adaptive rtol
+  group (the default angular store; the moments store below keeps one in all). Every inner solve still stops on its own residual test (at the adaptive rtol
   below); nothing stops it on a count or on the flux change.
 - Convergence is measured while the cache is overwritten: `set_scalar_flux(g, psi_g,
   &change_sq, &norm_sq)` accumulates the GLOBAL `||phi_new - phi_old||^2` and
@@ -413,6 +413,71 @@ scalar flux settles - block Gauss-Seidel with stored angular fluxes:
   thermal rtol it used.
 - Nothing accelerates the outer iteration (no two-grid / grey diffusion correction), so
   a thermal block with rho near 1 takes many sweeps.
+
+**The moments store (`-outer_store moments`, 2026-10-13).** The stored angular fluxes are
+G psi-sized Vecs, and the groups only couple through their moments, so the driver can
+keep only each group's scalar flux phi_g and current J_g (`GroupTransfer::enable_current`:
+J = sum_a w_a Omega_a psi_a, its own gemm against `w_a Omega_a` next to phi's, so phi stays
+bitwise the single-moment integral) and ONE psi Vec that every group solve reuses, plus
+three psi-sized scratch Vecs for the reconstruction: G - 1 angular fluxes saved against G
+(local nodes x dimension) currents. `-outer_store angular` (the default) is the stored-psi
+iteration above, unchanged bitwise. A thermal solve in sweep k >= 1 starts from a psi
+RECONSTRUCTED from the group's last moments (`-outer_recon`, `Reconstruct` in transportk):
+
+- The seed is the P1 expansion `psi0 = phi / W + Omega_a . T^{-1} J`,
+  `T = sum_a w_a Omega_a Omega_a^T` (`GroupTransfer::expand_p1`; T^{-1} Omega_a is tabled
+  on the host once). Its phi and J are the cached ones exactly, since every quadrature
+  here integrates Omega to zero (checked at enable time). Per node, so DG1 works as DG0.
+- Then a plain Richardson iteration on L_g, the operator without its scatter
+  (`TransportOperator::unscattered_mat`: the assembled matrix plus every matrix-free term
+  that does not answer `OperatorTerm::is_scattering`, e.g. the removal under
+  `-matfree_removal`): `psi <- psi + P_L (c - L_g psi)` with
+  `c = b_g + M sigma_s(g->g) phi_g` (the within-group scatter frozen at the cached phi,
+  `add_transfer(g, g, .)` onto the solve's own rhs, so under `-diag_scale` the system the
+  solve solves). P_L is stage 0 (removal) then stage 1 (AIR, or the block-scaled shell)
+  of the solver's own composite, with the residual between them formed with the TRUE
+  L_g (`TransportSolver::apply_removal_streaming`). Not the pmat: with a streaming-only
+  or reference-shifted pmat the pmat residual makes P_L approximate the inverse of
+  streaming without removal and the iteration diverges. No DSA stage, no Krylov, and no
+  hierarchy of its own: it sets up and uses exactly the hierarchy the solve uses.
+- `-outer_recon tol` (default) stops once `||c - L_g psi|| <= eta ||c||`, eta the rtol of
+  the solve it seeds (so the loose early sweeps of `-outer_inner_gamma` reconstruct
+  less), at most 40 steps; `none` is the P1 seed alone, `<m>` exactly m steps. The
+  Oct 2026 campaign measured that reconstructing to eta leaves GMRES the iterations it
+  needs from the stored psi, and further buys nothing.
+- The stall safeguard: every step forms its L residual anyway, and a trial iterate that
+  does not reduce it is dropped (never undone by subtraction: a diverging step's update
+  can be many orders larger than psi) and ends the reconstruction, so the guess is the
+  best iterate and never worse than the P1 seed, at the price of one V-cycle. That is
+  what makes it safe under SHARED hierarchies, where it converges slowly
+  (reference-shifted, density-scaled materials) or not at all (a streaming-only pmat:
+  every reconstruction stops on its first step). The per-sweep stderr line reports the
+  sweep's reconstruction V-cycles next to (never added to) its inner iterations, and the
+  run ends with the totals and how many solves stopped on the safeguard.
+- The answer is the angular store's because every inner solve still stops on its own
+  residual test - never on a count, never on the phi change (an isotropic guess has
+  exact moments, so a phi-change test stops falsely). One caveat measured: with a
+  streaming-only pmat under LEFT preconditioning that residual is the preconditioned one,
+  which from the P1 guesses does not track the true residual well enough (slab_up3_inf_medium:
+  125 sweeps against 19); right preconditioning, the repo's convention for that pmat,
+  matches the angular sweep count, and the driver says so on stderr.
+- Sweep 0 has no moments and starts from zero, as the angular store does, and the groups
+  above `g_up` are solved once, at the inner rtol, from zero: they never reconstruct.
+  Without upscatter there is no outer iteration, so the store only drops the per-group psi
+  and the solves are bitwise the angular ones.
+- `-check_inf_medium` takes each group's error right after its solve (the last one
+  stands), the same psi the angular store keeps, at the same 1e-9; `-flux_vtk` writes the
+  cached phi (`UboltWriteScalarFluxVTKFromPhi`), and the DG1 slope from its per-node
+  moments (`UnstructuredDG::scalar_flux_gradient_from_phi`) - identical files without
+  upscatter.
+- Refused on CG-SUPG: `GroupTransferCG`'s source and scatter carry the SUPG weight over a
+  vertex's star, tau per angle, which the per-node isotropic reconstruction would need
+  too. The moments pieces are `GroupTransfer` methods, not `GroupSource` ones, for that
+  reason.
+- Cost on the `*_up3_layers` regressions (local opt, deterministic counts; history,
+  "Upscatter: the moments store"): the reconstruction trades inner GMRES iterations for
+  V-cycles at the same sweep count - box 75 inner (angular) against 50 inner + 73
+  V-cycles (moments) and 181 inner (none); slab 185 against 148 + 123 and 414.
 
 What each extension would touch:
 

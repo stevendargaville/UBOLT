@@ -180,6 +180,33 @@ every solve at the inner rtol (2026-10-13). `box_up2_inf_medium` also runs with 
 bitwise the behaviour before the adaptive rtol: every upscatter recipe of `tests_short`
 at `-outer_inner_gamma 0` gives `-ksp_monitor` output identical to main before it.
 
+The moments store (`-outer_store moments`, 2026-10-13: phi and J kept per group, a thermal
+solve starting from the P1 expansion refined by Richardson on L_g) is checked by the same
+oracle, plus the plex twins `plex_box_up2_inf_medium.json` (DG0) and
+`plex_box_up2_inf_medium_dg1.json` (DG1, the per-node reconstruction with zero slope). At
+`-outer_recon tol` and `none`, serial and -n 2, every file lands on the angular store's
+sweep count (19 slab, 27 box, plex DG0 and DG1) at ~1e-11 (slab) and ~1e-12 (box, plex)
+against 1e-9 - the check reads each group's psi right after its solve, the last one
+standing, which is the psi the angular store keeps, so the check means the same. The
+shared-hierarchy cases converge to the same answer: `box_up2_inf_medium` on a
+streaming-only pmat (`-precon_stream -ksp_pc_side right`, every reconstruction stopping
+on the stall safeguard, 1.1e-12) and reference-shifted pmats on the slab oracle (no
+safeguard stop, 1.5e-11); on `box_up3_layers` with reference-shifted pmats the moments
+store's `-flux_vtk` agrees with the angular store's to 3.3e-10 relative (the fast group
+bitwise), within `-outer_rtol 1e-8`, and on `plex_box_up3_layers_dg1` its scalar flux and
+slope agree to 2.2e-10 (the slope taken from the cached per-node moments). Two things
+measured on the way, both now guarded:
+- Undoing a refused reconstruction step by subtraction (psi + dz - dz) is not exact when
+  the step diverges (dz many orders larger than psi, a streaming-only pmat): the guess
+  became rounding noise and the slab oracle failed at 2e-3 after 92 sweeps. The trial
+  iterate now goes into a scratch Vec and is simply dropped.
+- A streaming-only pmat under LEFT preconditioning stops each solve on the preconditioned
+  residual, which from the moments store's guesses does not track the true residual:
+  `slab_up3_inf_medium` took 125 sweeps (1.2e-10) against the angular store's 19, at
+  `-outer_recon none` too. Right preconditioning gives 19 again; the driver prints a note.
+Without upscatter the moments store solves bitwise as the angular one (`slab_mg4_t05`,
+`plex_box_50_st2_dg1`: identical `-ksp_monitor` and byte-identical `-flux_vtk` files).
+
 The downscatter-only path is bitwise unchanged by the outer iteration (same single sweep,
 same rhs, zero initial guess; the measured `set_scalar_flux` is only called on thermal
 groups): `PETSC_OPTIONS=-ksp_monitor make tests_short` on main and on the change, opt

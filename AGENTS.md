@@ -7,7 +7,8 @@ GPU-native: the streaming/removal operator is assembled on device through PETSc'
 PCComposite of a removal block-Jacobi shell + PCAIR on the streaming (+ an optional DSA stage).
 Energy groups are solved one at a time in a group Gauss-Seidel sweep: one preallocated matrix, a
 values-only refill per group; with upscatter the sweep over the thermal groups repeats as an outer
-iteration. The long-form design is `docs/architecture.md`.
+iteration, keeping per group either the angular flux or (`-outer_store moments`) only its scalar flux and
+current. The long-form design is `docs/architecture.md`.
 
 ## Build
 1. `export PETSC_DIR=... PETSC_ARCH=...` (both required; tool shells may not inherit them). PFLARE is
@@ -79,18 +80,18 @@ iteration. The long-form design is `docs/architecture.md`.
 | `discretisation.hpp` | `Discretisation` base + `BoundaryRows` | The backend contract (5 steps in the header); `set_uniform_pattern`/`set_pattern` take a `BoundaryRows` |
 | `structured_fd_1d/2d/3d.hpp` | `StructuredFD1D`/`2D`/`3D` on a DMDA | 2D/3D share `src/structured_fd_commonk.hpp` (`CheckDALayout<DIM>`); 3D bottom/top are Z |
 | `plex_discretisation.hpp` | `PlexDiscretisation` | Mesh creation + painting shared by both plex backends; plumbing in `src/plex_commonk.hpp` (`CheckPlexStratumLayout`) |
-| `unstructured_dg.hpp` | `UnstructuredDG`, DG0/DG1 upwind on DMPlex | Two-stage: `create_mesh`, `PhaseSpace::create` off `n_global_cells()`, then `create(ps, quad, bcs, order)`; DG1 is ghost-flux only |
+| `unstructured_dg.hpp` | `UnstructuredDG`, DG0/DG1 upwind on DMPlex | Two-stage: `create_mesh`, `PhaseSpace::create` off `n_global_cells()`, then `create(ps, quad, bcs, order)`; DG1 is ghost-flux only; `scalar_flux_gradient` (from psi, or `_from_phi`) |
 | `unstructured_cg.hpp` | `UnstructuredCG`, P1/Q1 CG-SUPG | Rows per VERTEX, xsections per local ELEMENT; weak BCs, no BC rows; `add_weighted_load` |
-| `operator_term.hpp` | `OperatorTerm` | `assembled`/`matrix_free`, `set_group`, `assemble_add`/`apply_add`, `has_diagonal`/`add_diagonal` |
+| `operator_term.hpp` | `OperatorTerm` | `assembled`/`matrix_free`, `set_group`, `assemble_add`/`apply_add`, `has_diagonal`/`add_diagonal`, `is_scattering` (default no: a term is part of L unless it says so; a scatter must be matrix-free) |
 | `terms.hpp` | `StructuredStreamingTerm` (`StreamingTerm1D`/`2D`/`3D`), `StreamingTermDG0`/`DG1`, `RemovalTerm`, `ScatteringTerm` | DG streaming takes no quadrature (reads the backend's); `RemovalTerm` can be matrix-free |
 | `terms_cg.hpp` | `SUPGTermCG`, `ScatteringTermCG`, `GroupTransferCG`, `UboltFillSourceCG` | CG siblings of the generic terms: SUPG couples a vertex's star and depends on angle |
-| `multigroup.hpp` | `GroupXSections`, `GroupSource`, `GroupTransfer` | Tables LayoutRight, group slowest; `GroupSource` = `add_external` / `set_scalar_flux` (optionally measuring the change, for the outer iteration) / `add_transfer` |
-| `transport_operator.hpp` | `TransportOperator` | Assembled terms in one matrix + matrix-free terms behind a MatShell; `set_group`, `assemble`, `diagonal` |
-| `transport_solver.hpp` | `TransportSolver` | KSP + composite PC (0 removal, 1 PCAIR, 2 DSA); `refresh()` after each group's refill |
+| `multigroup.hpp` | `GroupXSections`, `GroupSource`, `GroupTransfer` | Tables LayoutRight, group slowest; `GroupSource` = `add_external` / `set_scalar_flux` (optionally measuring the change, for the outer iteration) / `add_transfer`; `GroupTransfer` only: `enable_current` (cache J per group too), `expand_p1`, `scalar_flux(g)` - the moments store; CG has none |
+| `transport_operator.hpp` | `TransportOperator` | Assembled terms in one matrix + matrix-free terms behind a MatShell; `set_group`, `assemble`, `diagonal`; `unscattered_mat()` = L, every term but the scatter (a second shell) |
+| `transport_solver.hpp` | `TransportSolver` | KSP + composite PC (0 removal, 1 PCAIR, 2 DSA); `refresh()` after each group's refill; `apply_removal_streaming(L, r, y, work)` = stages 0 then 1 with the caller's L between them (consumes r) |
 | `block_inverse.hpp` | `ElementBlockInverse` | Inverse (cell, angle) n_basis blocks off the device CSR; the removal stage and `-precon_block_scale` |
 | `ref_shift.hpp` | `RefShiftPmats` | k pmats `L + alpha * D_ref` per void-support class; the driver keeps one solver per bin |
 | `dsa.hpp` | `DSAPrecon` | Caller-owned, `set_group()` per group; operators in `src/dsa_structuredk`, `dsa_plexk` (DG0+DG1), `dsa_cgk` behind private `DSAOperator` (`src/dsa_operatork.hpp`) |
-| `flux_output.hpp` | `UboltWriteScalarFluxVTK`, `UboltCellField` | One writer for every backend: `.vts`/`.vtr` on a DMDA, `.vtu` on a plex (CG writes point data) |
+| `flux_output.hpp` | `UboltWriteScalarFluxVTK`, `UboltWriteScalarFluxVTKFromPhi`, `UboltCellField` | One writer for every backend: `.vts`/`.vtr` on a DMDA, `.vtu` on a plex (CG writes point data); `FromPhi` takes an integrated (local_nodes, 1) flux |
 | `types.hpp` | Every Kokkos view typedef | Include first: it pulls in `petscvec_kokkos.hpp` |
 | `ubolt.hpp` | Umbrella header | Include before `<petscksp.h>` and friends |
 
@@ -126,13 +127,15 @@ iteration. The long-form design is `docs/architecture.md`.
 | `-outer_rtol <r>` | Upscatter outer iteration: stop when the estimated relative error of the thermal scalar flux, change * rho / (1 - rho) (rho from successive changes, so never before sweep 3), is below r | Default 1e-8; refused below the inner rtol; under upscatter the inner rtol defaults to 1e-10 unless `-ksp_rtol` is given; unused without upscatter |
 | `-outer_max_it <n>` | Upscatter outer iteration: the most sweeps (the first included); running out fails the run | Default 1000; unused without upscatter |
 | `-outer_inner_gamma <g>` | Upscatter outer iteration: adaptive inner rtol, a thermal solve in sweep k at max(inner rtol, g * change_{k-1}) (sweep 0: max(inner rtol, g)); stops only on a sweep at the inner rtol | Default 0.01; 0 = every solve at the inner rtol; refused outside [0, 1); groups above `g_up` always at the inner rtol; unused without upscatter |
-| `-check_inf_medium` | Solution vs the infinite-medium constants, the G x G group system (1e-9) | Box mesh, no paint, absorption, unwindowed vacuum faces |
+| `-outer_store angular\|moments` | What the outer iteration keeps per thermal group: its psi (default), or only phi and J with ONE psi Vec for every solve (+ 3 scratch), a sweep's thermal solve starting from a psi reconstructed from them | moments refused on cg_supg (SUPG-weighted source/scatter); without upscatter moments is bitwise angular; with a streaming-only pmat run `-ksp_pc_side right` |
+| `-outer_recon tol\|none\|<m>` | The moments store's reconstruction: the P1 guess from (phi, J), then Richardson on L_g (removal + AIR V-cycle, true L_g between, no DSA): to the seeded solve's rtol (tol, cap 40), none, or m steps; a step not reducing the L residual is dropped and ends it (stall safeguard) | Needs `-outer_store moments`; V-cycles and safeguard stops reported on stderr, separately from inner iterations |
+| `-check_inf_medium` | Solution vs the infinite-medium constants, the G x G group system (1e-9); each group's last solve | Box mesh, no paint, absorption, unwindowed vacuum faces |
 | `-check_matfree` | Matrix-free vs assembled removal: matvec (1e-13), diagonal (exact) | Refused on cg_supg |
 | `-check_ref_shift` | Each shifted pmat vs its group's full operator (1e-12) | Needs `-precon_ref_shift` |
 | `-flux_vtk <file>` | Overrides `output.flux_vtk`; multigroup writes `_g<g>` per group | Extension checked against the backend before the solve |
 | `-ubolt_coo_two_call` | Debug: one `MatSetValuesCOO` per term (read by `TransportOperator`) | Bitwise the same as the default |
 cg_supg refuses `-matfree_removal`, `-precon_stream`, `-precon_ref_shift` and `-check_matfree`: it has no
-group-independent streaming term (tau depends on sigma_t). PETSc options (`-ksp_*`, `-sub_1_pc_air_*`) pass through.
+group-independent streaming term (tau depends on sigma_t). It also refuses `-outer_store moments`. PETSc options (`-ksp_*`, `-sub_1_pc_air_*`) pass through.
 
 ## Where to read more
 - `TODO.md`: current state, open items, roadmap, where the research notes live.

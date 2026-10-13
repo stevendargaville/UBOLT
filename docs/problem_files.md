@@ -14,7 +14,7 @@ the same file solves identically under any solver configuration, and the
 solver is configured the way PETSc always is: `-ksp_*`, `-pc_*`,
 `-sub_1_pc_air_*` and friends on the command line, plus the driver's own
 strategy and verification knobs (`-precon_stream`, `-precon_block_scale`, `-diag_scale`,
-`-outer_rtol` / `-outer_max_it` / `-outer_inner_gamma` for the upscatter outer iteration,
+`-outer_rtol` / `-outer_max_it` / `-outer_inner_gamma` / `-outer_store` / `-outer_recon` for the upscatter outer iteration,
 `-check_inf_medium`, and `-flux_vtk` as an output override). Nothing physical
 can be set from the command line, so a problem file names a reproducible
 problem, full stop.
