@@ -15,7 +15,8 @@
 // Knobs: -precon_stream, -matfree_removal, -precon_ref_shift / -precon_ref_k,
 // -precon_dsa (+ the -dsa_ family, see DSAPrecon), -precon_block_scale,
 // -diag_scale, -supg_zeta, the upscatter outer iteration's -outer_rtol /
-// -outer_max_it / -outer_inner_gamma, and the verification ones, -check_inf_medium,
+// -outer_max_it / -outer_inner_gamma and its memory knobs -outer_store / -outer_recon,
+// and the verification ones, -check_inf_medium,
 // -check_matfree, -check_ref_shift, plus the -flux_vtk output override.
 //
 // Currently run with:
@@ -30,6 +31,7 @@
 #include <string>
 #include <vector>
 #include <cstring>
+#include <cstdlib>
 #include <utility>
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -270,6 +272,73 @@ static PetscErrorCode CheckRefShiftExact(const PhaseSpace &ps, const Discretisat
       // A streaming-only group's pmat is the streaming matrix itself, so the
       // difference is absolute there and exactly zero if the bin is right
       *max_rel_diff = PetscMax(*max_rel_diff, sigma_max > 0.0 ? diff / sigma_max : diff);
+   }
+
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+// The moments store's starting psi for thermal group g (-outer_store moments,
+// -outer_recon; the reasons are at their parse). psi starts as the P1
+// expansion of the group's cached moments, then takes up to max_steps
+// Richardson steps on L_g psi = c,
+//   c = b + M sigma_s(g -> g) phi_g
+// - the group's own scatter frozen at its cached (last sweep's) phi, which is
+// GroupTransfer::add_transfer(g, g, .) onto b: b is final for this solve
+// (scaled, under -diag_scale, and the matrix-free scatter is not, which is the
+// system the solve solves). Each step is one V-cycle:
+//   dz = P_L r  (TransportSolver::apply_removal_streaming, L_g between stages)
+//   trial = psi + dz,  r = c - L_g trial  (afresh, not by recurrence)
+// stopping once ||r|| <= eta ||c|| (eta 0: never - the m-step mode). The
+// safeguard: a trial that does not reduce ||r|| is dropped and ends it, so the
+// guess is the best iterate seen (the residual decreases monotonically until
+// then) and never worse than the P1 seed. NaN counts as not reducing.
+// r, t and dz are the three caller-owned scratch Vecs (unused at max_steps 0);
+// nothing is allocated. *vcycles counts every V-cycle applied, the refused one
+// included
+static PetscErrorCode Reconstruct(TransportSolver &solver, Mat l_op, const GroupTransfer &transfer, PetscInt g, \
+   Vec b, Vec psi, PetscInt max_steps, PetscReal eta, Vec r, Vec t, Vec dz, PetscInt *vcycles, \
+   PetscBool *safeguarded)
+{
+   PetscReal c_norm = 0.0, r_norm = 0.0;
+
+   PetscFunctionBeginUser;
+
+   *vcycles = 0;
+   *safeguarded = PETSC_FALSE;
+   PetscCall(transfer.expand_p1(g, psi));
+   if (max_steps == 0) PetscFunctionReturn(PETSC_SUCCESS);
+
+   PetscCall(VecCopy(b, r));
+   PetscCall(transfer.add_transfer(g, g, r));
+   PetscCall(VecNorm(r, NORM_2, &c_norm));
+   PetscCall(MatMult(l_op, psi, t));
+   PetscCall(VecAXPY(r, -1.0, t));
+   PetscCall(VecNorm(r, NORM_2, &r_norm));
+   const PetscReal target = eta * c_norm;
+
+   while (*vcycles < max_steps && r_norm > target) {
+      PetscReal new_norm = 0.0;
+      // r is consumed here; it is rebuilt from b below
+      PetscCall(solver.apply_removal_streaming(l_op, r, dz, t));
+      (*vcycles)++;
+      // The trial iterate goes into t, so psi is still the best iterate if
+      // the step is refused. Undoing the step as psi - dz instead would not be
+      // exact: a diverging step's dz can be many orders larger than psi, and
+      // psi + dz - dz is then rounding noise of that size - a guess far worse
+      // than the seed (seen under -precon_stream)
+      PetscCall(VecWAXPY(t, 1.0, dz, psi));
+      PetscCall(MatMult(l_op, t, r));
+      PetscCall(VecAYPX(r, -1.0, b));
+      PetscCall(transfer.add_transfer(g, g, r));
+      PetscCall(VecNorm(r, NORM_2, &new_norm));
+      if (!(new_norm < r_norm)) {
+         *safeguarded = PETSC_TRUE;
+         break;
+      }
+      PetscCall(VecCopy(t, psi));
+      r_norm = new_norm;
    }
 
    PetscFunctionReturn(PETSC_SUCCESS);
@@ -577,12 +646,88 @@ int main(int argc, char **args) {
    PetscCall(PetscOptionsGetReal(NULL, NULL, "-outer_inner_gamma", &outer_inner_gamma, NULL));
    PetscCheck(outer_inner_gamma >= 0.0 && outer_inner_gamma < 1.0, PETSC_COMM_WORLD, PETSC_ERR_ARG_OUTOFRANGE, \
       "-outer_inner_gamma must be in [0, 1), was given %g", (double)outer_inner_gamma);
+   // What the outer iteration keeps of each thermal group between sweeps.
+   // angular (the default): its angular flux psi_g, G angular fluxes in all,
+   // which each sweep's solve warm starts from. moments: only the scalar flux
+   // phi_g and the current J_g (GroupTransfer::enable_current), and ONE psi Vec
+   // that every group solve reuses (plus three psi-sized scratch Vecs for the
+   // reconstruction below) - so G - 1 angular fluxes fewer, against G (local
+   // nodes x dimension) currents. A thermal solve after the first sweep then
+   // starts from a psi RECONSTRUCTED from the moments (see -outer_recon). The
+   // answer is unchanged, because every inner solve still stops on its own
+   // true residual (never on a count or a phi change - an isotropic guess has
+   // exact moments, so a phi-change test would stop falsely). Without
+   // upscatter there is no outer iteration and every group starts from zero
+   // anyway: moments then only drops the per-group psi, and its solves are
+   // bitwise the angular ones. Refused on CG-SUPG (below, once the backend is
+   // known)
+   char outer_store_str[16] = "angular";
+   PetscCall(PetscOptionsGetString(NULL, NULL, "-outer_store", outer_store_str, sizeof(outer_store_str), NULL));
+   PetscBool store_moments = PETSC_FALSE, store_angular = PETSC_FALSE;
+   PetscCall(PetscStrcmp(outer_store_str, "moments", &store_moments));
+   PetscCall(PetscStrcmp(outer_store_str, "angular", &store_angular));
+   PetscCheck(store_moments || store_angular, PETSC_COMM_WORLD, PETSC_ERR_ARG_WRONG, \
+      "-outer_store is angular or moments, was given '%s'", outer_store_str);
+   // The moments store's starting guess for a thermal solve in sweep k >= 1.
+   // Every one starts from the P1 expansion of the group's last moments,
+   //   psi0 = phi / W + Omega_a . T^{-1} J
+   // (GroupTransfer::expand_p1), then takes a plain Richardson iteration on
+   // L_g - streaming + removal, NO scattering, no Krylov:
+   //   psi <- psi + P_L (c - L_g psi),  c = b_g + M sigma_s(g -> g) phi_g
+   // with the within-group scatter frozen at the last sweep's phi, P_L the
+   // solver's own removal stage then its AIR V-cycle with the TRUE L_g
+   // between them (TransportSolver::apply_removal_streaming), never the DSA
+   // stage, and never a hierarchy of its own: it uses whatever the solve uses.
+   //   tol  (default): until ||c - L_g psi|| <= eta ||c||, eta the rtol of
+   //        the solve it seeds (so with -outer_inner_gamma the loose early
+   //        sweeps reconstruct less), at most 40 steps. That leaves the GMRES
+   //        solve needing the iterations it needs from the stored psi;
+   //        reconstructing further buys nothing (the Oct 2026 campaign)
+   //   none: the P1 guess alone
+   //   <m>:  exactly m steps
+   // Whatever the mode, a stall safeguard: a step that does not reduce the L
+   // residual is reverted and the reconstruction stops, so the guess is never
+   // worse than the P1 seed and the worst case is one wasted V-cycle per
+   // solve. Shared hierarchies (-precon_ref_shift, -precon_stream) are where
+   // that bites - the V-cycles, and the solves that stopped on the safeguard,
+   // are reported at the end of the run. Sweep 0 has no moments yet and
+   // starts from zero, as the angular store does
+   char outer_recon_str[32] = "tol";
+   PetscBool have_recon = PETSC_FALSE;
+   PetscCall(PetscOptionsGetString(NULL, NULL, "-outer_recon", outer_recon_str, sizeof(outer_recon_str), &have_recon));
+   PetscCheck(!have_recon || store_moments, PETSC_COMM_WORLD, PETSC_ERR_ARG_INCOMP, \
+      "-outer_recon reconstructs a starting psi from the stored moments: it needs -outer_store moments");
+   // The step cap, and the tolerance test on or off (the m-step mode runs to
+   // its count, subject only to the safeguard)
+   PetscInt recon_max_steps = 40;
+   PetscBool recon_tol = PETSC_TRUE;
+   {
+      PetscBool is_tol = PETSC_FALSE, is_none = PETSC_FALSE;
+      PetscCall(PetscStrcmp(outer_recon_str, "tol", &is_tol));
+      PetscCall(PetscStrcmp(outer_recon_str, "none", &is_none));
+      if (is_none) {
+         recon_max_steps = 0;
+         recon_tol = PETSC_FALSE;
+      } else if (!is_tol) {
+         char *end = nullptr;
+         const long m = strtol(outer_recon_str, &end, 10);
+         PetscCheck(end != outer_recon_str && *end == '\0' && m >= 0, PETSC_COMM_WORLD, PETSC_ERR_ARG_WRONG, \
+            "-outer_recon is tol, none or a non-negative step count, was given '%s'", outer_recon_str);
+         recon_max_steps = (PetscInt)m;
+         recon_tol = PETSC_FALSE;
+      }
+   }
 
    KSPConvergedReason reason = KSP_CONVERGED_ITERATING;
    // True unless an outer iteration ran out of sweeps
    PetscBool outer_ok = PETSC_TRUE;
    PetscInt outer_its = 0;
    PetscReal outer_change = 0.0, outer_err_est = 0.0;
+   // Under upscatter: every inner iteration of every sweep, and the moments
+   // store's reconstruction V-cycles, solves reconstructed and solves whose
+   // reconstruction stopped on the safeguard. Separate counts, never added
+   PetscBool report_outer = PETSC_FALSE;
+   PetscInt total_inner_its = 0, recon_vcycles = 0, recon_solves = 0, recon_safeguarded = 0;
    PetscReal inf_medium_err = 0.0;
    PetscReal matfree_err = 0.0, matfree_diag_err = 0.0;
    PetscReal ref_shift_err = 0.0;
@@ -651,6 +796,14 @@ int main(int argc, char **args) {
       PetscCheck(streaming || !needs_streaming, PETSC_COMM_WORLD, PETSC_ERR_SUP, \
          "%s needs a group-independent streaming matrix, and this backend has none: its assembled " \
          "operator refills per group (CG-SUPG's tau depends on sigma_t)", needs_streaming);
+      // The moments store expands per node with an isotropic M = 1 / W and
+      // freezes the within-group scatter as sigma_s phi / W on each row
+      // (GroupTransfer); CG-SUPG's rhs and scatter carry the SUPG weight over a
+      // vertex's star, tau per angle, which the reconstruction would need too
+      PetscCheck(!store_moments || spec.backend != BackendKind::UNSTRUCTURED_CG, PETSC_COMM_WORLD, \
+         PETSC_ERR_SUP, "-outer_store moments is not available on CG-SUPG: its source and scatter are " \
+         "SUPG-weighted (a vertex's whole star, tau per angle), and reconstructing a starting psi from " \
+         "the moments would need that weighting. Run the default -outer_store angular");
 
       // ~~~~~~~~~~~~~
       // Cross sections per group and material entry (local cell, or local
@@ -715,12 +868,15 @@ int main(int argc, char **args) {
       }
 
       // ~~~~~~~~~~~~~
-      // One angular flux Vec per group, plus a single rhs we rebuild per group
+      // One angular flux Vec per group (-outer_store angular) or one for every
+      // group (moments), plus a single rhs we rebuild per group. psi_of(g) is
+      // group g's either way
       // ~~~~~~~~~~~~~
       Vec b, diag_vec = NULL;
-      std::vector<Vec> psi(n_groups, NULL);
+      std::vector<Vec> psi(store_moments ? 1 : n_groups, NULL);
       PetscCall(MatCreateVecs(op.assembled_mat(), &psi[0], &b));
-      for (PetscInt g = 1; g < n_groups; g++) PetscCall(VecDuplicate(psi[0], &psi[g]));
+      for (size_t g = 1; g < psi.size(); g++) PetscCall(VecDuplicate(psi[0], &psi[g]));
+      auto psi_of = [&](PetscInt g) { return psi[store_moments ? 0 : g]; };
       if (diag_scale) PetscCall(VecDuplicate(b, &diag_vec));
 
       // The streaming-only pmat does not depend on the group, so it is built
@@ -782,7 +938,9 @@ int main(int argc, char **args) {
       // sweep's below it, and zero in the first sweep (cached before it).
       // From the second sweep on each thermal group's KSP starts from its own
       // psi of the last sweep, which is why the driver keeps one psi per
-      // group. Every inner solve still stops on the KSP's own residual test,
+      // group - or, under -outer_store moments, from a psi reconstructed from
+      // its last scalar flux and current (-outer_recon, Reconstruct above),
+      // so one psi serves every group. Every inner solve still stops on the KSP's own residual test,
       // at an rtol that is loose in the early sweeps and the inner rtol by the
       // last one (-outer_inner_gamma)
       //
@@ -802,13 +960,52 @@ int main(int argc, char **args) {
          }
       }
       const PetscBool upscatter = (PetscBool)(g_up < n_groups);
+      report_outer = upscatter;
+      // The moments store reconstructs from the current as well as the scalar
+      // flux, so the transfer caches it from here on (the zero fluxes below
+      // included). Without upscatter nothing is reconstructed, so nothing more
+      // is cached than under the angular store
+      const PetscBool reconstruct = (PetscBool)(store_moments && upscatter);
+      if (reconstruct) PetscCall(transfer.enable_current(*quad));
       // The first sweep reads every thermal group below the one being solved
       // before that group has been solved: cache a zero flux for each, through
       // the same call that caches a solved one (psi is zero until solved)
       if (upscatter) {
          for (PetscInt g = g_up; g < n_groups; g++) {
-            PetscCall(VecSet(psi[g], 0.0));
-            PetscCall(group_source->set_scalar_flux(g, psi[g], nullptr, nullptr));
+            PetscCall(VecSet(psi_of(g), 0.0));
+            PetscCall(group_source->set_scalar_flux(g, psi_of(g), nullptr, nullptr));
+         }
+      }
+      // The reconstruction's scratch, created once: the residual, the L apply
+      // and the step (Reconstruct). Not for -outer_recon none, which only
+      // expands into psi
+      Vec recon_r = NULL, recon_t = NULL, recon_dz = NULL;
+      if (reconstruct && recon_max_steps > 0) {
+         PetscCall(VecDuplicate(b, &recon_r));
+         PetscCall(VecDuplicate(b, &recon_t));
+         PetscCall(VecDuplicate(b, &recon_dz));
+      }
+
+      // -check_inf_medium's constants, and each group's error measured right
+      // after its solve, so the moments store (which keeps no psi per group)
+      // checks the very psi the angular store keeps: the last solve of each
+      // group. The max over the groups is the check, at the same 1e-9
+      std::vector<PetscScalar> inf_medium_expected;
+      std::vector<PetscReal> inf_medium_err_g(n_groups, 0.0);
+      if (check_inf_medium) {
+         PetscCall(InfMediumConstants(spec.materials, bg, quad->sum_weights(), inf_medium_expected));
+         for (PetscInt g = 0; g < n_groups; g++) {
+            // A vacuum face's per-ordinate inflow has to be that constant, or
+            // the constant is not the solution and the comparison is meaningless
+            for (PetscInt f = 1; f <= 2 * spec.dimension; f++) {
+               const BCFace face = spec.bcs.face(f);
+               if (face.type == BCType::REFLECT) continue;
+               PetscCheck(PetscAbsScalar(face.inflow / quad->sum_weights() - inf_medium_expected[g]) \
+                  <= 1e-12 * PetscAbsScalar(inf_medium_expected[g]), PETSC_COMM_WORLD, PETSC_ERR_ARG_INCOMP, \
+                  "-check_inf_medium needs every vacuum face's inflow / sum_weights to be the " \
+                  "infinite-medium flux %g in every group (face %" PetscInt_FMT ", group %" \
+                  PetscInt_FMT ")", (double)PetscRealPart(inf_medium_expected[g]), f, g);
+            }
          }
       }
 
@@ -831,7 +1028,7 @@ int main(int argc, char **args) {
          }
          // The thermal block's change over this sweep, global sums of squares
          PetscReal change_sq = 0.0, norm_sq = 0.0;
-         PetscInt sweep_its = 0;
+         PetscInt sweep_its = 0, sweep_vcycles = 0;
          // The rtol this sweep's thermal solves run at (-outer_inner_gamma), set
          // once the inner rtol is known (after the first solver is created)
          PetscReal sweep_rtol = 0.0;
@@ -904,6 +1101,22 @@ int main(int argc, char **args) {
                      "rhs moves by less than its rtol takes no iterations, so the scalar flux stops " \
                      "moving and the outer iteration would converge falsely. Raise -outer_rtol or " \
                      "lower -ksp_rtol", (double)outer_rtol, (double)inner_rtol);
+                  // A streaming-only pmat (-precon_stream, -matfree_removal
+                  // without the shift) under LEFT preconditioning stops each
+                  // solve on a preconditioned residual that need not track the
+                  // true one, and from the moments store's guesses that shows:
+                  // measured on slab_up3_inf_medium the outer iteration takes
+                  // 125 sweeps against the angular store's 19. Right
+                  // preconditioning (the repo's convention for that pmat) stops
+                  // on the true residual and matches the angular sweep count.
+                  // Said once, not refused: the answer is still right
+                  PCSide side = PC_LEFT;
+                  PetscCall(KSPGetPCSide(solver.ksp(), &side));
+                  if (reconstruct && !precon_ref_shift && (precon_stream || matfree_removal) && side == PC_LEFT) {
+                     PetscCall(PetscFPrintf(PETSC_COMM_WORLD, stderr, "note: -outer_store moments with a " \
+                        "streaming-only pmat under left preconditioning stops each inner solve on a preconditioned " \
+                        "residual, which can cost the outer iteration many sweeps: run -ksp_pc_side right\n"));
+                  }
                }
             }
             // sigma_t changed under the removal preconditioner
@@ -923,20 +1136,42 @@ int main(int argc, char **args) {
                   PETSC_CURRENT, PETSC_CURRENT));
             } else sweep_rtol = inner_rtol;
 
-            PetscCall(solver.solve(b, psi[g]));
+            // The moments store: a thermal group after the first sweep starts
+            // from a psi rebuilt from its last moments, to this solve's own
+            // rtol (-outer_recon). After the rhs (and any -diag_scale) is final
+            // and the solver is set for this group, so c, L_g and P_L are the
+            // ones the solve sees
+            if (reconstruct && outer >= 1) {
+               PetscReal solve_rtol = 0.0;
+               PetscInt vcycles = 0;
+               PetscBool safeguarded = PETSC_FALSE;
+               PetscCall(KSPGetTolerances(solver.ksp(), &solve_rtol, NULL, NULL, NULL));
+               PetscCall(Reconstruct(solver, op.unscattered_mat(), transfer, g, b, psi_of(g), recon_max_steps, \
+                  recon_tol ? solve_rtol : 0.0, recon_r, recon_t, recon_dz, &vcycles, &safeguarded));
+               sweep_vcycles += vcycles;
+               recon_solves++;
+               if (safeguarded) recon_safeguarded++;
+            }
+
+            PetscCall(solver.solve(b, psi_of(g)));
             reason = solver.converged_reason();
             if (reason <= 0) break;
             PetscInt its = 0;
             PetscCall(KSPGetIterationNumber(solver.ksp(), &its));
             sweep_its += its;
+            // Verification only, so a host read of psi is fine here
+            if (check_inf_medium) PetscCall(InfMediumError(ps, psi_of(g), inf_medium_expected[g], \
+               &inf_medium_err_g[g]));
 
             // This group's scalar flux is fixed for this sweep, and every group
             // it scatters into reads it. Integrate once here rather than once
             // per target - and over the thermal block, measure how far it moved
             const PetscBool measure = (PetscBool)(g >= g_up);
-            PetscCall(group_source->set_scalar_flux(g, psi[g], measure ? &change_sq : nullptr, \
+            PetscCall(group_source->set_scalar_flux(g, psi_of(g), measure ? &change_sq : nullptr, \
                measure ? &norm_sq : nullptr));
          }
+         total_inner_its += sweep_its;
+         recon_vcycles += sweep_vcycles;
          if (reason <= 0 || !upscatter) break;
 
          // The outer convergence test. The change, ||phi_new - phi_old|| /
@@ -957,16 +1192,21 @@ int main(int argc, char **args) {
          const PetscReal rho = have_rho ? change / outer_change : 0.0;
          outer_change = change;
          outer_err_est = (have_rho && rho < 1.0) ? change * rho / (1.0 - rho) : PETSC_INFINITY;
+         // The moments store's reconstruction V-cycles ride along, a count of
+         // their own next to the inner iterations (never added to them)
+         char recon_note[64] = "";
+         if (store_moments) PetscCall(PetscSNPrintf(recon_note, sizeof(recon_note), ", %" PetscInt_FMT \
+            " reconstruction V-cycles", sweep_vcycles));
          if (have_rho) {
             PetscCall(PetscFPrintf(PETSC_COMM_WORLD, stderr, "outer %" PetscInt_FMT ": groups %" PetscInt_FMT \
                "-%" PetscInt_FMT ", scalar flux change %.3e, rho %.3f, error estimate %.3e, inner rtol %.1e, %" \
-               PetscInt_FMT " inner iterations\n", outer_its, g_up, n_groups - 1, (double)change, (double)rho, \
-               (double)outer_err_est, (double)sweep_rtol, sweep_its));
+               PetscInt_FMT " inner iterations%s\n", outer_its, g_up, n_groups - 1, (double)change, (double)rho, \
+               (double)outer_err_est, (double)sweep_rtol, sweep_its, recon_note));
          } else {
             PetscCall(PetscFPrintf(PETSC_COMM_WORLD, stderr, "outer %" PetscInt_FMT ": groups %" PetscInt_FMT \
                "-%" PetscInt_FMT ", scalar flux change %.3e, no rho yet, inner rtol %.1e, %" PetscInt_FMT \
-               " inner iterations\n", outer_its, outer == 0 ? (PetscInt)0 : g_up, n_groups - 1, (double)change, \
-               (double)sweep_rtol, sweep_its));
+               " inner iterations%s\n", outer_its, outer == 0 ? (PetscInt)0 : g_up, n_groups - 1, (double)change, \
+               (double)sweep_rtol, sweep_its, recon_note));
          }
          // Stop only on a sweep whose thermal solves ran at the inner rtol: the
          // test passing on a looser sweep (-outer_inner_gamma) sweeps once more,
@@ -996,27 +1236,10 @@ int main(int argc, char **args) {
       // 1 / (sum_weights (sigma_t - sigma_s)) for the Source 1.0 box ones.
       // With downscatter only it is lower triangular - forward substitution
       // down the sweep - and with upscatter it is what the outer iteration
-      // converges to
+      // converges to. Each group's error was taken right after its solve (the
+      // last one is what is left), so this is the same check under either store
       if (check_inf_medium && reason > 0 && outer_ok) {
-         std::vector<PetscScalar> expected;
-         PetscCall(InfMediumConstants(spec.materials, bg, quad->sum_weights(), expected));
-         for (PetscInt g = 0; g < n_groups; g++) {
-            // A vacuum face's per-ordinate inflow has to be that constant, or
-            // the constant is not the solution and the comparison is meaningless
-            for (PetscInt f = 1; f <= 2 * spec.dimension; f++) {
-               const BCFace face = spec.bcs.face(f);
-               if (face.type == BCType::REFLECT) continue;
-               PetscCheck(PetscAbsScalar(face.inflow / quad->sum_weights() - expected[g]) \
-                  <= 1e-12 * PetscAbsScalar(expected[g]), PETSC_COMM_WORLD, PETSC_ERR_ARG_INCOMP, \
-                  "-check_inf_medium needs every vacuum face's inflow / sum_weights to be the " \
-                  "infinite-medium flux %g in every group (face %" PetscInt_FMT ", group %" \
-                  PetscInt_FMT ")", (double)PetscRealPart(expected[g]), f, g);
-            }
-
-            PetscReal err_g = 0.0;
-            PetscCall(InfMediumError(ps, psi[g], expected[g], &err_g));
-            inf_medium_err = PetscMax(inf_medium_err, err_g);
-         }
+         for (PetscInt g = 0; g < n_groups; g++) inf_medium_err = PetscMax(inf_medium_err, inf_medium_err_g[g]);
       }
 
       // Only a full sweep (and, with upscatter, a converged outer iteration)
@@ -1026,7 +1249,10 @@ int main(int argc, char **args) {
       // what was solved without going back to the problem definition. A
       // single-group problem writes the filename as given, multigroup suffixes
       // _g<g> before the extension (the last dot of the file NAME, not of a
-      // directory)
+      // directory). The moments store has no psi per group to integrate: it
+      // writes the scalar flux the transfer cached from each group's last
+      // solve - the same integral of the same psi the angular store writes -
+      // and at DG1 takes the slope from those per-node moments too
       if (!flux_vtk.empty() && reason > 0 && outer_ok) {
          const char *slash = strrchr(flux_vtk.c_str(), '/');
          const char *dot = strrchr(slash ? slash + 1 : flux_vtk.c_str(), '.');
@@ -1048,10 +1274,13 @@ int main(int argc, char **args) {
             std::vector<PetscScalarKokkosView> grad;
             if (spec.backend == BackendKind::UNSTRUCTURED_DG && spec.order == 1) {
                static const char *grad_names[3] = {"scalar_flux_grad_x", "scalar_flux_grad_y", "scalar_flux_grad_z"};
-               PetscCall(be.dg.scalar_flux_gradient(psi[g], *quad, grad));
+               if (store_moments) PetscCall(be.dg.scalar_flux_gradient_from_phi(transfer.scalar_flux(g), grad));
+               else PetscCall(be.dg.scalar_flux_gradient(psi[g], *quad, grad));
                for (size_t d = 0; d < grad.size(); d++) extra.push_back({grad_names[d], grad[d]});
             }
-            PetscCall(UboltWriteScalarFluxVTK(ps, *disc, *quad, psi[g], (PetscInt)extra.size(), extra.data(), \
+            if (store_moments) PetscCall(UboltWriteScalarFluxVTKFromPhi(ps, *disc, transfer.scalar_flux(g), \
+               (PetscInt)extra.size(), extra.data(), fname));
+            else PetscCall(UboltWriteScalarFluxVTK(ps, *disc, *quad, psi[g], (PetscInt)extra.size(), extra.data(), \
                fname));
          }
       }
@@ -1068,7 +1297,10 @@ int main(int argc, char **args) {
       PetscCall(MatDestroy(&streaming_mat));
       PetscCall(VecDestroy(&b));
       PetscCall(VecDestroy(&diag_vec));
-      for (PetscInt g = 0; g < n_groups; g++) PetscCall(VecDestroy(&psi[g]));
+      for (size_t g = 0; g < psi.size(); g++) PetscCall(VecDestroy(&psi[g]));
+      PetscCall(VecDestroy(&recon_r));
+      PetscCall(VecDestroy(&recon_t));
+      PetscCall(VecDestroy(&recon_dz));
    }
 
    // Did we converge - this is the pass/fail of the test. Diagnostics go to
@@ -1081,6 +1313,20 @@ int main(int argc, char **args) {
       "scalar flux change %g, error estimate %g (inf: no contracting rho yet) after %" PetscInt_FMT \
       " sweeps, against -outer_rtol %g\n", (double)outer_change, (double)outer_err_est, outer_its, \
       (double)outer_rtol));
+
+   // The outer iteration's totals, and what the moments store's reconstruction
+   // cost - its V-cycles are a count of their own, never inner iterations -
+   // and how often it stalled (a step that did not reduce the L residual,
+   // reverted): many safeguard stops say the reconstruction is ineffective
+   // with this preconditioner (a shared hierarchy), where -outer_recon none
+   // gives the same answer for fewer V-cycles
+   if (report_outer && reason > 0) {
+      PetscCall(PetscFPrintf(PETSC_COMM_WORLD, stderr, "outer iteration: %" PetscInt_FMT " sweeps, %" PetscInt_FMT \
+         " inner iterations in all\n", outer_its, total_inner_its));
+      if (store_moments) PetscCall(PetscFPrintf(PETSC_COMM_WORLD, stderr, "moments store (-outer_recon %s): %" \
+         PetscInt_FMT " reconstruction V-cycles over %" PetscInt_FMT " reconstructed solves, %" PetscInt_FMT \
+         " stopped on the stall safeguard\n", outer_recon_str, recon_vcycles, recon_solves, recon_safeguarded));
+   }
 
    // Print what the infinite-medium check measured, so a run drifting towards
    // failure is visible before it fails

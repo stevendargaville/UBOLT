@@ -1,0 +1,31 @@
+{
+ "_comment": "The DG1 twin of plex_box_up3_layers.json (\"order\": 1): the same 20x20 quad box, materials, paint, S2 and vacuum faces. Pins the upscatter outer iteration at DG1, under the moments store too (its -flux_vtk slope comes from the cached per-node scalar flux).",
+ "dimension": 2,
+ "mesh": {
+  "type": "unstructured",
+  "n_cells": [20, 20],
+  "lengths": [2.0, 2.0],
+  "order": 1
+ },
+ "sn_order": 2,
+ "materials": "materials/up3_layers.json",
+ "regions": {
+  "background": 0,
+  "paint": [
+   {
+    "material": "moderator",
+    "box": [1.0, 2.0, 0.0, 2.0]
+   },
+   {
+    "material": "moderator",
+    "box": [0.0, 2.0, 1.5, 2.0]
+   }
+  ]
+ },
+ "boundary_conditions": {
+  "left": "vacuum",
+  "right": "vacuum",
+  "bottom": "vacuum",
+  "top": "vacuum"
+ }
+}

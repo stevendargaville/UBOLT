@@ -1,0 +1,32 @@
+{
+ "_comment": "The DG1 twin of plex_box_up2_inf_medium.json (\"order\": 1): the infinite-medium oracle for the upscatter outer iteration at DG1 - the constant on basis 0 and zero slope - under either store, the moments store reconstructing per (cell, basis) node.",
+ "dimension": 2,
+ "mesh": {
+  "type": "unstructured",
+  "n_cells": [20, 20],
+  "lengths": [1.0, 1.0],
+  "order": 1
+ },
+ "sn_order": 2,
+ "materials": {
+  "n_groups": 2,
+  "materials": [
+   {
+    "id": 0,
+    "name": "up2",
+    "Sigma_t": [2.0, 3.0],
+    "Sigma_s": [
+     [1.0, 0.75],
+     [0.5, 2.0]
+    ],
+    "Source": [1.0, 1.0]
+   }
+  ]
+ },
+ "boundary_conditions": {
+  "left": "reflect",
+  "right": "reflect",
+  "bottom": "reflect",
+  "top": "reflect"
+ }
+}
