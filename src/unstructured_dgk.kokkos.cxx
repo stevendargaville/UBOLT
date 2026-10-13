@@ -850,6 +850,23 @@ PetscErrorCode UnstructuredDG::scalar_flux_gradient(Vec psi, const AngularQuadra
    // The shared angular integral, per node
    PetscScalar2DKokkosView phi_d("phi_d", ps_.local_nodes(), 1);
    PetscCall(UboltAngularIntegral(psi, ps_.n_angles, quad.w_d(), phi_d));
+   PetscCall(scalar_flux_gradient_from_phi(phi_d, grad));
+
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+PetscErrorCode UnstructuredDG::scalar_flux_gradient_from_phi(const PetscScalar2DKokkosView &phi_d, \
+   std::vector<PetscScalarKokkosView> &grad) const
+{
+   PetscFunctionBeginUser;
+
+   PetscCall(ps_.check_decomposed());
+   PetscCheck(order_ == 1, comm_, PETSC_ERR_ARG_WRONGSTATE, "the scalar flux has no in-cell slope at DG0");
+   PetscCheck((PetscInt)phi_d.extent(0) == ps_.local_nodes(), comm_, PETSC_ERR_ARG_INCOMP, \
+      "the scalar flux covers %" PetscInt_FMT " nodes but the phase space has %" PetscInt_FMT, \
+      (PetscInt)phi_d.extent(0), ps_.local_nodes());
 
    grad.resize(dim_);
    for (PetscInt d = 0; d < dim_; d++) {

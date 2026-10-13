@@ -48,4 +48,14 @@ PETSC_EXTERN PetscErrorCode UboltWriteScalarFluxVTK(const PhaseSpace &ps, \
    const Discretisation &disc, const AngularQuadrature &quad, Vec psi, PetscInt n_extra, \
    const UboltCellField *extra, const char *filename);
 
+// The same file from a scalar flux already integrated: scalar_flux_d is
+// (local_nodes, 1), per node in local node order - what UboltAngularIntegral
+// writes and GroupTransfer::scalar_flux caches. For a caller that keeps the
+// moments rather than the angular flux (tests/transportk -outer_store
+// moments); UboltWriteScalarFluxVTK is this after the integral. Collective on
+// the discretisation's communicator
+PETSC_EXTERN PetscErrorCode UboltWriteScalarFluxVTKFromPhi(const PhaseSpace &ps, \
+   const Discretisation &disc, const PetscScalar2DKokkosView &scalar_flux_d, PetscInt n_extra, \
+   const UboltCellField *extra, const char *filename);
+
 #endif

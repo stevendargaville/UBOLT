@@ -72,6 +72,7 @@ public:
    PetscErrorCode set_group(const GroupXSections &xs, PetscInt g) override;
    PetscBool matrix_free() const override { return PETSC_TRUE; }
    PetscErrorCode apply_add(Vec x, Vec y) const override;
+   PetscBool is_scattering() const override { return PETSC_TRUE; }
    PetscErrorCode destroy();
 private:
    const UnstructuredCG *disc_ = nullptr;

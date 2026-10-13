@@ -224,6 +224,8 @@ public:
 
    PetscBool matrix_free() const override { return PETSC_TRUE; }
    PetscErrorCode apply_add(Vec x, Vec y) const override;
+   // Not part of L (see OperatorTerm::is_scattering)
+   PetscBool is_scattering() const override { return PETSC_TRUE; }
 
 private:
    PetscInt n_angles_ = 0;

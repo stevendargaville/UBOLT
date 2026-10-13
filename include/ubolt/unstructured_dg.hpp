@@ -139,6 +139,11 @@ public:
    // scratch and dimension() views sized local_cells. Errors at order 0
    PetscErrorCode scalar_flux_gradient(Vec psi, const AngularQuadrature &quad, \
       std::vector<PetscScalarKokkosView> &grad) const;
+   // The same from a scalar flux already integrated, (local_nodes, 1) - what
+   // GroupTransfer::scalar_flux caches, so the moments store writes the slope
+   // without an angular flux. scalar_flux_gradient is this after the integral
+   PetscErrorCode scalar_flux_gradient_from_phi(const PetscScalar2DKokkosView &phi_d, \
+      std::vector<PetscScalarKokkosView> &grad) const;
 
 private:
    // DG1: the modal basis on every cell of the local mesh (overlap ghosts
