@@ -172,6 +172,14 @@ An outer tolerance cannot usefully go below the inner rtol: at `-outer_rtol 1e-1
 iterations and the change read zero - a false convergence, which is why the driver now
 refuses `-outer_rtol` below the effective inner rtol.
 
+The same oracle covers the adaptive inner rtol (`-outer_inner_gamma`, default 0.01; loose
+thermal solves in the early sweeps, the outer only stopping on a sweep at the inner rtol):
+at the default all three files still land at ~1e-11 (slab) and ~1e-12 (box, CG) against
+1e-9, serial and at -n 2, and serially on the same sweep counts (19, 27, 27) as with
+every solve at the inner rtol (2026-10-13). `box_up2_inf_medium` also runs with `-outer_inner_gamma 0`, which is
+bitwise the behaviour before the adaptive rtol: every upscatter recipe of `tests_short`
+at `-outer_inner_gamma 0` gives `-ksp_monitor` output identical to main before it.
+
 The downscatter-only path is bitwise unchanged by the outer iteration (same single sweep,
 same rhs, zero initial guess; the measured `set_scalar_flux` is only called on thermal
 groups): `PETSC_OPTIONS=-ksp_monitor make tests_short` on main and on the change, opt

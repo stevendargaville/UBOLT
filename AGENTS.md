@@ -125,6 +125,7 @@ iteration. The long-form design is `docs/architecture.md`.
 | `-supg_zeta <z>` | Override `mesh.supg_zeta` | cg_supg only |
 | `-outer_rtol <r>` | Upscatter outer iteration: stop when the estimated relative error of the thermal scalar flux, change * rho / (1 - rho) (rho from successive changes, so never before sweep 3), is below r | Default 1e-8; refused below the inner rtol; under upscatter the inner rtol defaults to 1e-10 unless `-ksp_rtol` is given; unused without upscatter |
 | `-outer_max_it <n>` | Upscatter outer iteration: the most sweeps (the first included); running out fails the run | Default 1000; unused without upscatter |
+| `-outer_inner_gamma <g>` | Upscatter outer iteration: adaptive inner rtol, a thermal solve in sweep k at max(inner rtol, g * change_{k-1}) (sweep 0: max(inner rtol, g)); stops only on a sweep at the inner rtol | Default 0.01; 0 = every solve at the inner rtol; refused outside [0, 1); groups above `g_up` always at the inner rtol; unused without upscatter |
 | `-check_inf_medium` | Solution vs the infinite-medium constants, the G x G group system (1e-9) | Box mesh, no paint, absorption, unwindowed vacuum faces |
 | `-check_matfree` | Matrix-free vs assembled removal: matvec (1e-13), diagonal (exact) | Refused on cg_supg |
 | `-check_ref_shift` | Each shifted pmat vs its group's full operator (1e-12) | Needs `-precon_ref_shift` |
