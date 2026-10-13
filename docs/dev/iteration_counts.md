@@ -53,7 +53,7 @@ Not pins: `make baselines` captures these at `-ksp_max_it 200` and a refactor di
 | `slab_diffusive` |  | 23 | 23 | - | short |  |
 | `slab_diffusive` | `-precon_dsa` | 6 | 6 | - | short |  |
 | `slab_inf_medium` | `-check_inf_medium -ksp_rtol 1e-12` | 10 | 11 | - | short |  |
-| `slab_inf_medium` | `-matfree_removal -check_inf_medium -ksp_rtol 1e-12` | 20 | 26 | - | short | np=1: local opt 19, the 64-bit CI image more |
+| `slab_inf_medium` | `-matfree_removal -check_inf_medium -ksp_rtol 1e-12` | 37 | 37 | - | short | np=1: local opt 19, the 64-bit CI image 37; np=2: local opt 26, the CI images 36-37 (a near-singular streaming-only pmat whose true residual crawls its last decades at the rounding floor: the count is arch-sensitive) |
 | `slab_inf_medium` | `-precon_dsa -check_inf_medium -ksp_rtol 1e-12` | 9 | 10 | - | short |  |
 | `slab_inf_medium_ghost` | `-check_inf_medium -ksp_rtol 1e-12` | 8 | 8 | - | short |  |
 | `slab_inf_medium_ghost` | `-matfree_removal -check_inf_medium -ksp_rtol 1e-12` | 18 | - | - | short | np=1: local opt 17, the 64-bit CI image 18 |
@@ -185,7 +185,7 @@ Not pins: `make baselines` captures these at `-ksp_max_it 200` and a refactor di
 | `cube_10_absorber` |  | 4 | 4 | - | short |  |
 | `cube_10_cold` |  | 4 | 4 | - | short |  |
 | `cube_10_identity` |  | 6 | - | 6 | short |  |
-| `cube_10_inf_medium` | `-check_inf_medium -ksp_rtol 1e-12` | 11 | 10 | - | short | np=1: local opt 10, the OpenMP CI image more |
+| `cube_10_inf_medium` | `-check_inf_medium -ksp_rtol 1e-12` | 11 | 11 | - | short | np=1: local opt 10, the 64-bit and OpenMP CI images 11; np=2: local opt 10, the opt and OpenMP CI images 11 |
 | `cube_10_inf_medium` | `-precon_dsa -check_inf_medium -ksp_rtol 1e-12` | 8 | 8 | - | short |  |
 | `cube_10_inf_medium_ghost` | `-check_inf_medium -ksp_rtol 1e-12` | 11 | 11 | - | short |  |
 | `cube_10_inf_medium_ghost` | `-matfree_removal -check_inf_medium -ksp_rtol 1e-12` | 22 | - | - | short |  |
@@ -218,7 +218,7 @@ Not pins: `make baselines` captures these at `-ksp_max_it 200` and a refactor di
 
 | problem | options | np=1 | np=2 | np=4 | suite | note |
 |---|---|---|---|---|---|---|
-| `plex_box_50_reflect_lb` |  | 5 | 5 | - | short |  |
+| `plex_box_50_reflect_lb` |  | 5 | 6 | - | short | np=2: local opt 5, the opt, 64-bit and OpenMP CI images 6 |
 | `plex_box_50_st2` |  | 6 | 6 | - | check/short |  |
 | `plex_box_50_st2` | `-matfree_removal` | 7 | 7 | - | short |  |
 | `plex_box_50_st2` | `-precon_stream` | 7 | 7 | - | short |  |
@@ -233,7 +233,7 @@ Not pins: `make baselines` captures these at `-ksp_max_it 200` and a refactor di
 | `plex_box_up2_inf_medium` | `-check_inf_medium -ksp_rtol 1e-12 -outer_rtol 1e-11 -outer_store moments -outer_recon none` | 2 / 27 | 2 / 27 | - | short | upscatter, moments store |
 | `plex_box_up3_layers` |  | 11 / 16 | 11 / 16 | - | short | upscatter |
 | `plex_box_up3_layers` | `-outer_store moments` | 11 / 16 | 11 / 16 | - | short | upscatter, moments store |
-| `plex_box_void_channel` |  | 31 | - | - | short | np=1: local opt 30, the opt CI image more |
+| `plex_box_void_channel` |  | 31 | - | - | short | np=1: local opt 30, the opt, 64-bit and OpenMP CI images 31 |
 | `plex_box_void_channel` | `-matfree_removal -precon_ref_shift -precon_dsa` | 6 | 6 | - | short |  |
 | `plex_box_void_channel` | `-precon_dsa` | 6 | 6 | - | short |  |
 | `plex_box_void_channel` | `-precon_dsa -dsa_void_bridge 0` | 8 | - | - | short |  |
@@ -277,7 +277,7 @@ Not pins: `make baselines` captures these at `-ksp_max_it 200` and a refactor di
 | `plex_box_void_channel_dg1` |  | 37 | - | - | short |  |
 | `plex_box_void_channel_dg1` | `-matfree_removal -precon_ref_shift -precon_dsa` | 10 | - | - | short |  |
 | `plex_box_void_channel_dg1` | `-precon_dsa` | 10 | 10 | - | short |  |
-| `plex_box_void_channel_dg1` | `-precon_dsa -dsa_void_bridge 0` | 10 | - | - | short |  |
+| `plex_box_void_channel_dg1` | `-precon_dsa -dsa_void_bridge 0` | 11 | - | - | short | np=1: local opt 10, the opt and OpenMP CI images 11 |
 | `plex_cube_10_st2_dg1` |  | 6 | 6 | - | short |  |
 | `plex_cube_diffusive_dg1` |  | 32 | - | - | short |  |
 | `plex_cube_diffusive_dg1` | `-precon_dsa` | 8 | 8 | - | short |  |

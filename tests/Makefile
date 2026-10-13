@@ -180,7 +180,7 @@ run_tests_short_serial:
 	@echo "Test 1D slab, reflective face with one MatSetValuesCOO per term"
 	./transportk -problem problems/slab_st2_reflect_left.json -ksp_max_it 8 -ubolt_coo_two_call
 	@echo "Test 1D slab, matrix-free removal against the infinite-medium solution (all faces reflective)"
-	./transportk -problem problems/slab_inf_medium.json -matfree_removal -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 20
+	./transportk -problem problems/slab_inf_medium.json -matfree_removal -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 37
 #
 # The ghost-flux vacuum treatment (the default since Sep 2026; these files
 # still say "vacuum_treatment": "ghost_flux" explicitly, the oracle is theirs).
@@ -470,7 +470,7 @@ run_tests_short_serial:
 	@echo "Test 2D unstructured quad box at DG1 with a void channel with the void-bridged DSA correction"
 	./transportk -problem problems/plex_box_void_channel_dg1.json -precon_dsa -ksp_max_it 10
 	@echo "Test 2D unstructured quad box at DG1 with a void channel with the void-masked DSA correction"
-	./transportk -problem problems/plex_box_void_channel_dg1.json -precon_dsa -dsa_void_bridge 0 -ksp_max_it 10
+	./transportk -problem problems/plex_box_void_channel_dg1.json -precon_dsa -dsa_void_bridge 0 -ksp_max_it 11
 # A group that is void EVERYWHERE used to be refused too: now the whole
 # diffusion operator is masked, the correction is zero, and the count is the
 # no-DSA one (slab_st0: 1). The decades file's void top group rides along with
@@ -959,7 +959,7 @@ run_tests_short_parallel:
 	@echo "Test 1D slab, all faces reflective against the infinite-medium solution in parallel"
 	$(MPIEXEC) -n 2 ./transportk -problem problems/slab_inf_medium.json -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 11
 	@echo "Test 1D slab, matrix-free removal against the infinite-medium solution in parallel"
-	$(MPIEXEC) -n 2 ./transportk -problem problems/slab_inf_medium.json -matfree_removal -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 26
+	$(MPIEXEC) -n 2 ./transportk -problem problems/slab_inf_medium.json -matfree_removal -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 37
 	@echo "Test 1D slab, ghost-flux vacuum faces against the infinite-medium solution in parallel"
 	$(MPIEXEC) -n 2 ./transportk -problem problems/slab_inf_medium_ghost.json -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 8
 	@echo "Test 1D slab, diffusive regime without the DSA correction in parallel"
@@ -1135,7 +1135,7 @@ run_tests_short_parallel:
 	@echo "Test 3D cube, reflective left + front + bottom faces in parallel"
 	$(MPIEXEC) -n 2 ./transportk -problem problems/cube_10_reflect_3faces.json -ksp_max_it 5
 	@echo "Test 3D cube, all faces reflective against the infinite-medium solution in parallel"
-	$(MPIEXEC) -n 2 ./transportk -problem problems/cube_10_inf_medium.json -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 10
+	$(MPIEXEC) -n 2 ./transportk -problem problems/cube_10_inf_medium.json -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 11
 	@echo "Test 3D cube, ghost-flux vacuum + reflective faces against the infinite-medium solution in parallel"
 	$(MPIEXEC) -n 2 ./transportk -problem problems/cube_10_inf_medium_ghost.json -check_inf_medium -ksp_rtol 1e-12 -ksp_max_it 11
 	@echo "Test 3D cube, diffusive regime without the DSA correction in parallel"
@@ -1169,7 +1169,7 @@ run_tests_short_parallel:
 	@echo "Test 2D unstructured quad box, matrix-free removal in parallel (the twin of the line above)"
 	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_box_50_st2.json -matfree_removal -ksp_max_it 7
 	@echo "Test 2D unstructured quad box, reflective left + bottom faces in parallel"
-	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_box_50_reflect_lb.json -ksp_max_it 5
+	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_box_50_reflect_lb.json -ksp_max_it 6
 ifeq ($(PETSC_HAVE_TRIANGLE),1)
 	@echo "Test 2D unstructured triangles, S4, in parallel"
 	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_tri_30_st2.json -ksp_max_it 5
