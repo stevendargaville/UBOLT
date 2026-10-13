@@ -141,7 +141,15 @@ new driver, plus the t0 structural identity, the painting identity at np=1 and n
 the 1D/2D infinite-medium checks.
 
 ### Single-group baselines
-Re-captured 2026-09-25 for the switch to the ghost-flux vacuum treatment as the default
+Re-captured 2026-10-13 for right preconditioning as the default (`TransportSolver`):
+the monitored residual of every solve is now the TRUE (unpreconditioned) one, so what
+the logs record changed, not the solves' arithmetic. The 10 `stream` logs (single-group
+and multigroup) were already right preconditioned (`-ksp_pc_side right` on their capture
+lines, dropped now) and came out byte-identical; the 14 `default` logs moved, and two
+captures of them on the reference environment were identical. On that environment the
+unchanged library first reproduced all 24 previous logs byte for byte (debug PETSc main,
+PFLARE main 1bdeb3c debug). Before that, 2026-09-25 for the switch to the ghost-flux
+vacuum treatment as the default
 (the capture history, with every older count, is in `docs/dev/history.md`, "Single-group
 baseline iteration counts"; the current counts are in `docs/dev/iteration_counts.md`). Before that, 2026-08-04 for the quadrature precision fix, then
 2026-08-01 after the Dirichlet-row fix to the matrix-free scatter, 2026-07-31 after the
@@ -150,15 +158,16 @@ came from the pre-refactor code (the single-file `UBOLTk.kokkos.cxx`); Phase 1a 
 1b each reproduced all 16 bitwise, which is what those phases were verified against. The
 `-ubolt_coo_two_call` assembly fallback reproduces them bitwise.
 
-- Full matrix: {default pc, `-precon_stream -ksp_pc_side right`} x {`slab_st0.json`,
+- Full matrix: {default pc, `-precon_stream`} x {`slab_st0.json`,
   `slab_st2.json`} x {np 1, 2} x {`-diag_scale` off, on}. File naming:
   `slab1d_<default|stream>_st<0|2>_np<1|2>[_ds].log`.
 - Capture is capped at `-ksp_max_it 200`: all four st=2 diag_scale configs are pathological
   and a 200-iteration residual history is a strong enough fingerprint.
-  Non-converged baselines are still valid fingerprints for a refactor diff. Under
-  ghost-flux the default-pc pair converges at 174/173 and the streaming-pmat pair hits
-  the cap (under Dirichlet-cell none of the four converged); all four capture lines carry
-  `|| true` so the capture runs to completion either way.
+  Non-converged baselines are still valid fingerprints for a refactor diff. Right
+  preconditioned, all four hit the cap (under left preconditioning the default-pc pair
+  stopped at 174/173 on its preconditioned residual, and under Dirichlet-cell none of the
+  four converged); all four capture lines carry `|| true` so the capture runs to
+  completion either way.
 - Re-capture with `make baselines` — only do this deliberately (i.e. when the reference
   behavior itself is being intentionally changed), never to make a failing test pass.
 - Environment matters for exact reproduction: these were captured with a debug PETSc main

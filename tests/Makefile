@@ -1371,9 +1371,10 @@ run_tests_parallel:
 # pathological, and a 200-iteration residual history is a strong enough
 # fingerprint for refactor comparison
 #
-# The default-pc pair converges (174 / 173 iterations); the precon_stream pair
-# hits the cap, so the driver exits 1 on it by design. All four lines carry a
-# || true so the capture runs to completion either way
+# Right preconditioned (the default since 2026-10-13), all four hit the cap
+# (the default-pc pair converged at 174 / 173 under left preconditioning, on
+# the preconditioned residual), so the driver exits 1 on them by design. All
+# four lines carry a || true so the capture runs to completion either way
 # ~~~~~~~~~~~
 BASE := -ksp_monitor -ksp_converged_reason -ksp_max_it 200
 capture_baselines:
