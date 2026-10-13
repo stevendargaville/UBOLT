@@ -1037,7 +1037,7 @@ run_tests_short_parallel:
 	@echo "Test 2D box, one MatSetValuesCOO per term in parallel"
 	$(MPIEXEC) -n 2 ./transportk -problem problems/box_50_st2.json -ksp_max_it 6 -ubolt_coo_two_call
 	@echo "Test 2D box, reflective left + bottom faces in parallel"
-	$(MPIEXEC) -n 2 ./transportk -problem problems/box_50_reflect_lb.json -ksp_max_it 5
+	$(MPIEXEC) -n 2 ./transportk -problem problems/box_50_reflect_lb.json -ksp_max_it 6
 	@echo "Test 2D box, S8 with unequal weights and reflective faces in parallel"
 	$(MPIEXEC) -n 2 ./transportk -problem problems/box_s8_reflect_coarse.json -ksp_max_it 6
 	@echo "Test 2D box, all faces reflective against the infinite-medium solution in parallel"

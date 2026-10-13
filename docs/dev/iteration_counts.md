@@ -115,7 +115,7 @@ Not pins: `make baselines` captures these at `-ksp_max_it 200` and a refactor di
 | `box_50_inf_medium_ghost` | `-check_inf_medium -ksp_rtol 1e-12` | 12 | 12 | - | check/short |  |
 | `box_50_inf_medium_ghost` | `-matfree_removal -check_inf_medium -ksp_rtol 1e-12` | 26 | - | - | short |  |
 | `box_50_ratio05` |  | 5 | 5 | - | short |  |
-| `box_50_reflect_lb` |  | 6 | 5 | - | check/short |  |
+| `box_50_reflect_lb` |  | 6 | 6 | - | check/short | np=2: local opt 5, the OpenMP CI image 6 (its sweep measured 5: the OpenMP count varies run to run) |
 | `box_50_reflect_lb` | `-check_matfree` | 6 | - | - | short |  |
 | `box_50_st0` |  | 3 | 3 | - | short |  |
 | `box_50_st2` |  | 6 | 6 | - | check/short |  |
