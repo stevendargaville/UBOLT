@@ -1101,22 +1101,6 @@ int main(int argc, char **args) {
                      "rhs moves by less than its rtol takes no iterations, so the scalar flux stops " \
                      "moving and the outer iteration would converge falsely. Raise -outer_rtol or " \
                      "lower -ksp_rtol", (double)outer_rtol, (double)inner_rtol);
-                  // A streaming-only pmat (-precon_stream, -matfree_removal
-                  // without the shift) under LEFT preconditioning stops each
-                  // solve on a preconditioned residual that need not track the
-                  // true one, and from the moments store's guesses that shows:
-                  // measured on slab_up3_inf_medium the outer iteration takes
-                  // 125 sweeps against the angular store's 19. Right
-                  // preconditioning (the repo's convention for that pmat) stops
-                  // on the true residual and matches the angular sweep count.
-                  // Said once, not refused: the answer is still right
-                  PCSide side = PC_LEFT;
-                  PetscCall(KSPGetPCSide(solver.ksp(), &side));
-                  if (reconstruct && !precon_ref_shift && (precon_stream || matfree_removal) && side == PC_LEFT) {
-                     PetscCall(PetscFPrintf(PETSC_COMM_WORLD, stderr, "note: -outer_store moments with a " \
-                        "streaming-only pmat under left preconditioning stops each inner solve on a preconditioned " \
-                        "residual, which can cost the outer iteration many sweeps: run -ksp_pc_side right\n"));
-                  }
                }
             }
             // sigma_t changed under the removal preconditioner

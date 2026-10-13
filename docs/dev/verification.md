@@ -189,7 +189,7 @@ sweep count (19 slab, 27 box, plex DG0 and DG1) at ~1e-11 (slab) and ~1e-12 (box
 against 1e-9 - the check reads each group's psi right after its solve, the last one
 standing, which is the psi the angular store keeps, so the check means the same. The
 shared-hierarchy cases converge to the same answer: `box_up2_inf_medium` on a
-streaming-only pmat (`-precon_stream -ksp_pc_side right`, every reconstruction stopping
+streaming-only pmat (`-precon_stream`, right preconditioned, every reconstruction stopping
 on the stall safeguard, 1.1e-12) and reference-shifted pmats on the slab oracle (no
 safeguard stop, 1.5e-11); on `box_up3_layers` with reference-shifted pmats the moments
 store's `-flux_vtk` agrees with the angular store's to 3.3e-10 relative (the fast group
@@ -203,7 +203,8 @@ measured on the way, both now guarded:
 - A streaming-only pmat under LEFT preconditioning stops each solve on the preconditioned
   residual, which from the moments store's guesses does not track the true residual:
   `slab_up3_inf_medium` took 125 sweeps (1.2e-10) against the angular store's 19, at
-  `-outer_recon none` too. Right preconditioning gives 19 again; the driver prints a note.
+  `-outer_recon none` too. Right preconditioning gives 19 again, and since 2026-10-13 it
+  is the default (`TransportSolver`); `-ksp_pc_side left` is that measured case.
 Without upscatter the moments store solves bitwise as the angular one (`slab_mg4_t05`,
 `plex_box_50_st2_dg1`: identical `-ksp_monitor` and byte-identical `-flux_vtk` files).
 

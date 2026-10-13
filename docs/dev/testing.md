@@ -14,15 +14,24 @@ this file used to carry went.
   count, so an iteration-count regression fails the run. A pin is the count measured on
   the local opt arch (`arch-linux-c-opt`), exactly, with no per-arch slack: every pin was
   re-set that way 2026-09-25 for the ghost-flux vacuum default (see "Switching the
-  default" in `docs/dev/history.md`). The same recipes run on every CI arch
+  default" in `docs/dev/history.md`), and again 2026-10-13 for right preconditioning
+  (below). The same recipes run on every CI arch
   (opt/debug/64-bit/OpenMP), so CI flags any arch that needs one more, and at that point
   the pin takes the max over the arches. The first CI run after the re-pin did that for
   four recipes: the 1D ghost-flux and 2D all-reflective `-matfree_removal` inf-medium
   checks (64-bit, 17 -> 18 and 24 -> 25), the 2D ghost-flux inf-medium check at np=2
-  (OpenMP, 11 -> 12) and the crooked pipe at np=2 (OpenMP, 114 -> 117). Every recipe
+  (OpenMP, 11 -> 12) and the crooked pipe at np=2 (OpenMP, 114 -> 117); the 2026-10-13
+  re-pin moved those recipes' local counts (except the 1D one, which keeps its 18) and
+  dropped their +1s with the notes. Every recipe
   carrying such a CI +1 today is marked in the note column of
   `docs/dev/iteration_counts.md`. Older per-arch notes in the history ("pinned 10") are
   the history of the pre-2026-09-25 policy.
+- Every count is a right-preconditioned one: `TransportSolver` sets `PC_RIGHT` (since
+  2026-10-13), so every solve stops on the TRUE residual whatever the preconditioner,
+  and no recipe passes `-ksp_pc_side` (before then the streaming-only twins passed
+  `-ksp_pc_side right` by hand and the rest ran PETSc's left default). Every pin was
+  re-set on that date (`docs/dev/history.md`, "Right preconditioning by default"). A
+  recipe that wants the left-preconditioned behaviour passes `-ksp_pc_side left`.
 - Multigroup caveat: `-ksp_max_it` is one option for the whole group sweep, so a
   multigroup recipe pins the **max over the groups**. A single group getting slower
   without exceeding that max will not fail the recipe — the multigroup baselines below
@@ -46,7 +55,7 @@ this file used to carry went.
   serial and -n 2, at `-outer_recon tol` (the default) and `none`; every `*_up3_layers`
   regression except CG-SUPG (refused), DG1 included; `-outer_recon 2`; and the two
   shared-hierarchy cases, reference-shifted pmats on `box_up3_layers` and a
-  streaming-only pmat (`-precon_stream -ksp_pc_side right`) on `box_up2_inf_medium`, which
+  streaming-only pmat (`-precon_stream`) on `box_up2_inf_medium`, which
   is the stall safeguard's recipe (every reconstruction stops on it). The reconstruction
   V-cycles are pinned by nothing: they are reported on stderr, separately from the inner
   iterations, and the pins stay the angular meaning (max inner iterations / sweeps).
@@ -141,7 +150,15 @@ new driver, plus the t0 structural identity, the painting identity at np=1 and n
 the 1D/2D infinite-medium checks.
 
 ### Single-group baselines
-Re-captured 2026-09-25 for the switch to the ghost-flux vacuum treatment as the default
+Re-captured 2026-10-13 for right preconditioning as the default (`TransportSolver`):
+the monitored residual of every solve is now the TRUE (unpreconditioned) one, so what
+the logs record changed, not the solves' arithmetic. The 10 `stream` logs (single-group
+and multigroup) were already right preconditioned (`-ksp_pc_side right` on their capture
+lines, dropped now) and came out byte-identical; the 14 `default` logs moved, and two
+captures of them on the reference environment were identical. On that environment the
+unchanged library first reproduced all 24 previous logs byte for byte (debug PETSc main,
+PFLARE main 1bdeb3c debug). Before that, 2026-09-25 for the switch to the ghost-flux
+vacuum treatment as the default
 (the capture history, with every older count, is in `docs/dev/history.md`, "Single-group
 baseline iteration counts"; the current counts are in `docs/dev/iteration_counts.md`). Before that, 2026-08-04 for the quadrature precision fix, then
 2026-08-01 after the Dirichlet-row fix to the matrix-free scatter, 2026-07-31 after the
@@ -150,15 +167,16 @@ came from the pre-refactor code (the single-file `UBOLTk.kokkos.cxx`); Phase 1a 
 1b each reproduced all 16 bitwise, which is what those phases were verified against. The
 `-ubolt_coo_two_call` assembly fallback reproduces them bitwise.
 
-- Full matrix: {default pc, `-precon_stream -ksp_pc_side right`} x {`slab_st0.json`,
+- Full matrix: {default pc, `-precon_stream`} x {`slab_st0.json`,
   `slab_st2.json`} x {np 1, 2} x {`-diag_scale` off, on}. File naming:
   `slab1d_<default|stream>_st<0|2>_np<1|2>[_ds].log`.
 - Capture is capped at `-ksp_max_it 200`: all four st=2 diag_scale configs are pathological
   and a 200-iteration residual history is a strong enough fingerprint.
-  Non-converged baselines are still valid fingerprints for a refactor diff. Under
-  ghost-flux the default-pc pair converges at 174/173 and the streaming-pmat pair hits
-  the cap (under Dirichlet-cell none of the four converged); all four capture lines carry
-  `|| true` so the capture runs to completion either way.
+  Non-converged baselines are still valid fingerprints for a refactor diff. Right
+  preconditioned, all four hit the cap (under left preconditioning the default-pc pair
+  stopped at 174/173 on its preconditioned residual, and under Dirichlet-cell none of the
+  four converged); all four capture lines carry `|| true` so the capture runs to
+  completion either way.
 - Re-capture with `make baselines` — only do this deliberately (i.e. when the reference
   behavior itself is being intentionally changed), never to make a failing test pass.
 - Environment matters for exact reproduction: these were captured with a debug PETSc main

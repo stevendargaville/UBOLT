@@ -289,7 +289,27 @@ PetscErrorCode TransportSolver::create(MPI_Comm comm, const TransportOperator &o
       PetscCall(PCSetUseAmat(pc, PETSC_TRUE));
    }
 
-   // Last, so the command line still wins - including -pc_composite_type
+   // Right preconditioning, so every solve stops on the TRUE residual
+   // ||b - A x||, whatever the preconditioner. Under left preconditioning the
+   // stopping test is on ||P^{-1}(b - A x)||, and with this composite (removal
+   // blocks, AIR on pmat, optional DSA) - above all with a streaming-only pmat,
+   // which leaves the removal and scattering to the other stages - that is not
+   // a reliable stand-in for the true residual, and it differs from one
+   // preconditioner to the next. Right preconditioning makes the stopping test
+   // the same quantity for every configuration, which the upscatter outer
+   // iteration's moments store (-outer_store moments) depends on: on a
+   // streaming-only pmat under left preconditioning slab_up3_inf_medium took
+   // 125 outer sweeps against 19.
+   //
+   // Only the side is set: the norm stays KSP_NORM_DEFAULT, which GMRES
+   // resolves to UNPRECONDITIONED on the right (and PRECONDITIONED on the
+   // left), so -ksp_pc_side left on the command line still works on its own.
+   // The one cost: right-preconditioned GMRES applies the preconditioner once
+   // more at the end of every solve that took an iteration, to form x = M^{-1} y
+   PetscCall(KSPSetPCSide(ksp_, PC_RIGHT));
+
+   // Last, so the command line still wins - including -pc_composite_type and
+   // -ksp_pc_side
    PetscCall(KSPSetFromOptions(ksp_));
    // The composite does not know the block-scaled stage's inner PC exists
    if (block_inner) PetscCall(PCSetFromOptions(block_inner));

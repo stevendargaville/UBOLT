@@ -456,11 +456,11 @@ RECONSTRUCTED from the group's last moments (`-outer_recon`, `Reconstruct` in tr
   run ends with the totals and how many solves stopped on the safeguard.
 - The answer is the angular store's because every inner solve still stops on its own
   residual test - never on a count, never on the phi change (an isotropic guess has
-  exact moments, so a phi-change test stops falsely). One caveat measured: with a
-  streaming-only pmat under LEFT preconditioning that residual is the preconditioned one,
-  which from the P1 guesses does not track the true residual well enough (slab_up3_inf_medium:
-  125 sweeps against 19); right preconditioning, the repo's convention for that pmat,
-  matches the angular sweep count, and the driver says so on stderr.
+  exact moments, so a phi-change test stops falsely). That residual is the TRUE one
+  because `TransportSolver` is right preconditioned by default (below, "The
+  preconditioner"). Under `-ksp_pc_side left` it is the preconditioned one, which with a
+  streaming-only pmat does not track the true residual from the P1 guesses
+  (slab_up3_inf_medium: 125 sweeps against 19, measured when left was the default).
 - Sweep 0 has no moments and starts from zero, as the angular store does, and the groups
   above `g_up` are solved once, at the inner rtol, from zero: they never reconstruct.
   Without upscatter there is no outer iteration, so the store only drops the per-group psi
@@ -502,7 +502,7 @@ it into the library.
 
 `TransportSolver::create(comm, op, pmat, dsa, block_scale)` builds a KSP on `op.mat()`
 with a multiplicative `PCCOMPOSITE` (`-pc_composite_type additive` selects the additive
-form; `KSPSetFromOptions` runs last):
+form; `KSPSetFromOptions` runs last), RIGHT preconditioned:
 
 | Index | Stage | What it is |
 |---|---|---|
@@ -510,6 +510,18 @@ form; `KSPSetFromOptions` runs last):
 | 1 | PCAIR (`-sub_1_pc_air_*`) | PFLARE's AIR on pmat, inverting the streaming. With `block_scale` a shell (`BlockScaledStreamingPCShell`) builds PCAIR on `D^{-1} pmat` and applies it to `D^{-1} r`; the inner PC keeps the `sub_1_` prefix |
 | 2 | `DSAPCShell` (optional) | `DSAPrecon::apply`, `P D_diff^{-1} R`; its inner solve under `-dsa_` |
 
+- **Right preconditioning** (the default since 2026-10-13; `KSPSetPCSide(PC_RIGHT)`
+  before `KSPSetFromOptions`, so `-ksp_pc_side left` still overrides it). Only the side
+  is set: GMRES's default norm on the right is the unpreconditioned one, so every solve
+  stops on the true residual `||b - A x||`, whatever the composite holds. Under left
+  preconditioning the test is on `||P^{-1}(b - A x)||`, which differs between
+  preconditioners and, above all on a streaming-only pmat (removal and scattering left
+  to the other stages), is not a reliable stand-in for the true residual; the moments
+  store's outer iteration depends on the true one (the group sweep, above). The cost:
+  right-preconditioned GMRES applies the preconditioner once more at the end of every
+  solve that took an iteration, to form `x = M^{-1} y`. Before 2026-10-13 PETSc's
+  default (left) applied and the streaming-only twin recipes passed `-ksp_pc_side right`
+  by hand; `docs/dev/history.md`, "Right preconditioning by default".
 - **`ElementBlockInverse`** reads the n_basis x n_basis block of each (cell, angle)
   straight off a MATAIJKOKKOS matrix's device CSR (strided by `n_angles` under the row
   layout, so not PETSc's contiguous-block inverse) and inverts it on device; `apply` is

@@ -21,6 +21,11 @@ struct RemovalPCCtx;
 // KSPSetFromOptions runs last in create(), so -pc_composite_type additive
 // selects the paper's additive combination from the command line
 //
+// The KSP is RIGHT preconditioned by default (set before KSPSetFromOptions,
+// so -ksp_pc_side left still overrides it): every solve stops on the true,
+// unpreconditioned residual whatever the preconditioner - see the comment at
+// that call
+//
 // With a DSA the composite is also switched to updating its intermediate
 // residuals from the AMAT rather than pmat, since pmat carries no scattering -
 // see the comment at that call. Without one, nothing about the preconditioner
