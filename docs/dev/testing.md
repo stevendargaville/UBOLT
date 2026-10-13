@@ -31,8 +31,13 @@ this file used to carry went.
   iteration over the thermal groups takes to bring its error estimate,
   change * rho / (1 - rho), below `-outer_rtol` (the first sweep included; never fewer
   than 3; running out fails the run, like a non-converged inner solve). Their
-  `-ksp_max_it` is the max over every inner solve of every sweep - in practice the first
-  sweep's, since later sweeps warm start from the last sweep's psi and need fewer. Both
+  `-ksp_max_it` is the max over every inner solve of every sweep. Under the default
+  adaptive inner rtol (`-outer_inner_gamma 0.01`: a thermal solve at max(inner rtol,
+  0.01 x the last sweep's change), and the outer only stops on a sweep at the inner rtol)
+  that is usually a fast group's solve, at the inner rtol from a zero guess; the thermal
+  solves are loose early and warm started later, so a thermal-only file pins 1-2. The
+  `-outer_inner_gamma 0` recipes run every solve at the inner rtol, bitwise the behaviour
+  before the adaptive rtol, and keep its pins (where the max was the first sweep's). Both
   are pinned on the local opt count like any other, and both are mirrored in
   `iteration_counts.md` (`k / n`). The exact oracle for the outer iteration is the
   infinite-medium check on the `*_up*_inf_medium` files (`verification.md`, "Upscatter").

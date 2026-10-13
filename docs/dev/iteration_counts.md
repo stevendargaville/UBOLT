@@ -1,11 +1,11 @@
 # Pinned iteration counts
 
-`tests/Makefile` is the ONLY source of truth for a pin: every solve recipe passes `-ksp_max_it <pin>`. This file tabulates those pins, one table per backend, as the Makefile has them on 2026-10-12, generated from its recipe lines (389 `transportk` lines, 238 distinct problem + option combinations; the `verify_*` lines have no pin, see `docs/dev/verification.md`). If a number here disagrees with the Makefile, the Makefile wins and this row is stale: re-pin in the Makefile first, then copy the number here.
+`tests/Makefile` is the ONLY source of truth for a pin: every solve recipe passes `-ksp_max_it <pin>`. This file tabulates those pins, one table per backend, as the Makefile has them on 2026-10-13, generated from its recipe lines (391 `transportk` lines, 240 distinct problem + option combinations; the `verify_*` lines have no pin, see `docs/dev/verification.md`). If a number here disagrees with the Makefile, the Makefile wins and this row is stale: re-pin in the Makefile first, then copy the number here.
 
 How to read the tables:
 - A pin is the count measured on the local opt arch (`arch-linux-c-opt`), exactly, unless the note column says a CI image needed more (the pin policy is in `docs/dev/testing.md`).
 - A multigroup recipe pins the MAX over its groups: `-ksp_max_it` is one option for the whole sweep. The per-group counts are in the history tables.
-- An upscatter recipe (note "upscatter") pins two numbers, written `k / n`: `-ksp_max_it k`, the MAX over every inner solve of every sweep (in practice the first sweep's, which starts from zero; later sweeps warm start), and `-outer_max_it n`, the number of sweeps over the thermal groups for the error estimate change * rho / (1 - rho) to reach `-outer_rtol`, the first sweep included. Recipes without `-ksp_rtol` / `-outer_rtol` run at the upscatter defaults (inner 1e-10, outer 1e-8).
+- An upscatter recipe (note "upscatter") pins two numbers, written `k / n`: `-ksp_max_it k`, the MAX over every inner solve of every sweep (under the default adaptive inner rtol, `-outer_inner_gamma 0.01`, usually a fast group's, solved once from zero at the inner rtol; the thermal solves are loose early and warm started later), and `-outer_max_it n`, the number of sweeps over the thermal groups for the error estimate change * rho / (1 - rho) to reach `-outer_rtol`, the first sweep included. Recipes without `-ksp_rtol` / `-outer_rtol` run at the upscatter defaults (inner 1e-10, outer 1e-8); the `-outer_inner_gamma 0` rows run every solve at the inner rtol and keep the pre-adaptive pins.
 - "suite": `check` is `run_check`, `short` is `run_tests_short_serial` / `_parallel`, `full` is `run_tests_serial` / `_parallel` (run by `make tests` after `tests_short`). "needs triangle / tetmesher": a generated simplex box, skipped where PETSc has no triangle / (c)tetgen - the CI images have neither.
 - np=4 appears only on the painting identities (and on the verify drivers).
 - Options are the recipe's own; `-problem problems/<problem>.json`, `-ksp_max_it` and `-outer_max_it` are left out.
@@ -87,7 +87,7 @@ Not pins: `make baselines` captures these at `-ksp_max_it 200` and a refactor di
 | `slab_st2_reflect_left` | `-ubolt_coo_two_call` | 8 | - | - | short |  |
 | `slab_up3_inf_medium` | `-check_inf_medium -ksp_rtol 1e-12 -outer_rtol 1e-11` | 12 / 19 | 12 / 19 | - | check (np=2: short) | upscatter |
 | `slab_up3_inf_medium` | `-matfree_removal -check_inf_medium -ksp_rtol 1e-12 -outer_rtol 1e-11` | 8 / 19 | - | - | short | upscatter |
-| `slab_up3_layers` |  | 16 / 34 | 16 / 34 | - | short | upscatter |
+| `slab_up3_layers` |  | 11 / 34 | 12 / 34 | - | short | upscatter |
 | `slab_up3_layers` | `-precon_dsa` | 8 / 34 | - | - | short | upscatter |
 | `slab_void_gap` |  | 23 | - | - | short |  |
 | `slab_void_gap` | `-matfree_removal -precon_ref_shift -check_ref_shift` | 23 | - | - | short |  |
@@ -156,10 +156,12 @@ Not pins: `make baselines` captures these at `-ksp_max_it 200` and a refactor di
 | `box_random8` |  | 19 | 19 | - | short |  |
 | `box_random8` | `-precon_dsa` | 7 | 6 | - | short |  |
 | `box_s8_reflect_coarse` |  | 6 | 6 | - | short |  |
-| `box_up2_inf_medium` | `-check_inf_medium -ksp_rtol 1e-12 -outer_rtol 1e-11` | 12 / 27 | 12 / 27 | - | short | upscatter |
-| `box_up2_inf_medium` | `-precon_dsa -check_inf_medium -ksp_rtol 1e-12 -outer_rtol 1e-11` | 9 / 27 | - | - | short | upscatter |
-| `box_up3_layers` |  | 15 / 15 | 15 / 15 | - | short | upscatter |
-| `box_up3_layers` | `-matfree_removal -precon_ref_shift` | 17 / 15 | - | - | short | upscatter |
+| `box_up2_inf_medium` | `-check_inf_medium -ksp_rtol 1e-12 -outer_rtol 1e-11` | 2 / 27 | 2 / 27 | - | short | upscatter |
+| `box_up2_inf_medium` | `-check_inf_medium -ksp_rtol 1e-12 -outer_rtol 1e-11 -outer_inner_gamma 0` | 12 / 27 | - | - | short | upscatter, every solve at the inner rtol |
+| `box_up2_inf_medium` | `-precon_dsa -check_inf_medium -ksp_rtol 1e-12 -outer_rtol 1e-11` | 1 / 27 | - | - | short | upscatter |
+| `box_up3_layers` |  | 11 / 16 | 11 / 16 | - | short | upscatter |
+| `box_up3_layers` | `-outer_inner_gamma 0` | 15 / 15 | - | - | short | upscatter, every solve at the inner rtol |
+| `box_up3_layers` | `-matfree_removal -precon_ref_shift` | 15 / 16 | - | - | short | upscatter |
 | `box_void_channel` |  | 26 | - | - | short |  |
 | `box_void_channel` | `-matfree_removal -precon_ref_shift` | 26 | - | - | short |  |
 | `box_void_channel` | `-matfree_removal -precon_ref_shift -precon_dsa` | 6 | 6 | - | short |  |
@@ -216,7 +218,7 @@ Not pins: `make baselines` captures these at `-ksp_max_it 200` and a refactor di
 | `plex_box_diffusive` | `-matfree_removal -precon_ref_shift -precon_dsa` | 5 | 5 | - | short |  |
 | `plex_box_diffusive` | `-precon_dsa` | 5 | 5 | - | short |  |
 | `plex_box_diffusive` | `-precon_dsa -pc_composite_type additive` | 7 | - | - | short |  |
-| `plex_box_up3_layers` |  | 15 / 15 | 15 / 15 | - | short | upscatter |
+| `plex_box_up3_layers` |  | 11 / 16 | 11 / 16 | - | short | upscatter |
 | `plex_box_void_channel` |  | 26 | - | - | short | np=1: local opt 25 (np=2 26), pinned 26 for the gnu_opt CI image |
 | `plex_box_void_channel` | `-matfree_removal -precon_ref_shift -precon_dsa` | 6 | 6 | - | short |  |
 | `plex_box_void_channel` | `-precon_dsa` | 6 | 6 | - | short |  |
@@ -279,8 +281,8 @@ Not pins: `make baselines` captures these at `-ksp_max_it 200` and a refactor di
 | `cg_box_50_reflect_lb` |  | 6 | - | - | short |  |
 | `cg_box_50_reflect_lb` | `-precon_dsa` | 4 | - | - | short |  |
 | `cg_box_50_st2` |  | 7 | 7 | - | check/short |  |
-| `cg_box_up2_inf_medium` | `-check_inf_medium -ksp_rtol 1e-12 -outer_rtol 1e-11` | 14 / 27 | 13 / 27 | - | short | upscatter |
-| `cg_box_up3_layers` |  | 16 / 16 | 16 / 16 | - | short | upscatter |
+| `cg_box_up2_inf_medium` | `-check_inf_medium -ksp_rtol 1e-12 -outer_rtol 1e-11` | 2 / 27 | 2 / 27 | - | short | upscatter |
+| `cg_box_up3_layers` |  | 12 / 17 | 12 / 17 | - | short | upscatter |
 | `cg_box_diffusive` |  | 39 | - | - | short |  |
 | `cg_box_diffusive` | `-precon_dsa` | 5 | 5 | - | short |  |
 | `cg_box_void_channel` |  | 47 | 46 | - | short |  |

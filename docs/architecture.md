@@ -375,8 +375,8 @@ scalar flux settles - block Gauss-Seidel with stored angular fluxes:
   other group's latest cached flux: this sweep's above it, the last sweep's below it.
 - From the second sweep each thermal group's KSP starts from its own psi of the last
   sweep (`KSPSetInitialGuessNonzero`), which is why the driver keeps one psi Vec per
-  group. Every inner solve still stops on its own residual test; nothing stops it on a
-  count or on the flux change.
+  group. Every inner solve still stops on its own residual test (at the adaptive rtol
+  below); nothing stops it on a count or on the flux change.
 - Convergence is measured while the cache is overwritten: `set_scalar_flux(g, psi_g,
   &change_sq, &norm_sq)` accumulates the GLOBAL `||phi_new - phi_old||^2` and
   `||phi_new||^2` (over owned nodes; `GroupTransferCG` over owned vertices, of which it
@@ -388,13 +388,29 @@ scalar flux settles - block Gauss-Seidel with stored angular fluxes:
   when that estimate is below `-outer_rtol` (default 1e-8), never on it while rho >= 1
   (not contracting, or noise), always on a change of exactly zero, and fails the run
   after `-outer_max_it` sweeps (default 1000). One line per sweep goes to stderr
-  (change, rho, estimate, inner iterations).
+  (change, rho, estimate, the thermal inner rtol, inner iterations).
 - Under upscatter the inner KSP rtol defaults to 1e-10 unless `-ksp_rtol` is given, and
   an `-outer_rtol` below the effective inner rtol is refused: a warm-started inner solve
   whose rhs moves by less than its rtol takes no iterations, phi stops moving and the
   outer iteration would converge falsely. With no upscatter (`g_up == G`) none of this
   runs: PETSc's default rtol, the single sweep, its rhs and its zero initial guess are
   bitwise what they were before the outer iteration.
+- The inner tolerance is adaptive (inexact inner-outer, `-outer_inner_gamma`, default
+  0.01): in sweep k >= 1 every thermal solve runs at
+  `eta_k = max(inner rtol, gamma * min(change_{k-1}, 1))`, in sweep 0 at
+  `max(inner rtol, gamma)` (gamma in [0, 1), so eta is an rtol);
+  the groups above `g_up`, solved once, always run at the inner rtol. The rtol is set on
+  the KSP before every solve (`KSPSetTolerances`, only the rtol; a solver can be shared by
+  fast and thermal groups, one per ref-shift bin). The outer iteration stops only on a
+  sweep whose `eta_k` IS the inner rtol: an error test passing on a looser sweep sweeps
+  again, or the answer would be only as accurate as a loose inner solve. An early sweep's
+  flux is far from converged, so its digits beyond gamma times the step are thrown away
+  by the next sweep anyway. The sweep after a loose one that passed the test runs at the
+  inner rtol outright, so the rule costs at most one sweep; on the `*_up3_layers`
+  regressions the total inner iterations fall to about a third (box 238 -> 75, slab
+  587 -> 185) for 0-1 extra sweeps. `-outer_inner_gamma 0` solves every group at
+  the inner rtol (the behaviour before it, bitwise). The per-sweep stderr line prints the
+  thermal rtol it used.
 - Nothing accelerates the outer iteration (no two-grid / grey diffusion correction), so
   a thermal block with rho near 1 takes many sweeps.
 

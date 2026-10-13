@@ -2959,3 +2959,40 @@ the per-sweep changes agree with serial to three digits). The infinite-medium sw
 contractions are set by the files: 0.25 for `slab_up3_inf_medium` (0.656 before its
 upscatter was halved, 54 sweeps at `-outer_rtol 1e-10` on the raw change with an error
 of 6e-10, too close to the 1e-9 check to keep) and 0.375 for the `box_up2` pair.
+
+## Upscatter: the adaptive inner tolerance (2026-10-13)
+Inexact inner-outer on the outer iteration (`-outer_inner_gamma`, default 0.01): a thermal
+solve in sweep k >= 1 at max(inner rtol, gamma * min(change_{k-1}, 1)), in sweep 0 at
+max(inner rtol, gamma); the groups above `g_up` at the inner rtol. The outer only stops on
+a sweep at the inner rtol; the sweep after a loose one that passed the test runs at the
+inner rtol outright (without that, `box_up3_layers` took two extra sweeps, 15 -> 17, as
+gamma times the change only reaches 1e-10 at a change of 1e-8). Motivated by an
+out-of-repo probe (Oct 2026, same algorithm, DSA, inner 1e-10 / outer 1e-8): total inner
+GMRES iterations 924 -> 398 on a 4-group thermal box, 936 -> 378 on a thick variant,
+487 -> 192 on a C5G7-cross-section lattice, at most one extra outer iteration.
+
+In the suite, pins lifted, local opt, serial: `-ksp_max_it / -outer_max_it` before ->
+after, and the total inner iterations over the run (every group of every sweep):
+
+| recipe | pin before -> after | total inner iterations |
+|---|---|---|
+| `slab_up3_inf_medium` (tight) | 12 / 19 -> 12 / 19 | 253 -> 83 |
+| `slab_up3_inf_medium -matfree_removal` (tight) | 8 / 19 -> 8 / 19 | 308 -> 292 |
+| `box_up2_inf_medium` (tight) | 12 / 27 -> 2 / 27 | 279 -> 74 |
+| `box_up2_inf_medium -precon_dsa` (tight) | 9 / 27 -> 1 / 27 | 229 -> 54 |
+| `cg_box_up2_inf_medium` (tight) | 14 / 27 -> 2 / 27 (-n 2: 13 / 27 -> 2 / 27) | 331 -> 76 |
+| `slab_up3_layers` | 16 / 34 -> 11 / 34 (-n 2: 12 / 34) | 587 -> 185 |
+| `slab_up3_layers -precon_dsa` | 8 / 34 -> 8 / 34 | 334 -> 144 |
+| `box_up3_layers` | 15 / 15 -> 11 / 16 | 238 -> 75 |
+| `box_up3_layers -matfree_removal -precon_ref_shift` | 17 / 15 -> 15 / 16 | 269 -> 82 |
+| `plex_box_up3_layers` | 15 / 15 -> 11 / 16 | 239 -> 77 |
+| `cg_box_up3_layers` | 16 / 16 -> 12 / 17 | 277 -> 83 |
+
+The infinite-medium errors are unchanged in size (~1e-11 slab, ~1e-12 box and CG). Where
+`-ksp_max_it` stays, the max is the fast group's single solve at the inner rtol. The
+`-matfree_removal` slab gains little: its warm-started thermal solves take ~15
+iterations a sweep at any rtol in the range. Two `-outer_inner_gamma 0` recipes keep
+the previous behaviour pinned (`box_up2_inf_medium` tight 12 / 27, `box_up3_layers`
+15 / 15); at `-outer_inner_gamma 0` every upscatter recipe of `tests_short` is bitwise
+identical to main before the change (`-ksp_monitor`, 17 recipes), and every
+downscatter-only recipe (344 runs, serial and -n 2) is bitwise identical at the default.

@@ -9,7 +9,7 @@ This file is what is open. The finished phases' narratives, every postscript, th
 notes and the pre-restructure "Current state" paragraph are in `docs/dev/history.md`,
 verbatim; "Where the notes live" at the end maps the names code comments use onto it.
 
-## Current state (updated 2026-10-12)
+## Current state (updated 2026-10-13)
 
 ### Next up
 - Upscatter is in (Oct 2026): the driver's group sweep repeats over the thermal groups
@@ -17,7 +17,13 @@ verbatim; "Where the notes live" at the end maps the names code comments use ont
   iteration, warm-starting each group's KSP from its last psi and stopping on an
   error estimate, change * rho / (1 - rho) with rho from successive changes
   (`-outer_rtol`, default 1e-8, refused below the inner rtol, which defaults to
-  1e-10 under upscatter; `-outer_max_it`). Downscatter-only problems are bitwise unchanged. Not done: any
+  1e-10 under upscatter; `-outer_max_it`). Downscatter-only problems are bitwise unchanged. Since
+  2026-10-13 the inner rtol is adaptive (inexact inner-outer, `-outer_inner_gamma`, default
+  0.01): a thermal solve in sweep k runs at max(inner rtol, gamma * change_{k-1}), the fast
+  groups at the inner rtol, and the outer only stops on a sweep at the inner rtol (the sweep
+  after a loose one that passed runs at it outright); total inner iterations on the
+  `*_up3_layers` regressions fall to about a third for 0-1 extra sweeps, and
+  `-outer_inner_gamma 0` is the previous behaviour bitwise. Not done: any
   acceleration of the outer iteration (two-grid / grey diffusion), which a slowly
   converging thermal block would want - see docs/architecture.md, the group sweep.
 - Extensions the refactor's seams now make local (not scheduled): a time-derivative term
@@ -214,7 +220,8 @@ two CG items under Next up, and:
       Block Gauss-Seidel over the thermal groups in `tests/transportk`, the cache
       zero-initialised through `set_scalar_flux` (so the validity flag stays) and the
       change measured while it is overwritten; the stop is on the error estimate
-      change * rho / (1 - rho). Checked against the G x G
+      change * rho / (1 - rho), with an adaptive inner rtol (`-outer_inner_gamma`,
+      2026-10-13). Checked against the G x G
       infinite-medium constants (`-check_inf_medium`, 1D/2D/CG) and pinned on painted
       1D/2D/DG0/CG problems (`-outer_max_it` alongside `-ksp_max_it`). Open: acceleration
       of the outer iteration (a grey / two-grid diffusion correction).

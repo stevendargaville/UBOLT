@@ -145,7 +145,7 @@ you:
   row `g` is everything scattering OUT of `g`. Anything below the diagonal is
   upscatter: the driver then repeats the sweep over the thermal groups (from
   the first group anything upscatters into) as an outer iteration until their
-  scalar flux settles (`-outer_rtol`, `-outer_max_it`). Without it one sweep
+  scalar flux settles (`-outer_rtol`, `-outer_max_it`, `-outer_inner_gamma`). Without it one sweep
   is exact.
 - A group whose `Sigma_t` equals its `Sigma_s[g][g]` has scattering ratio
   exactly 1 (no absorption). Fine with a vacuum face to leak through; singular
