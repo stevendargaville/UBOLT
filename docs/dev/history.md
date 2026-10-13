@@ -2996,3 +2996,72 @@ the previous behaviour pinned (`box_up2_inf_medium` tight 12 / 27, `box_up3_laye
 15 / 15); at `-outer_inner_gamma 0` every upscatter recipe of `tests_short` is bitwise
 identical to main before the change (`-ksp_monitor`, 17 recipes), and every
 downscatter-only recipe (344 runs, serial and -n 2) is bitwise identical at the default.
+
+## Upscatter: the moments store (2026-10-13)
+`-outer_store moments` keeps each thermal group's scalar flux and current between sweeps
+instead of its angular flux, and one psi Vec (plus three psi-sized scratch Vecs) serves
+every solve; a thermal solve after sweep 0 starts from the P1 expansion of the moments
+refined by Richardson V-cycles on L_g to its own rtol (`-outer_recon tol`; `none` is the
+P1 guess alone). Built on an out-of-repo campaign (Oct 2026, a probe driver on this
+codebase): reconstructing to the seeded solve's rtol leaves GMRES the iterations it needs
+from the stored psi, further buys nothing, the inter-stage residual must be the TRUE L_g,
+and with shared hierarchies the reconstruction converges slowly or not at all - hence the
+stall safeguard.
+
+Cost, local opt, pins lifted, serial (np=2 in brackets where it differs): total inner
+GMRES iterations over the run, and total reconstruction V-cycles, which are a count of
+their own (one V-cycle is one stage-0 + stage-1 apply and two L_g applies; a GMRES
+iteration is one full composite apply and one operator apply). Same sweep count in every
+column.
+
+| recipe | sweeps | angular: inner | moments tol: inner + V-cycles | moments none: inner |
+|---|---|---|---|---|
+| `slab_up3_layers` | 34 | 185 (186) | 148 + 123 (149 + 126) | 414 (456) |
+| `box_up3_layers` | 16 | 75 | 50 + 73 (50 + 72) | 181 (178) |
+| `plex_box_up3_layers` | 16 | 77 | 49 + 75 (50 + 77) | 182 (183) |
+| `plex_box_up3_layers_dg1` | 17 | 83 | 54 + 99 (53 + 98) | 223 (225) |
+| `box_up3_layers -matfree_removal -precon_ref_shift` | 16 | 82 | 68 + 173 | 255 |
+| `box_up3_layers -outer_recon 2` | 16 | - | 84 + 60 | - |
+| `box_up3_layers -precon_dsa` | 16 | 71 | 71 + 73 | - |
+| `slab_up3_layers -precon_dsa` | 34 | 144 | 144 + 123 | - |
+| `slab_up3_inf_medium` (tight) | 19 | 83 (84) | 53 + 55 (69 + 55) | 86 (85) |
+| `box_up2_inf_medium` (tight) | 27 | 74 | 54 + 52 | 74 |
+| `plex_box_up2_inf_medium` (tight) | 27 | 74 (73) | 54 + 52 | 74 |
+| `plex_box_up2_inf_medium_dg1` (tight) | 27 | 98 (96) | 56 + 77 | 99 (98) |
+
+No solve stopped on the stall safeguard in any of these. The moments store at the
+default is CHEAPER in inner iterations than the stored psi: the reconstruction sees this
+sweep's rhs (the groups above already re-solved), which the last sweep's psi does not.
+The P1 guess alone costs 2-3x the angular inner iterations. The pins (max inner / sweeps)
+are the angular twins' except on the oracles, whose max was a thermal solve and drops by
+one (box/plex DG0 2 -> 1).
+
+The shared hierarchies, serial, oracle errors against 1e-9:
+
+| recipe | store | max / sweeps | inner + V-cycles | safeguard stops | error |
+|---|---|---|---|---|---|
+| `box_up3_layers -matfree_removal -precon_ref_shift` | moments tol | 15 / 16 | 68 + 173 | 0 | (flux 3.3e-10 rel. of angular) |
+| `slab_up3_inf_medium -matfree_removal -precon_ref_shift` | angular | 17 / 19 | 99 | - | 1.2e-11 |
+| | moments tol | 17 / 19 | 77 + 128 | 0 | 1.5e-11 |
+| `box_up2_inf_medium -precon_stream -ksp_pc_side right` | angular | 5 / 27 | 184 | - | 1.1e-12 |
+| | moments tol | 5 / 27 | 165 + 52 | 52 of 52 | 1.1e-12 |
+| `slab_up3_inf_medium -precon_stream -ksp_pc_side right` | angular | 8 / 19 | 312 | - | 9.7e-12 |
+| | moments tol | 8 / 19 | 312 + 36 | 36 of 36 | 9.7e-12 |
+| `slab_up3_inf_medium -precon_stream` (left) | angular | 8 / 19 | 292 | - | 1.8e-11 |
+| | moments tol / none | 8 / 125 | 1943 + 248 / 1943 | 248 of 248 | 1.2e-10 |
+
+On a streaming-only pmat every reconstruction stops on its first step (the guess is the
+P1 seed, the tol and none runs are then identical), so the safeguard costs exactly one
+V-cycle per solve. Before the trial iterate went into a scratch Vec the refused step was
+undone as psi - dz; with the diverging dz many orders larger than psi that left rounding
+noise, and the left-preconditioned slab oracle failed at 2.1e-3 after 92 sweeps. Under
+LEFT preconditioning the streaming-only pmat's preconditioned residual does not track the
+true one from the P1 guesses (125 sweeps against 19, at none too); right preconditioning,
+already the repo's convention for that pmat, matches the angular store, and the driver
+prints a note when it sees the left side there.
+
+Bitwise: `-outer_store angular` is the default and unchanged - every recipe of
+`tests_short` present before the store gives byte-identical `-ksp_monitor` output (the
+"Bitwise capture" procedure, base = PR #25's head 257f5a6). Without upscatter the
+moments store solves bitwise as the angular one, flux files included (`slab_mg4_t05`,
+`plex_box_50_st2_dg1`).

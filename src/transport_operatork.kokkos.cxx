@@ -62,6 +62,48 @@ static PetscErrorCode ShellMatMultApply(Mat A, Vec x, Vec y)
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
+// L: the assembled terms, then the matrix-free terms that are not a scatter
+static PetscErrorCode UnscatteredMatMultApply(Mat A, Vec x, Vec y)
+{
+   TransportOperator *op;
+
+   PetscFunctionBeginUser;
+
+   PetscCall(MatShellGetContext(A, &op));
+
+   PetscCall(MatMult(op->assembled_mat(), x, y));
+   for (const OperatorTerm *term : op->unscattered_matrix_free_terms()) PetscCall(term->apply_add(x, y));
+
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+// A MatShell over the operator's rows, applying mult, handing out the
+// assembled matrix's vector type
+static PetscErrorCode CreateOperatorShell(MPI_Comm comm, const PhaseSpace &ps, Mat assembled, \
+   TransportOperator *ctx, PetscErrorCode (*mult)(Mat, Vec, Vec), Mat *shell)
+{
+   PetscFunctionBeginUser;
+
+   const PetscInt local_rows = ps.local_rows();
+   const PetscInt global_rows = ps.global_rows();
+   PetscCall(MatCreateShell(comm, local_rows, local_rows, global_rows, global_rows, ctx, shell));
+   PetscCall(MatShellSetOperation(*shell, MATOP_MULT, (void (*)(void))mult));
+   PetscCall(MatAssemblyBegin(*shell, MAT_FINAL_ASSEMBLY));
+   PetscCall(MatAssemblyEnd(*shell, MAT_FINAL_ASSEMBLY));
+   // Have to make sure to set the type of vectors the shell creates - without
+   // it the shell hands out host vectors and every Kokkos view access silently
+   // round-trips through host
+   VecType vtype;
+   PetscCall(MatGetVecType(assembled, &vtype));
+   PetscCall(MatShellSetVecType(*shell, vtype));
+
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
 PetscErrorCode TransportOperator::create(const Discretisation &disc)
 {
    PetscFunctionBeginUser;
@@ -89,6 +131,7 @@ PetscErrorCode TransportOperator::destroy()
    PetscFunctionBeginUser;
 
    PetscCall(MatDestroy(&shell_));
+   PetscCall(MatDestroy(&unscattered_shell_));
    PetscCall(MatDestroy(&assembled_));
    // The device views have to go before PetscFinalize takes Kokkos down
    coo_v_d_ = PetscScalarKokkosView();
@@ -141,27 +184,23 @@ PetscErrorCode TransportOperator::assemble()
    // either half (RemovalTerm::set_matrix_free) can be switched in either
    // order relative to being added - only before the first assemble
    matrix_free_.clear();
+   unscattered_free_.clear();
    for (const OperatorTerm *term : terms_) {
+      // L leaves the scatter out, which only a matrix-free scatter allows
+      PetscCheck(!(term->assembled() && term->is_scattering()), comm_, PETSC_ERR_SUP, \
+         "a scattering term must be matrix-free: the operator without its scatter (unscattered_mat) " \
+         "could not leave an assembled one out");
       if (term->assembled()) assembled_terms.push_back(term);
       if (term->matrix_free()) matrix_free_.push_back(term);
+      if (term->matrix_free() && !term->is_scattering()) unscattered_free_.push_back(term);
    }
    PetscCall(assemble_into(assembled_, (PetscInt)assembled_terms.size(), assembled_terms.data()));
 
    // Nothing to do on a values-only refill
    if (shell_) PetscFunctionReturn(PETSC_SUCCESS);
 
-   const PetscInt local_rows = ps_.local_rows();
-   const PetscInt global_rows = ps_.global_rows();
-   PetscCall(MatCreateShell(comm_, local_rows, local_rows, global_rows, global_rows, this, &shell_));
-   PetscCall(MatShellSetOperation(shell_, MATOP_MULT, (void (*)(void))ShellMatMultApply));
-   PetscCall(MatAssemblyBegin(shell_, MAT_FINAL_ASSEMBLY));
-   PetscCall(MatAssemblyEnd(shell_, MAT_FINAL_ASSEMBLY));
-   // Have to make sure to set the type of vectors the shell creates - without
-   // it the shell hands out host vectors and every Kokkos view access silently
-   // round-trips through host
-   VecType vtype;
-   PetscCall(MatGetVecType(assembled_, &vtype));
-   PetscCall(MatShellSetVecType(shell_, vtype));
+   PetscCall(CreateOperatorShell(comm_, ps_, assembled_, this, ShellMatMultApply, &shell_));
+   PetscCall(CreateOperatorShell(comm_, ps_, assembled_, this, UnscatteredMatMultApply, &unscattered_shell_));
 
    PetscFunctionReturn(PETSC_SUCCESS);
 }

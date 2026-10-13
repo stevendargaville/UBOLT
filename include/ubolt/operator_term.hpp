@@ -73,6 +73,15 @@ public:
       PetscFunctionBeginUser;
       PetscFunctionReturn(PETSC_SUCCESS);
    }
+
+   // Is this term the within-group scattering - the one integral operator
+   // coupling a node's angles? Everything else (streaming, removal, any new
+   // local term) is the operator L the preconditioner's removal and AIR stages
+   // invert, which TransportOperator::unscattered_mat() applies: L = the whole
+   // operator minus every term answering yes. Default no, so a new term is part
+   // of L unless it says otherwise. A scattering term must be matrix-free (the
+   // assembled matrix cannot leave a term out); assemble() refuses one that is not
+   virtual PetscBool is_scattering() const { return PETSC_FALSE; }
 };
 
 #endif

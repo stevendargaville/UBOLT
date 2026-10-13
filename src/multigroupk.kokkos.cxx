@@ -1,5 +1,7 @@
 #include "ubolt/multigroup.hpp"
 #include "petsc_kokkos.hpp"
+#include <KokkosBlas.hpp>
+#include <utility>
 
 // The kernels below capture plain values and shallow view copies, never `this`
 // - a member access inside a KOKKOS_LAMBDA would dereference a host pointer on
@@ -239,6 +241,28 @@ static void OverwriteMeasured(PetscScalar2DKokkosView fresh_d, PetscScalar2DKokk
       }, *change_sq, *norm_sq);
 }
 
+// current(node, d) = sum_a psi(node, a) w_a Omega_a[d]: the angular integral's
+// gemm against the (n_angles, dim) first-moment weights instead of w
+static PetscErrorCode IntegrateCurrent(Vec psi, PetscInt n_angles, const PetscScalar2DKokkosView &w_omega_d, \
+   const PetscScalar2DKokkosView &current_d)
+{
+   PetscFunctionBeginUser;
+
+   PetscInt local_rows;
+   PetscCall(VecGetLocalSize(psi, &local_rows));
+   PetscScalarConstKokkosView psi_d;
+   PetscCall(VecGetKokkosView(psi, &psi_d));
+   // LayoutRight: angle contiguous, as in UboltAngularIntegral
+   PetscScalar2DConstKokkosView psi_d_2d(psi_d.data(), local_rows / n_angles, n_angles);
+   const PetscScalar alpha = 1.0, beta = 0.0;
+   KokkosBlas::gemm(PetscGetKokkosExecutionSpace(), "N", "N", alpha, psi_d_2d, w_omega_d, beta, current_d);
+   PetscCall(VecRestoreKokkosView(psi, &psi_d));
+
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
 PetscErrorCode GroupTransfer::set_scalar_flux(PetscInt g, Vec psi_g, PetscReal *change_sq, PetscReal *norm_sq)
 {
    PetscFunctionBeginUser;
@@ -247,6 +271,12 @@ PetscErrorCode GroupTransfer::set_scalar_flux(PetscInt g, Vec psi_g, PetscReal *
       "group %" PetscInt_FMT " out of range, n_groups is %" PetscInt_FMT, g, (PetscInt)phi_.size());
    PetscCheck((change_sq == nullptr) == (norm_sq == nullptr), PETSC_COMM_SELF, PETSC_ERR_ARG_NULL, \
       "set_scalar_flux measures the change and the norm together: pass both or neither");
+
+   // The current first, so the scalar flux below is untouched by it: its own
+   // gemm, against w_a Omega_a, rather than one wider gemm against [w | w
+   // Omega] that would put phi's column through a different kernel shape and
+   // so not keep it bitwise the single-moment integral every term does
+   if (n_dim_ > 0) PetscCall(IntegrateCurrent(psi_g, n_angles_, w_omega_d_, current_[g]));
 
    if (!change_sq) {
       PetscCall(UboltAngularIntegral(psi_g, n_angles_, w_d_, phi_[g]));
@@ -329,6 +359,140 @@ PetscErrorCode GroupTransfer::add_transfer(PetscInt g_from, PetscInt g_to, Vec b
    });
 
    PetscCall(VecRestoreKokkosView(b, &b_d));
+
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+// The P1 tables, on the host once: w_omega(a, d) = w_a Omega_a[d] and
+// p1(a, d) = (T^{-1} Omega_a)[d], T = sum_a w_a Omega_a Omega_a^T the dim x dim
+// second moment (symmetric positive definite for any set that spans its
+// dimension; (W / 3) I for the level-symmetric and Gauss-Legendre sets),
+// inverted by Gauss-Jordan. Then the per-group J views
+PetscErrorCode GroupTransfer::enable_current(const AngularQuadrature &quad)
+{
+   PetscFunctionBeginUser;
+
+   PetscCheck(n_angles_ > 0, PETSC_COMM_SELF, PETSC_ERR_ARG_WRONGSTATE, "enable_current needs create() first");
+   PetscCheck(quad.n_angles() == n_angles_, PETSC_COMM_SELF, PETSC_ERR_ARG_INCOMP, \
+      "the quadrature has %" PetscInt_FMT " angles but the transfer was created with %" PetscInt_FMT, \
+      quad.n_angles(), n_angles_);
+   if (n_dim_ > 0) PetscFunctionReturn(PETSC_SUCCESS);
+
+   const PetscInt dim = quad.dimension();
+   const PetscScalar *omega = quad.omega_host();
+   PetscCheck(dim >= 1 && dim <= 3, PETSC_COMM_SELF, PETSC_ERR_ARG_OUTOFRANGE, \
+      "the quadrature's dimension is %" PetscInt_FMT, dim);
+
+   auto exec = PetscGetKokkosExecutionSpace();
+   auto w_h = Kokkos::create_mirror_view(Kokkos::HostSpace(), quad.w_d());
+   Kokkos::deep_copy(exec, w_h, quad.w_d());
+   exec.fence();
+
+   // T, and the first moment sum_a w_a Omega_a, which must vanish for the
+   // expansion's scalar flux to be phi
+   PetscScalar t[9] = {0.0}, tinv[9] = {0.0}, first[3] = {0.0};
+   for (PetscInt a = 0; a < n_angles_; a++) {
+      for (PetscInt d = 0; d < dim; d++) {
+         first[d] += w_h(a, 0) * omega[a * 3 + d];
+         for (PetscInt e = 0; e < dim; e++) t[d * 3 + e] += w_h(a, 0) * omega[a * 3 + d] * omega[a * 3 + e];
+      }
+   }
+   for (PetscInt d = 0; d < dim; d++) {
+      PetscCheck(PetscAbsScalar(first[d]) <= 1e-12 * PetscAbsScalar(sum_weights_), PETSC_COMM_SELF, \
+         PETSC_ERR_ARG_INCOMP, "the P1 expansion needs a quadrature whose weighted directions sum to zero: " \
+         "sum_a w_a Omega_a[%" PetscInt_FMT "] is %g", d, (double)PetscRealPart(first[d]));
+   }
+   for (PetscInt d = 0; d < dim; d++) tinv[d * 3 + d] = 1.0;
+   for (PetscInt k = 0; k < dim; k++) {
+      PetscInt piv = k;
+      for (PetscInt i = k + 1; i < dim; i++) {
+         if (PetscAbsScalar(t[i * 3 + k]) > PetscAbsScalar(t[piv * 3 + k])) piv = i;
+      }
+      PetscCheck(PetscAbsScalar(t[piv * 3 + k]) > 0.0, PETSC_COMM_SELF, PETSC_ERR_ARG_INCOMP, \
+         "the quadrature's second moment sum_a w_a Omega_a Omega_a^T is singular");
+      for (PetscInt j = 0; j < 3; j++) {
+         std::swap(t[k * 3 + j], t[piv * 3 + j]);
+         std::swap(tinv[k * 3 + j], tinv[piv * 3 + j]);
+      }
+      const PetscScalar inv = 1.0 / t[k * 3 + k];
+      for (PetscInt j = 0; j < dim; j++) {
+         t[k * 3 + j] *= inv;
+         tinv[k * 3 + j] *= inv;
+      }
+      for (PetscInt i = 0; i < dim; i++) {
+         if (i == k) continue;
+         const PetscScalar f = t[i * 3 + k];
+         for (PetscInt j = 0; j < dim; j++) {
+            t[i * 3 + j] -= f * t[k * 3 + j];
+            tinv[i * 3 + j] -= f * tinv[k * 3 + j];
+         }
+      }
+   }
+
+   w_omega_d_ = PetscScalar2DKokkosView("w_omega_d", n_angles_, dim);
+   p1_d_ = PetscScalar2DKokkosView("p1_d", n_angles_, dim);
+   auto w_omega_h = Kokkos::create_mirror_view(Kokkos::HostSpace(), w_omega_d_);
+   auto p1_h = Kokkos::create_mirror_view(Kokkos::HostSpace(), p1_d_);
+   for (PetscInt a = 0; a < n_angles_; a++) {
+      for (PetscInt d = 0; d < dim; d++) {
+         w_omega_h(a, d) = w_h(a, 0) * omega[a * 3 + d];
+         PetscScalar sum = 0.0;
+         for (PetscInt e = 0; e < dim; e++) sum += tinv[d * 3 + e] * omega[a * 3 + e];
+         p1_h(a, d) = sum;
+      }
+   }
+   Kokkos::deep_copy(exec, w_omega_d_, w_omega_h);
+   Kokkos::deep_copy(exec, p1_d_, p1_h);
+   // The host mirrors go out of scope at return
+   exec.fence();
+
+   // Zero initialised: a group cached before this has no current
+   current_.resize(phi_.size());
+   for (size_t g = 0; g < current_.size(); g++) current_[g] = PetscScalar2DKokkosView("current_d", local_nodes_, dim);
+   n_dim_ = dim;
+
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+PetscErrorCode GroupTransfer::expand_p1(PetscInt g, Vec psi) const
+{
+   const PetscInt n_angles = n_angles_;
+   const PetscInt n_dim = n_dim_;
+   const PetscScalar sum_weights = sum_weights_;
+   const PetscScalar2DKokkosView p1_d = p1_d_;
+
+   PetscFunctionBeginUser;
+
+   PetscCheck(n_dim_ > 0, PETSC_COMM_SELF, PETSC_ERR_ARG_WRONGSTATE, \
+      "expand_p1 needs the current: call enable_current() before the sweep");
+   PetscCheck(g >= 0 && g < (PetscInt)phi_.size(), PETSC_COMM_SELF, PETSC_ERR_ARG_OUTOFRANGE, \
+      "group %" PetscInt_FMT " out of range, n_groups is %" PetscInt_FMT, g, (PetscInt)phi_.size());
+   PetscCheck(phi_set_[g], PETSC_COMM_SELF, PETSC_ERR_ARG_WRONGSTATE, \
+      "no scalar flux cached for group %" PetscInt_FMT " to expand", g);
+
+   PetscInt local_rows = 0;
+   PetscCall(VecGetLocalSize(psi, &local_rows));
+   PetscCheck(local_rows == local_nodes_ * n_angles_, PETSC_COMM_SELF, PETSC_ERR_ARG_INCOMP, \
+      "psi has %" PetscInt_FMT " local rows but the transfer covers %" PetscInt_FMT, local_rows, \
+      local_nodes_ * n_angles_);
+
+   const PetscScalar2DKokkosView phi_d = phi_[g];
+   const PetscScalar2DKokkosView current_d = current_[g];
+   PetscScalarKokkosView psi_d;
+   PetscCall(VecGetKokkosViewWrite(psi, &psi_d));
+   Kokkos::parallel_for(
+      Kokkos::RangePolicy<>(PetscGetKokkosExecutionSpace(), 0, local_rows), KOKKOS_LAMBDA(PetscInt r) {
+
+         const PetscInt i = r / n_angles, a = r % n_angles;
+         PetscScalar val = phi_d(i, 0) / sum_weights;
+         for (PetscInt d = 0; d < n_dim; d++) val += p1_d(a, d) * current_d(i, d);
+         psi_d(r) = val;
+      });
+   PetscCall(VecRestoreKokkosViewWrite(psi, &psi_d));
 
    PetscFunctionReturn(PETSC_SUCCESS);
 }

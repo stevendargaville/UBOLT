@@ -41,6 +41,18 @@ this file used to carry went.
   are pinned on the local opt count like any other, and both are mirrored in
   `iteration_counts.md` (`k / n`). The exact oracle for the outer iteration is the
   infinite-medium check on the `*_up*_inf_medium` files (`verification.md`, "Upscatter").
+- The moments store (`-outer_store moments`, 2026-10-13) has recipes of its own beside
+  the angular ones: every infinite-medium oracle (1D, 2D structured, plex DG0 and DG1),
+  serial and -n 2, at `-outer_recon tol` (the default) and `none`; every `*_up3_layers`
+  regression except CG-SUPG (refused), DG1 included; `-outer_recon 2`; and the two
+  shared-hierarchy cases, reference-shifted pmats on `box_up3_layers` and a
+  streaming-only pmat (`-precon_stream -ksp_pc_side right`) on `box_up2_inf_medium`, which
+  is the stall safeguard's recipe (every reconstruction stops on it). The reconstruction
+  V-cycles are pinned by nothing: they are reported on stderr, separately from the inner
+  iterations, and the pins stay the angular meaning (max inner iterations / sweeps).
+  Every angular recipe of `tests_short` gives `-ksp_monitor` output byte-identical to
+  the commit before the store (the procedure under "Bitwise capture" below), and without
+  upscatter the moments store is bitwise the angular one, flux files included.
 - The drivers return 1 unless `KSPGetConvergedReason() > 0` (since Phase 1a), so a
   non-converged solve fails the recipe on its own — no `-ksp_error_if_not_converged`
   or `-on_error_abort` is needed for pass/fail (CI sets `-on_error_abort` in
@@ -53,7 +65,7 @@ this file used to carry went.
   `run_tests_parallel`). Parallel variants use `$(MPIEXEC) -n 2` — plus `-n 4` runs of
   the two painting identities and of the `verify_*` drivers — and are skipped under
   MPIUNI, including `run_check`'s single parallel line. `tests_short` is most of the
-  suite (370 of the 387 recipe lines `make tests` runs); the name is historical.
+  suite (399 of the 416 recipe lines `make tests` runs); the name is historical.
 - The `verify_*` drivers are the exception to "pass/fail is a pinned iteration count":
   they are discretisation and quadrature checks and their exit codes come from tolerances
   on numerical checks (`docs/dev/verification.md`). They print what they measured against

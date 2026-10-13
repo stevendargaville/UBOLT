@@ -277,10 +277,7 @@ PetscErrorCode UboltWriteScalarFluxVTK(const PhaseSpace &ps, \
    const UboltCellField *extra, const char *filename)
 {
    MPI_Comm comm = PetscObjectComm((PetscObject)psi);
-   PetscBool is_plex = PETSC_FALSE, is_vts = PETSC_FALSE, is_vtr = PETSC_FALSE, is_vtu = PETSC_FALSE;
    PetscInt local_rows = 0;
-   // Host side, output time: the one backend whose unknowns are not per cell
-   const UnstructuredCG *cg = dynamic_cast<const UnstructuredCG *>(&disc);
 
    PetscFunctionBeginUser;
 
@@ -292,6 +289,34 @@ PetscErrorCode UboltWriteScalarFluxVTK(const PhaseSpace &ps, \
    PetscCheck(local_rows == ps.local_rows(), comm, PETSC_ERR_ARG_INCOMP, \
       "psi has %" PetscInt_FMT " local rows but the phase space says %" PetscInt_FMT, \
       local_rows, ps.local_rows());
+
+   // The shared angular integral, so what gets written is bit-identical with
+   // what the terms integrate. Per node - (cell, basis), or vertex on CG
+   PetscScalar2DKokkosView scalar_flux_d("scalar_flux_d", ps.local_nodes(), 1);
+   PetscCall(UboltAngularIntegral(psi, ps.n_angles, quad.w_d(), scalar_flux_d));
+   PetscCall(UboltWriteScalarFluxVTKFromPhi(ps, disc, scalar_flux_d, n_extra, extra, filename));
+
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+PetscErrorCode UboltWriteScalarFluxVTKFromPhi(const PhaseSpace &ps, \
+   const Discretisation &disc, const PetscScalar2DKokkosView &scalar_flux_d, PetscInt n_extra, \
+   const UboltCellField *extra, const char *filename)
+{
+   MPI_Comm comm = disc.comm();
+   PetscBool is_plex = PETSC_FALSE, is_vts = PETSC_FALSE, is_vtr = PETSC_FALSE, is_vtu = PETSC_FALSE;
+   // Host side, output time: the one backend whose unknowns are not per cell
+   const UnstructuredCG *cg = dynamic_cast<const UnstructuredCG *>(&disc);
+
+   PetscFunctionBeginUser;
+
+   PetscCall(ps.check_decomposed());
+   PetscCheck((PetscInt)scalar_flux_d.extent(0) == ps.local_nodes() && scalar_flux_d.extent(1) == 1, comm, \
+      PETSC_ERR_ARG_INCOMP, "the scalar flux is (%" PetscInt_FMT ", %" PetscInt_FMT ") but the phase space " \
+      "has %" PetscInt_FMT " local nodes", (PetscInt)scalar_flux_d.extent(0), (PetscInt)scalar_flux_d.extent(1), \
+      ps.local_nodes());
    PetscCheck(n_extra == 0 || extra, comm, PETSC_ERR_ARG_NULL, \
       "%" PetscInt_FMT " extra fields asked for but none given", n_extra);
    for (PetscInt f = 0; f < n_extra; f++) {
@@ -318,12 +343,9 @@ PetscErrorCode UboltWriteScalarFluxVTK(const PhaseSpace &ps, \
          "filename must end in .vts or .vtr (.vtu is for the unstructured DMPlex backends)", filename);
    }
 
-   // The shared angular integral, so what gets written is bit-identical with
-   // what the terms integrate. Per node - (cell, basis), or vertex on CG - and
-   // the (nodes, 1) gemm output is contiguous, so the mirror's data() is the
-   // field in local node order
-   PetscScalar2DKokkosView scalar_flux_d("scalar_flux_d", ps.local_nodes(), 1);
-   PetscCall(UboltAngularIntegral(psi, ps.n_angles, quad.w_d(), scalar_flux_d));
+   // The (nodes, 1) view is contiguous (a trailing extent of 1 is the same
+   // under either layout), so the mirror's data() is the field in local node
+   // order
    auto flux_h = Kokkos::create_mirror_view(Kokkos::HostSpace(), scalar_flux_d);
    Kokkos::deep_copy(PetscGetKokkosExecutionSpace(), flux_h, scalar_flux_d);
    PetscGetKokkosExecutionSpace().fence();

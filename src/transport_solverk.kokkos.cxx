@@ -324,6 +324,37 @@ PetscErrorCode TransportSolver::solve(Vec b, Vec x)
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
+// Stage 0 then stage 1 of the composite, by hand, with the caller's operator
+// between them. The sub-PCs are the composite's own, so whatever -sub_0_ /
+// -sub_1_ options and setup they carry are the solve's
+PetscErrorCode TransportSolver::apply_removal_streaming(Mat l_op, Vec r, Vec y, Vec work)
+{
+   PC pc, pc_removal, pc_stream;
+
+   PetscFunctionBeginUser;
+
+   PetscCheck(r != y && r != work && y != work, PetscObjectComm((PetscObject)ksp_), PETSC_ERR_ARG_IDN, \
+      "apply_removal_streaming needs three distinct vectors");
+
+   // PCSetUp only rebuilds what changed since the last setup (pmat's state),
+   // so this is the setup KSPSolve would otherwise do on its first call
+   PetscCall(KSPSetUp(ksp_));
+   PetscCall(KSPGetPC(ksp_, &pc));
+   PetscCall(PCCompositeGetPC(pc, 0, &pc_removal));
+   PetscCall(PCCompositeGetPC(pc, 1, &pc_stream));
+
+   PetscCall(PCApply(pc_removal, r, y));
+   PetscCall(MatMult(l_op, y, work));
+   // work = r - l_op y, the residual stage 1 corrects
+   PetscCall(VecAYPX(work, -1.0, r));
+   PetscCall(PCApply(pc_stream, work, r));
+   PetscCall(VecAXPY(y, 1.0, r));
+
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
 PetscErrorCode TransportSolver::destroy()
 {
    PetscFunctionBeginUser;

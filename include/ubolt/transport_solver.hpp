@@ -68,6 +68,25 @@ public:
 
    PetscErrorCode solve(Vec b, Vec x);
 
+   // y = P_L r: stage 0 (removal) then stage 1 (streaming: PCAIR, or the
+   // block-scaled shell around it) of this solver's own composite, as ONE
+   // multiplicative pass whose inter-stage residual is formed with l_op -
+   //   y = P_0 r,  y += P_1 (r - l_op y)
+   // and never a DSA stage, nor whatever -pc_composite_type says. l_op is meant
+   // to be the TRUE L of the group (TransportOperator::unscattered_mat), not
+   // pmat: with a streaming-only or reference-shifted pmat the pmat residual
+   // makes P_L an approximate inverse of streaming WITHOUT the removal, and an
+   // iteration on it diverges. Sets the KSP (and so the hierarchy) up for the
+   // current operators first, the setup the next solve would do anyway - the
+   // reconstruction never builds a hierarchy of its own. One V-cycle
+   //
+   // r is CONSUMED: it ends holding stage 1's correction (a caller forming a
+   // residual afresh each step needs no copy of it, and the moments store
+   // counts psi-sized Vecs). work is caller-owned scratch, so nothing is
+   // allocated here. r, y and work must be three distinct vectors over the
+   // operator's rows
+   PetscErrorCode apply_removal_streaming(Mat l_op, Vec r, Vec y, Vec work);
+
    KSPConvergedReason converged_reason() const { return reason_; }
    KSP ksp() const { return ksp_; }
 

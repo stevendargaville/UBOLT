@@ -26,6 +26,29 @@ verbatim; "Where the notes live" at the end maps the names code comments use ont
   `-outer_inner_gamma 0` is the previous behaviour bitwise. Not done: any
   acceleration of the outer iteration (two-grid / grey diffusion), which a slowly
   converging thermal block would want - see docs/architecture.md, the group sweep.
+- Landed 2026-10-13: the moments store (`-outer_store moments`): the outer iteration keeps
+  each thermal group's scalar flux and current (`GroupTransfer::enable_current`, the
+  first widening of the moment set the Pn item below describes) and ONE psi Vec for every
+  solve, instead of G angular fluxes; a thermal solve after the first sweep starts from
+  the P1 expansion of the moments refined by Richardson V-cycles on L_g (removal + AIR,
+  the true L_g between the stages, `TransportSolver::apply_removal_streaming`,
+  `TransportOperator::unscattered_mat`) to its own rtol (`-outer_recon tol|none|<m>`),
+  with a stall safeguard that makes it safe on shared hierarchies. Same sweep counts and
+  answer as the angular store on every oracle and regression; `-outer_store angular` is
+  bitwise unchanged; refused on CG-SUPG. Open follow-ups:
+  - [ ] Batch the reconstruction with the solve: the V-cycles run one rhs at a time
+    before each GMRES solve; PFLARE's multi-RHS `PCMatApply` could apply the hierarchy to
+    several groups' (or the reconstruction's and the solve's) vectors at once.
+  - [ ] How hierarchy sharing should work for materials that are NOT density-scaled
+    copies: the reconstruction converges at 2-6 orders per V-cycle on per-group
+    hierarchies, slowly on reference-shifted ones (0.14-0.41 per V-cycle on
+    density-scaled materials), can stall on non-separable materials (C5G7 in the
+    campaign) and never converges on a streaming-only pmat (every reconstruction stops
+    on the safeguard). Which groups may share a hierarchy is the open question.
+  - [ ] On a streaming-only pmat the moments store wants `-ksp_pc_side right` (left
+    stops on a preconditioned residual that, from the P1 guesses, costs the outer
+    iteration sweeps: 125 against 19 on `slab_up3_inf_medium`); the driver notes it but
+    does not switch the side itself.
 - Extensions the refactor's seams now make local (not scheduled): a time-derivative term
   (`OperatorTerm` with a diagonal half and a rhs half), Pn/anisotropic scatter (widen
   `AngularQuadrature::w_d` plus a moment-to-discrete matrix), a new direction set (a
@@ -224,7 +247,9 @@ two CG items under Next up, and:
       2026-10-13). Checked against the G x G
       infinite-medium constants (`-check_inf_medium`, 1D/2D/CG) and pinned on painted
       1D/2D/DG0/CG problems (`-outer_max_it` alongside `-ksp_max_it`). Open: acceleration
-      of the outer iteration (a grey / two-grid diffusion correction).
+      of the outer iteration (a grey / two-grid diffusion correction). The moments store
+      (`-outer_store moments`, 2026-10-13) drops the G stored angular fluxes; its open
+      follow-ups are under "Next up".
 - [ ] Promote the group loop out of `tests/transportk` into a MultigroupSolver - wait for
       a second sweep strategy (deferred out of Phase 2; the driver keeps it until then).
 

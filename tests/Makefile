@@ -872,6 +872,58 @@ endif
 	./transportk -problem problems/plex_box_up3_layers.json -ksp_max_it 11 -outer_max_it 16
 	@echo "Test 2D unstructured quad box, CG-SUPG, three groups with upscatter"
 	./transportk -problem problems/cg_box_up3_layers.json -ksp_max_it 12 -outer_max_it 17
+	@echo "Test 2D unstructured quad box, DG0, upscatter into every group, against the infinite-medium solution"
+	./transportk -problem problems/plex_box_up2_inf_medium.json -check_inf_medium -ksp_rtol 1e-12 -outer_rtol 1e-11 -ksp_max_it 2 -outer_max_it 27
+	@echo "Test 2D unstructured quad box, DG1, upscatter into every group, against the infinite-medium solution"
+	./transportk -problem problems/plex_box_up2_inf_medium_dg1.json -check_inf_medium -ksp_rtol 1e-12 -outer_rtol 1e-11 -ksp_max_it 2 -outer_max_it 27
+	@echo "Test 2D unstructured quad box, DG1, three groups with upscatter"
+	./transportk -problem problems/plex_box_up3_layers_dg1.json -ksp_max_it 12 -outer_max_it 17
+#
+# The moments store (-outer_store moments): no angular flux kept per group
+# between sweeps, only its scalar flux and current; a thermal solve after the
+# first sweep starts from the P1 expansion of them, refined by Richardson
+# V-cycles on L_g to the solve's own rtol (-outer_recon tol, the default), or
+# not refined (-outer_recon none), or by a fixed count (-outer_recon <m>).
+# Every inner solve still stops on its own residual, so the answer is the
+# angular store's: the infinite-medium files are the exact oracle, and the
+# sweep counts match the angular recipes above. -ksp_max_it is still the max
+# over every inner solve, which is the fast group's (solved once, from zero,
+# exactly as in the angular store) or a sweep-0 solve, so most pins match the
+# angular twin; where the reconstruction makes the thermal solves cheaper than
+# the stored psi did (the oracles, whose max is a thermal solve) the pin drops.
+# The shared-hierarchy pair: reference-shifted pmats (the reconstruction
+# converges, more slowly) and a streaming-only pmat (every reconstruction
+# stops on the stall safeguard and the solve starts from the P1 guess; right
+# preconditioned, the repo's convention for that pmat - under left the
+# preconditioned stopping test costs the outer iteration sweeps)
+	@echo "Test 1D slab, upscatter, the moments store against the infinite-medium solution"
+	./transportk -problem problems/slab_up3_inf_medium.json -check_inf_medium -ksp_rtol 1e-12 -outer_rtol 1e-11 -outer_store moments -ksp_max_it 12 -outer_max_it 19
+	@echo "Test 1D slab, upscatter, the moments store from the P1 guess alone against the infinite-medium solution"
+	./transportk -problem problems/slab_up3_inf_medium.json -check_inf_medium -ksp_rtol 1e-12 -outer_rtol 1e-11 -outer_store moments -outer_recon none -ksp_max_it 12 -outer_max_it 19
+	@echo "Test 2D box, upscatter into every group, the moments store against the infinite-medium solution"
+	./transportk -problem problems/box_up2_inf_medium.json -check_inf_medium -ksp_rtol 1e-12 -outer_rtol 1e-11 -outer_store moments -ksp_max_it 1 -outer_max_it 27
+	@echo "Test 2D box, upscatter into every group, the moments store from the P1 guess alone against the infinite-medium solution"
+	./transportk -problem problems/box_up2_inf_medium.json -check_inf_medium -ksp_rtol 1e-12 -outer_rtol 1e-11 -outer_store moments -outer_recon none -ksp_max_it 2 -outer_max_it 27
+	@echo "Test 2D unstructured quad box, DG0, upscatter, the moments store against the infinite-medium solution"
+	./transportk -problem problems/plex_box_up2_inf_medium.json -check_inf_medium -ksp_rtol 1e-12 -outer_rtol 1e-11 -outer_store moments -ksp_max_it 1 -outer_max_it 27
+	@echo "Test 2D unstructured quad box, DG0, upscatter, the moments store from the P1 guess alone against the infinite-medium solution"
+	./transportk -problem problems/plex_box_up2_inf_medium.json -check_inf_medium -ksp_rtol 1e-12 -outer_rtol 1e-11 -outer_store moments -outer_recon none -ksp_max_it 2 -outer_max_it 27
+	@echo "Test 2D unstructured quad box, DG1, upscatter, the moments store against the infinite-medium solution"
+	./transportk -problem problems/plex_box_up2_inf_medium_dg1.json -check_inf_medium -ksp_rtol 1e-12 -outer_rtol 1e-11 -outer_store moments -ksp_max_it 2 -outer_max_it 27
+	@echo "Test 1D slab, three groups with upscatter, the moments store"
+	./transportk -problem problems/slab_up3_layers.json -outer_store moments -ksp_max_it 11 -outer_max_it 34
+	@echo "Test 2D box, three groups with upscatter, the moments store"
+	./transportk -problem problems/box_up3_layers.json -outer_store moments -ksp_max_it 11 -outer_max_it 16
+	@echo "Test 2D box, three groups with upscatter, the moments store with two reconstruction steps per solve"
+	./transportk -problem problems/box_up3_layers.json -outer_store moments -outer_recon 2 -ksp_max_it 11 -outer_max_it 16
+	@echo "Test 2D unstructured quad box, DG0, three groups with upscatter, the moments store"
+	./transportk -problem problems/plex_box_up3_layers.json -outer_store moments -ksp_max_it 11 -outer_max_it 16
+	@echo "Test 2D unstructured quad box, DG1, three groups with upscatter, the moments store"
+	./transportk -problem problems/plex_box_up3_layers_dg1.json -outer_store moments -ksp_max_it 12 -outer_max_it 17
+	@echo "Test 2D box, three groups with upscatter, the moments store on reference-shifted pmats (shared hierarchies)"
+	./transportk -problem problems/box_up3_layers.json -matfree_removal -precon_ref_shift -outer_store moments -ksp_max_it 15 -outer_max_it 16
+	@echo "Test 2D box, upscatter, the moments store on a streaming-only pmat (the stall safeguard) against the infinite-medium solution"
+	./transportk -problem problems/box_up2_inf_medium.json -check_inf_medium -ksp_rtol 1e-12 -outer_rtol 1e-11 -precon_stream -ksp_pc_side right -outer_store moments -ksp_max_it 5 -outer_max_it 27
 
 # ~~~~~~~~~~~
 # ~~~~~~~~~~~
@@ -1225,6 +1277,34 @@ endif
 	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_box_up3_layers.json -ksp_max_it 11 -outer_max_it 16
 	@echo "Test 2D unstructured quad box, CG-SUPG, three groups with upscatter in parallel"
 	$(MPIEXEC) -n 2 ./transportk -problem problems/cg_box_up3_layers.json -ksp_max_it 12 -outer_max_it 17
+	@echo "Test 2D unstructured quad box, DG0, upscatter against the infinite-medium solution in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_box_up2_inf_medium.json -check_inf_medium -ksp_rtol 1e-12 -outer_rtol 1e-11 -ksp_max_it 2 -outer_max_it 27
+	@echo "Test 2D unstructured quad box, DG1, three groups with upscatter in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_box_up3_layers_dg1.json -ksp_max_it 12 -outer_max_it 17
+#
+# The moments store in parallel: the P1 expansion and the reconstruction are
+# rank-local apart from L_g's and P_L's own halo exchanges, and the sweep
+# counts match serial
+	@echo "Test 1D slab, upscatter, the moments store against the infinite-medium solution in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/slab_up3_inf_medium.json -check_inf_medium -ksp_rtol 1e-12 -outer_rtol 1e-11 -outer_store moments -ksp_max_it 12 -outer_max_it 19
+	@echo "Test 1D slab, upscatter, the moments store from the P1 guess alone against the infinite-medium solution in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/slab_up3_inf_medium.json -check_inf_medium -ksp_rtol 1e-12 -outer_rtol 1e-11 -outer_store moments -outer_recon none -ksp_max_it 12 -outer_max_it 19
+	@echo "Test 2D box, upscatter, the moments store against the infinite-medium solution in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/box_up2_inf_medium.json -check_inf_medium -ksp_rtol 1e-12 -outer_rtol 1e-11 -outer_store moments -ksp_max_it 1 -outer_max_it 27
+	@echo "Test 2D box, upscatter, the moments store from the P1 guess alone against the infinite-medium solution in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/box_up2_inf_medium.json -check_inf_medium -ksp_rtol 1e-12 -outer_rtol 1e-11 -outer_store moments -outer_recon none -ksp_max_it 2 -outer_max_it 27
+	@echo "Test 2D unstructured quad box, DG0, upscatter, the moments store against the infinite-medium solution in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_box_up2_inf_medium.json -check_inf_medium -ksp_rtol 1e-12 -outer_rtol 1e-11 -outer_store moments -ksp_max_it 1 -outer_max_it 27
+	@echo "Test 2D unstructured quad box, DG0, upscatter, the moments store from the P1 guess alone against the infinite-medium solution in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_box_up2_inf_medium.json -check_inf_medium -ksp_rtol 1e-12 -outer_rtol 1e-11 -outer_store moments -outer_recon none -ksp_max_it 2 -outer_max_it 27
+	@echo "Test 1D slab, three groups with upscatter, the moments store in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/slab_up3_layers.json -outer_store moments -ksp_max_it 12 -outer_max_it 34
+	@echo "Test 2D box, three groups with upscatter, the moments store in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/box_up3_layers.json -outer_store moments -ksp_max_it 11 -outer_max_it 16
+	@echo "Test 2D unstructured quad box, DG0, three groups with upscatter, the moments store in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_box_up3_layers.json -outer_store moments -ksp_max_it 11 -outer_max_it 16
+	@echo "Test 2D unstructured quad box, DG1, three groups with upscatter, the moments store in parallel"
+	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_box_up3_layers_dg1.json -outer_store moments -ksp_max_it 12 -outer_max_it 17
 
 # ~~~~~~~~~~~
 # ~~~~~~~~~~~

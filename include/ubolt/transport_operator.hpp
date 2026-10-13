@@ -64,8 +64,18 @@ public:
    // What the KSP solves with, and the assembled part of it
    Mat mat() const { return shell_; }
    Mat assembled_mat() const { return assembled_; }
+   // L: the operator WITHOUT its scattering terms (OperatorTerm::is_scattering)
+   // - the assembled matrix plus every matrix-free term that is not a scatter,
+   // e.g. the removal under RemovalTerm::set_matrix_free. A second MatShell,
+   // built by the first assemble() alongside mat() and tracking the same
+   // group; what TransportSolver::apply_removal_streaming forms its
+   // inter-stage residual with (the moments store's reconstruction in
+   // tests/transportk). NULL before the first assemble()
+   Mat unscattered_mat() const { return unscattered_shell_; }
 
    const std::vector<const OperatorTerm *> &matrix_free_terms() const { return matrix_free_; }
+   // The matrix-free terms that are part of L, in the order they were added
+   const std::vector<const OperatorTerm *> &unscattered_matrix_free_terms() const { return unscattered_free_; }
    const PhaseSpace &phase_space() const { return ps_; }
 
 private:
@@ -79,10 +89,13 @@ private:
    std::vector<OperatorTerm *> group_terms_;
    // Rebuilt by every assemble(), never by add_term - see above
    std::vector<const OperatorTerm *> matrix_free_;
+   // Its non-scattering subset, rebuilt alongside it
+   std::vector<const OperatorTerm *> unscattered_free_;
    // Shared COO values - every assembled term adds into this one array
    PetscScalarKokkosView coo_v_d_;
    Mat assembled_ = NULL;
    Mat shell_ = NULL;
+   Mat unscattered_shell_ = NULL;
 };
 
 #endif

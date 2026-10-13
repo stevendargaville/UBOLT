@@ -111,8 +111,47 @@ public:
       const BoundaryInfo &boundary, const MaterialSpec &mats, const PetscIntKokkosView &mat_id_d);
 
    PetscErrorCode add_external(PetscInt g, Vec b) const override;
+   // With the current enabled (enable_current) this also integrates and caches
+   // group g's current J alongside its scalar flux. The scalar flux is the same
+   // gemm either way, so it is bitwise what it is without the current
    PetscErrorCode set_scalar_flux(PetscInt g, Vec psi_g, PetscReal *change_sq, PetscReal *norm_sq) override;
+   // add_transfer(g, g, b) is legal too: b += sigma_s(g -> g) phi_g / W from
+   // the CACHED phi_g - the within-group scatter frozen at that flux, which is
+   // what a reconstruction's fixed rhs b + M sigma_s phi_g is
    PetscErrorCode add_transfer(PetscInt g_from, PetscInt g_to, Vec b) const override;
+
+   // ~~~~~~~~~~~~~
+   // The moments store (tests/transportk -outer_store moments): keep each
+   // group's first two angular moments instead of its angular flux, and expand
+   // them back into a starting psi. GroupTransfer-only rather than on
+   // GroupSource: the expansion is per NODE with an isotropic M = 1 / W, which
+   // is this class's scatter; GroupTransferCG's source and scatter are
+   // SUPG-weighted (a vertex's whole star, tau per angle), so the same
+   // reconstruction there would need that weighting, and the driver refuses
+   // the store on CG-SUPG instead
+   // ~~~~~~~~~~~~~
+
+   // Cache the current J(node, d) = sum_a w_a Omega_a[d] psi(node, a) of every
+   // group too, d < quad.dimension(), from the next set_scalar_flux on (a
+   // group set before this has J = 0). Allocates n_groups (local_nodes, dim)
+   // views - dim / n_angles of the angular flux each - and uploads the P1
+   // tables once; call before the sweep. The quadrature must be the one create
+   // was given and must integrate Omega to zero (every SN set here does, being
+   // reflection-symmetric), so that the P1 expansion below reproduces phi
+   PetscErrorCode enable_current(const AngularQuadrature &quad);
+   PetscBool current_enabled() const { return (PetscBool)(n_dim_ > 0); }
+
+   // psi(node, a) = phi_g(node) / W + Omega_a . T^{-1} J_g(node), the P1
+   // expansion of group g's cached moments, T = sum_a w_a Omega_a Omega_a^T.
+   // Its scalar flux and current are the cached ones exactly (to rounding).
+   // Every row, BC rows included (it is a starting guess, not a rhs). Needs
+   // enable_current and a cached flux for g. On the device, no allocation
+   PetscErrorCode expand_p1(PetscInt g, Vec psi) const;
+
+   // The cached scalar flux of group g, (local_nodes, 1): what -flux_vtk writes
+   // under the moments store (UboltWriteScalarFluxVTKFromPhi). Valid once
+   // set_scalar_flux(g, ...) has run
+   const PetscScalar2DKokkosView &scalar_flux(PetscInt g) const { return phi_[g]; }
 
 private:
    PetscInt n_angles_ = 0;
@@ -132,6 +171,14 @@ private:
    // Persistent scratch - never allocate device memory inside an apply. Also
    // where a measured set_scalar_flux integrates before overwriting the cache
    PetscScalar2DKokkosView scalar_flux_d_;
+   // The current (enable_current): 0 until enabled, then the quadrature's
+   // dimension. w_omega_d_(a, d) = w_a Omega_a[d], the gemm the current is;
+   // p1_d_(a, d) = (T^{-1} Omega_a)[d], what expand_p1 dots J with; one
+   // (local_nodes, n_dim) J per group
+   PetscInt n_dim_ = 0;
+   PetscScalar2DKokkosView w_omega_d_;
+   PetscScalar2DKokkosView p1_d_;
+   std::vector<PetscScalar2DKokkosView> current_;
 };
 
 #endif
