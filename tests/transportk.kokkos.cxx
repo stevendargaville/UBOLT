@@ -15,7 +15,7 @@
 // Knobs: -precon_stream, -matfree_removal, -precon_ref_shift / -precon_ref_k,
 // -precon_dsa (+ the -dsa_ family, see DSAPrecon), -precon_block_scale,
 // -diag_scale, -supg_zeta, the upscatter outer iteration's -outer_rtol /
-// -outer_max_it, and the verification ones, -check_inf_medium,
+// -outer_max_it / -outer_inner_gamma, and the verification ones, -check_inf_medium,
 // -check_matfree, -check_ref_shift, plus the -flux_vtk output override.
 //
 // Currently run with:
@@ -557,6 +557,26 @@ int main(int argc, char **args) {
    PetscCall(PetscOptionsGetInt(NULL, NULL, "-outer_max_it", &outer_max_it, NULL));
    PetscCheck(outer_max_it >= 1, PETSC_COMM_WORLD, PETSC_ERR_ARG_OUTOFRANGE, \
       "-outer_max_it must be at least 1, was given %" PetscInt_FMT, outer_max_it);
+   // The adaptive inner tolerance of the outer iteration (inexact inner-outer).
+   // An early sweep's flux is still far from converged, so solving its thermal
+   // groups to the final inner rtol buys digits the next sweep throws away. In
+   // sweep k >= 1 every thermal solve runs at
+   //   eta_k = max(inner rtol, gamma * change_{k-1})
+   // with change_{k-1} the last sweep's relative change of the thermal scalar
+   // flux, and in sweep 0 (no change yet) at max(inner rtol, gamma). The groups
+   // above g_up are solved once, in sweep 0, so always at the inner rtol. The
+   // outer iteration only stops on a sweep whose thermal solves all ran at the
+   // inner rtol (eta_k == inner rtol): a sweep at a looser eta that passes the
+   // error test sweeps again, or the answer would be only as good as its loosest
+   // solve, and that sweep (and every one after it) runs at the inner rtol
+   // outright, so the rule costs at most one sweep more than the test would
+   // stop on. Default 0.01; 0 runs every solve at the inner rtol, and below 1
+   // because it is an rtol itself (sweep 0's). A problem without upscatter has
+   // no outer iteration and never reads it
+   PetscReal outer_inner_gamma = 0.01;
+   PetscCall(PetscOptionsGetReal(NULL, NULL, "-outer_inner_gamma", &outer_inner_gamma, NULL));
+   PetscCheck(outer_inner_gamma >= 0.0 && outer_inner_gamma < 1.0, PETSC_COMM_WORLD, PETSC_ERR_ARG_OUTOFRANGE, \
+      "-outer_inner_gamma must be in [0, 1), was given %g", (double)outer_inner_gamma);
 
    KSPConvergedReason reason = KSP_CONVERGED_ITERATING;
    // True unless an outer iteration ran out of sweeps
@@ -762,7 +782,9 @@ int main(int argc, char **args) {
       // sweep's below it, and zero in the first sweep (cached before it).
       // From the second sweep on each thermal group's KSP starts from its own
       // psi of the last sweep, which is why the driver keeps one psi per
-      // group. Every inner solve still stops on the KSP's own residual test
+      // group. Every inner solve still stops on the KSP's own residual test,
+      // at an rtol that is loose in the early sweeps and the inner rtol by the
+      // last one (-outer_inner_gamma)
       //
       // One solver per pmat: without -precon_ref_shift that is one for the
       // whole sweep, with it one per bin. A solver owns its KSP, its composite
@@ -792,6 +814,11 @@ int main(int argc, char **args) {
 
       std::vector<TransportSolver> solvers(precon_ref_shift ? ref_shift.n_bins() : 1);
       std::vector<PetscBool> solver_created(solvers.size(), PETSC_FALSE);
+      // The effective inner rtol under upscatter, read off the first solver
+      // created (every solver reads the same options). final_sweep: the outer
+      // test passed on a sweep at a looser rtol, so the next one runs at this
+      PetscReal inner_rtol = 0.0;
+      PetscBool final_sweep = PETSC_FALSE;
       for (PetscInt outer = 0; ; outer++) {
 
          // Sweeps after the first: warm start every thermal group from its own
@@ -805,6 +832,9 @@ int main(int argc, char **args) {
          // The thermal block's change over this sweep, global sums of squares
          PetscReal change_sq = 0.0, norm_sq = 0.0;
          PetscInt sweep_its = 0;
+         // The rtol this sweep's thermal solves run at (-outer_inner_gamma), set
+         // once the inner rtol is known (after the first solver is created)
+         PetscReal sweep_rtol = 0.0;
 
          for (PetscInt g = (outer == 0 ? 0 : g_up); g < n_groups; g++) {
 
@@ -866,7 +896,6 @@ int main(int argc, char **args) {
                // resolve (see -outer_rtol's parse). Never without upscatter, which
                // keeps PETSc's default and its single sweep bitwise
                if (upscatter) {
-                  PetscReal inner_rtol = 0.0;
                   if (!have_ksp_rtol) PetscCall(KSPSetTolerances(solver.ksp(), 1e-10, PETSC_CURRENT, \
                      PETSC_CURRENT, PETSC_CURRENT));
                   PetscCall(KSPGetTolerances(solver.ksp(), &inner_rtol, NULL, NULL, NULL));
@@ -879,6 +908,20 @@ int main(int argc, char **args) {
             }
             // sigma_t changed under the removal preconditioner
             else PetscCall(solver.refresh());
+
+            // The adaptive inner tolerance (see -outer_inner_gamma's parse): a
+            // thermal solve at this sweep's eta, a group above g_up at the inner
+            // rtol. Set on every solve, as a solver can be shared by fast and
+            // thermal groups (one per ref-shift bin); only the rtol changes. The
+            // first sweep's change is 1 by definition (measured against zero),
+            // and a later one is capped at 1, so the rtol never exceeds gamma.
+            // With gamma 0 nothing is set, so the tolerances are those above
+            if (upscatter && outer_inner_gamma > 0.0) {
+               sweep_rtol = final_sweep ? inner_rtol : \
+                  PetscMax(inner_rtol, outer_inner_gamma * (outer == 0 ? 1.0 : PetscMin(outer_change, 1.0)));
+               PetscCall(KSPSetTolerances(solver.ksp(), g >= g_up ? sweep_rtol : inner_rtol, PETSC_CURRENT, \
+                  PETSC_CURRENT, PETSC_CURRENT));
+            } else sweep_rtol = inner_rtol;
 
             PetscCall(solver.solve(b, psi[g]));
             reason = solver.converged_reason();
@@ -916,15 +959,24 @@ int main(int argc, char **args) {
          outer_err_est = (have_rho && rho < 1.0) ? change * rho / (1.0 - rho) : PETSC_INFINITY;
          if (have_rho) {
             PetscCall(PetscFPrintf(PETSC_COMM_WORLD, stderr, "outer %" PetscInt_FMT ": groups %" PetscInt_FMT \
-               "-%" PetscInt_FMT ", scalar flux change %.3e, rho %.3f, error estimate %.3e, %" PetscInt_FMT \
-               " inner iterations\n", outer_its, g_up, n_groups - 1, (double)change, (double)rho, \
-               (double)outer_err_est, sweep_its));
+               "-%" PetscInt_FMT ", scalar flux change %.3e, rho %.3f, error estimate %.3e, inner rtol %.1e, %" \
+               PetscInt_FMT " inner iterations\n", outer_its, g_up, n_groups - 1, (double)change, (double)rho, \
+               (double)outer_err_est, (double)sweep_rtol, sweep_its));
          } else {
             PetscCall(PetscFPrintf(PETSC_COMM_WORLD, stderr, "outer %" PetscInt_FMT ": groups %" PetscInt_FMT \
-               "-%" PetscInt_FMT ", scalar flux change %.3e, no rho yet, %" PetscInt_FMT " inner iterations\n", \
-               outer_its, outer == 0 ? (PetscInt)0 : g_up, n_groups - 1, (double)change, sweep_its));
+               "-%" PetscInt_FMT ", scalar flux change %.3e, no rho yet, inner rtol %.1e, %" PetscInt_FMT \
+               " inner iterations\n", outer_its, outer == 0 ? (PetscInt)0 : g_up, n_groups - 1, (double)change, \
+               (double)sweep_rtol, sweep_its));
          }
-         if (change == 0.0 || outer_err_est < outer_rtol) break;
+         // Stop only on a sweep whose thermal solves ran at the inner rtol: the
+         // test passing on a looser sweep (-outer_inner_gamma) sweeps once more,
+         // at the inner rtol whatever gamma times the change would give, and
+         // that sweep is tested afresh. A zero change at a loose rtol is the
+         // same false convergence the -outer_rtol refusal guards against
+         if (change == 0.0 || outer_err_est < outer_rtol) {
+            if (sweep_rtol == inner_rtol) break;
+            final_sweep = PETSC_TRUE;
+         }
          if (outer_its >= outer_max_it) {
             outer_ok = PETSC_FALSE;
             break;
