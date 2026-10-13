@@ -92,7 +92,7 @@ run_check:
 	./transportk -problem problems/slab_st2.json -ksp_max_it 6
 ifeq ($(PETSC_HAVE_MPIUNI),0)
 	@echo "Check 1D slab preconditioned with streaming only in parallel"
-	$(MPIEXEC) -n 2 ./transportk -problem problems/slab_st2.json -precon_stream -ksp_pc_side right -ksp_max_it 8
+	$(MPIEXEC) -n 2 ./transportk -problem problems/slab_st2.json -precon_stream -ksp_max_it 8
 endif
 	@echo "Check 1D slab multigroup, 4 groups with downscatter"
 	./transportk -problem problems/slab_mg4_t05.json -ksp_max_it 6
@@ -141,9 +141,9 @@ run_tests_short_serial:
 	@echo "Test 1D slab, streaming/removal pmat, strong removal"
 	./transportk -problem problems/slab_st2.json -ksp_max_it 6
 	@echo "Test 1D slab, streaming-only pmat, strong removal"
-	./transportk -problem problems/slab_st2.json -precon_stream -ksp_pc_side right -ksp_max_it 8
+	./transportk -problem problems/slab_st2.json -precon_stream -ksp_max_it 8
 	@echo "Test 1D slab, matrix-free removal (the twin of the line above - same count, by design)"
-	./transportk -problem problems/slab_st2.json -matfree_removal -ksp_pc_side right -ksp_max_it 8
+	./transportk -problem problems/slab_st2.json -matfree_removal -ksp_max_it 8
 # One group is the degenerate case of the reference-shifted pmat: alpha is 1,
 # there is one bin, and L + 1 * D_ref IS the full pmat - so this has to land on
 # the full-pmat count above (6), not the streaming-only one (9)
@@ -227,9 +227,9 @@ run_tests_short_serial:
 	@echo "Test 1D slab multigroup, strong downscatter"
 	./transportk -problem problems/slab_mg4_t2.json -ksp_max_it 6
 	@echo "Test 1D slab multigroup, streaming-only pmat reused across the sweep"
-	./transportk -problem problems/slab_mg4_t05.json -precon_stream -ksp_pc_side right -ksp_max_it 9
+	./transportk -problem problems/slab_mg4_t05.json -precon_stream -ksp_max_it 9
 	@echo "Test 1D slab multigroup, matrix-free removal - not one assembly in the whole sweep"
-	./transportk -problem problems/slab_mg4_t05.json -matfree_removal -ksp_pc_side right -ksp_max_it 9
+	./transportk -problem problems/slab_mg4_t05.json -matfree_removal -ksp_max_it 9
 #
 # The reference-shifted streaming pmat (-precon_ref_shift): put a
 # REPRESENTATIVE removal back onto the streaming-only matrix the line above
@@ -274,7 +274,7 @@ run_tests_short_serial:
 	@echo "Test 1D decades multigroup with a streaming-only top group, reference-shifted pmat"
 	./transportk -problem problems/slab_decades4_stream0.json -matfree_removal -precon_ref_shift -ksp_max_it 22
 	@echo "Test 1D slab, streaming-only everywhere, reference-shifted pmat degenerates to bare L"
-	./transportk -problem problems/slab_st0.json -matfree_removal -precon_ref_shift -ksp_pc_side right -ksp_max_it 1
+	./transportk -problem problems/slab_st0.json -matfree_removal -precon_ref_shift -ksp_max_it 1
 	@echo "Test 1D slab multigroup, weak removal (advection dominated)"
 	./transportk -problem problems/slab_mg4_t05_st0.json -ksp_max_it 1
 	@echo "Test 1D slab multigroup, S2 on a coarser slab"
@@ -304,9 +304,9 @@ run_tests_short_serial:
 	@echo "Test 2D box, weak removal (advection dominated)"
 	./transportk -problem problems/box_50_st0.json -ksp_max_it 3
 	@echo "Test 2D box, streaming-only pmat"
-	./transportk -problem problems/box_50_st2.json -precon_stream -ksp_pc_side right -ksp_max_it 7
+	./transportk -problem problems/box_50_st2.json -precon_stream -ksp_max_it 7
 	@echo "Test 2D box, matrix-free removal (the twin of the line above - same count, by design)"
-	./transportk -problem problems/box_50_st2.json -matfree_removal -ksp_pc_side right -ksp_max_it 7
+	./transportk -problem problems/box_50_st2.json -matfree_removal -ksp_max_it 7
 #
 # The reference-shifted pmat in 2D. box_decades4.json is slab_decades4.json's
 # twin - the same four groups over the same 0.1-wide cells, one axis wider - so
@@ -548,9 +548,9 @@ run_tests_short_serial:
 	@echo "Test 3D cube, non-cubic grid (dx, dy and dz all differ)"
 	./transportk -problem problems/cube_10x5x5_st2.json -ksp_max_it 6
 	@echo "Test 3D cube, streaming-only pmat"
-	./transportk -problem problems/cube_10_st2.json -precon_stream -ksp_pc_side right -ksp_max_it 6
+	./transportk -problem problems/cube_10_st2.json -precon_stream -ksp_max_it 6
 	@echo "Test 3D cube, matrix-free removal (the twin of the line above - same count, by design)"
-	./transportk -problem problems/cube_10_st2.json -matfree_removal -ksp_pc_side right -ksp_max_it 6
+	./transportk -problem problems/cube_10_st2.json -matfree_removal -ksp_max_it 6
 	@echo "Test 3D cube, S4 (24 angles)"
 	./transportk -problem problems/cube_10_s4_st2.json -ksp_max_it 6
 	@echo "Test 3D cube, one MatSetValuesCOO per term instead of a single summed one"
@@ -613,9 +613,9 @@ run_tests_short_serial:
 	@echo "Test 2D unstructured quad box, pure scattering (ratio 1), twin of box_50_st2"
 	./transportk -problem problems/plex_box_50_st2.json -ksp_max_it 7
 	@echo "Test 2D unstructured quad box, streaming-only pmat"
-	./transportk -problem problems/plex_box_50_st2.json -precon_stream -ksp_pc_side right -ksp_max_it 7
+	./transportk -problem problems/plex_box_50_st2.json -precon_stream -ksp_max_it 7
 	@echo "Test 2D unstructured quad box, matrix-free removal (the twin of the line above)"
-	./transportk -problem problems/plex_box_50_st2.json -matfree_removal -ksp_pc_side right -ksp_max_it 7
+	./transportk -problem problems/plex_box_50_st2.json -matfree_removal -ksp_max_it 7
 	@echo "Test 2D unstructured quad box, reflective left + bottom faces"
 	./transportk -problem problems/plex_box_50_reflect_lb.json -ksp_max_it 6
 ifeq ($(PETSC_HAVE_TRIANGLE),1)
@@ -696,9 +696,9 @@ endif
 	@echo "Test 2D unstructured quad box at DG1, one MatSetValuesCOO per term"
 	./transportk -problem problems/plex_box_50_st2_dg1.json -ubolt_coo_two_call -ksp_max_it 7
 	@echo "Test 2D unstructured quad box at DG1, streaming-only pmat"
-	./transportk -problem problems/plex_box_50_st2_dg1.json -precon_stream -ksp_pc_side right -ksp_max_it 9
+	./transportk -problem problems/plex_box_50_st2_dg1.json -precon_stream -ksp_max_it 9
 	@echo "Test 2D unstructured quad box at DG1, matrix-free removal (the twin of the line above)"
-	./transportk -problem problems/plex_box_50_st2_dg1.json -matfree_removal -ksp_pc_side right -ksp_max_it 9
+	./transportk -problem problems/plex_box_50_st2_dg1.json -matfree_removal -ksp_max_it 9
 	@echo "Test 2D unstructured quad box at DG1, the matrix-free removal is the same operator and diagonal"
 	./transportk -problem problems/plex_box_50_st2_dg1.json -check_matfree -ksp_max_it 7
 	@echo "Test 2D unstructured quad box at DG1, reflective left + bottom faces"
@@ -893,8 +893,8 @@ endif
 # the stored psi did (the oracles, whose max is a thermal solve) the pin drops.
 # The shared-hierarchy pair: reference-shifted pmats (the reconstruction
 # converges, more slowly) and a streaming-only pmat (every reconstruction
-# stops on the stall safeguard and the solve starts from the P1 guess; right
-# preconditioned, the repo's convention for that pmat - under left the
+# stops on the stall safeguard and the solve starts from the P1 guess; this
+# relies on the right-preconditioned default - under -ksp_pc_side left the
 # preconditioned stopping test costs the outer iteration sweeps)
 	@echo "Test 1D slab, upscatter, the moments store against the infinite-medium solution"
 	./transportk -problem problems/slab_up3_inf_medium.json -check_inf_medium -ksp_rtol 1e-12 -outer_rtol 1e-11 -outer_store moments -ksp_max_it 12 -outer_max_it 19
@@ -923,7 +923,7 @@ endif
 	@echo "Test 2D box, three groups with upscatter, the moments store on reference-shifted pmats (shared hierarchies)"
 	./transportk -problem problems/box_up3_layers.json -matfree_removal -precon_ref_shift -outer_store moments -ksp_max_it 15 -outer_max_it 16
 	@echo "Test 2D box, upscatter, the moments store on a streaming-only pmat (the stall safeguard) against the infinite-medium solution"
-	./transportk -problem problems/box_up2_inf_medium.json -check_inf_medium -ksp_rtol 1e-12 -outer_rtol 1e-11 -precon_stream -ksp_pc_side right -outer_store moments -ksp_max_it 5 -outer_max_it 27
+	./transportk -problem problems/box_up2_inf_medium.json -check_inf_medium -ksp_rtol 1e-12 -outer_rtol 1e-11 -precon_stream -outer_store moments -ksp_max_it 5 -outer_max_it 27
 
 # ~~~~~~~~~~~
 # ~~~~~~~~~~~
@@ -939,9 +939,9 @@ run_tests_short_parallel:
 	@echo "Test 1D slab, streaming/removal pmat, weak removal in parallel"
 	$(MPIEXEC) -n 2 ./transportk -problem problems/slab_st0.json -ksp_max_it 1
 	@echo "Test 1D slab, streaming-only pmat, strong removal in parallel"
-	$(MPIEXEC) -n 2 ./transportk -problem problems/slab_st2.json -precon_stream -ksp_pc_side right -ksp_max_it 8
+	$(MPIEXEC) -n 2 ./transportk -problem problems/slab_st2.json -precon_stream -ksp_max_it 8
 	@echo "Test 1D slab, matrix-free removal in parallel (the twin of the line above)"
-	$(MPIEXEC) -n 2 ./transportk -problem problems/slab_st2.json -matfree_removal -ksp_pc_side right -ksp_max_it 8
+	$(MPIEXEC) -n 2 ./transportk -problem problems/slab_st2.json -matfree_removal -ksp_max_it 8
 	@echo "Test 1D slab, S2 on a coarser slab in parallel"
 	$(MPIEXEC) -n 2 ./transportk -problem problems/slab_s2_coarse.json -ksp_max_it 9
 	@echo "Test 1D slab, one MatSetValuesCOO per term in parallel"
@@ -961,9 +961,9 @@ run_tests_short_parallel:
 	@echo "Test 1D slab multigroup, 4 groups with downscatter in parallel"
 	$(MPIEXEC) -n 2 ./transportk -problem problems/slab_mg4_t05.json -ksp_max_it 6
 	@echo "Test 1D slab multigroup, streaming-only pmat in parallel"
-	$(MPIEXEC) -n 2 ./transportk -problem problems/slab_mg4_t05.json -precon_stream -ksp_pc_side right -ksp_max_it 9
+	$(MPIEXEC) -n 2 ./transportk -problem problems/slab_mg4_t05.json -precon_stream -ksp_max_it 9
 	@echo "Test 1D slab multigroup, matrix-free removal in parallel (the twin of the line above)"
-	$(MPIEXEC) -n 2 ./transportk -problem problems/slab_mg4_t05.json -matfree_removal -ksp_pc_side right -ksp_max_it 9
+	$(MPIEXEC) -n 2 ./transportk -problem problems/slab_mg4_t05.json -matfree_removal -ksp_max_it 9
 # The reference-shifted pmat in parallel. The alphas are a log-mean over EVERY
 # cell, so they come off an MPI reduction and the binning is then computed
 # redundantly on each rank - these have to reproduce the serial counts exactly
@@ -1007,9 +1007,9 @@ run_tests_short_parallel:
 	@echo "Test 2D box, weak removal in parallel"
 	$(MPIEXEC) -n 2 ./transportk -problem problems/box_50_st0.json -ksp_max_it 3
 	@echo "Test 2D box, streaming-only pmat in parallel"
-	$(MPIEXEC) -n 2 ./transportk -problem problems/box_50_st2.json -precon_stream -ksp_pc_side right -ksp_max_it 7
+	$(MPIEXEC) -n 2 ./transportk -problem problems/box_50_st2.json -precon_stream -ksp_max_it 7
 	@echo "Test 2D box, matrix-free removal in parallel (the twin of the line above)"
-	$(MPIEXEC) -n 2 ./transportk -problem problems/box_50_st2.json -matfree_removal -ksp_pc_side right -ksp_max_it 7
+	$(MPIEXEC) -n 2 ./transportk -problem problems/box_50_st2.json -matfree_removal -ksp_max_it 7
 	@echo "Test 2D decades multigroup, reference-shifted pmat in parallel, one hierarchy per group"
 	$(MPIEXEC) -n 2 ./transportk -problem problems/box_decades4.json -matfree_removal -precon_ref_shift -precon_ref_k 4 -ksp_max_it 29
 	@echo "Test 2D decades multigroup, reference-shifted pmat in parallel, default hierarchies"
@@ -1115,9 +1115,9 @@ run_tests_short_parallel:
 	@echo "Test 3D cube, non-cubic grid in parallel"
 	$(MPIEXEC) -n 2 ./transportk -problem problems/cube_10x5x5_st2.json -ksp_max_it 6
 	@echo "Test 3D cube, streaming-only pmat in parallel"
-	$(MPIEXEC) -n 2 ./transportk -problem problems/cube_10_st2.json -precon_stream -ksp_pc_side right -ksp_max_it 6
+	$(MPIEXEC) -n 2 ./transportk -problem problems/cube_10_st2.json -precon_stream -ksp_max_it 6
 	@echo "Test 3D cube, matrix-free removal in parallel (the twin of the line above)"
-	$(MPIEXEC) -n 2 ./transportk -problem problems/cube_10_st2.json -matfree_removal -ksp_pc_side right -ksp_max_it 6
+	$(MPIEXEC) -n 2 ./transportk -problem problems/cube_10_st2.json -matfree_removal -ksp_max_it 6
 	@echo "Test 3D cube, S4 in parallel"
 	$(MPIEXEC) -n 2 ./transportk -problem problems/cube_10_s4_st2.json -ksp_max_it 6
 	@echo "Test 3D cube, one MatSetValuesCOO per term in parallel"
@@ -1155,9 +1155,9 @@ run_tests_short_parallel:
 	@echo "Test 2D unstructured quad box, pure scattering in parallel"
 	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_box_50_st2.json -ksp_max_it 7
 	@echo "Test 2D unstructured quad box, streaming-only pmat in parallel"
-	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_box_50_st2.json -precon_stream -ksp_pc_side right -ksp_max_it 7
+	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_box_50_st2.json -precon_stream -ksp_max_it 7
 	@echo "Test 2D unstructured quad box, matrix-free removal in parallel (the twin of the line above)"
-	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_box_50_st2.json -matfree_removal -ksp_pc_side right -ksp_max_it 7
+	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_box_50_st2.json -matfree_removal -ksp_max_it 7
 	@echo "Test 2D unstructured quad box, reflective left + bottom faces in parallel"
 	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_box_50_reflect_lb.json -ksp_max_it 6
 ifeq ($(PETSC_HAVE_TRIANGLE),1)
@@ -1205,7 +1205,7 @@ endif
 	@echo "Test 2D unstructured quad box at DG1 in parallel"
 	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_box_50_st2_dg1.json -ksp_max_it 7
 	@echo "Test 2D unstructured quad box at DG1, matrix-free removal in parallel"
-	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_box_50_st2_dg1.json -matfree_removal -ksp_pc_side right -ksp_max_it 8
+	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_box_50_st2_dg1.json -matfree_removal -ksp_max_it 8
 	@echo "Test 2D unstructured quad box at DG1, reflective left + bottom faces in parallel"
 	$(MPIEXEC) -n 2 ./transportk -problem problems/plex_box_50_reflect_lb_dg1.json -ksp_max_it 6
 ifeq ($(PETSC_HAVE_TRIANGLE),1)
@@ -1312,17 +1312,17 @@ run_tests_serial:
 #
 	@echo ""
 	@echo "Test 1D slab, streaming-only pmat, weak removal"
-	./transportk -problem problems/slab_st0.json -precon_stream -ksp_pc_side right -ksp_max_it 1
+	./transportk -problem problems/slab_st0.json -precon_stream -ksp_max_it 1
 	@echo "Test 1D slab, diagonally scaled, streaming-only pmat"
-	./transportk -problem problems/slab_st0.json -diag_scale -precon_stream -ksp_pc_side right -ksp_max_it 2
+	./transportk -problem problems/slab_st0.json -diag_scale -precon_stream -ksp_max_it 2
 	@echo "Test 2D box, non-square grid, four times as fine (mesh independence)"
 	./transportk -problem problems/box_80x40_st2.json -ksp_max_it 7
 	@echo "Test 2D box, S4 on a larger grid"
 	./transportk -problem problems/box_60_s4_st2.json -ksp_max_it 6
 	@echo "Test 2D box, streaming-only pmat on a larger grid"
-	./transportk -problem problems/box_80x40_st2.json -precon_stream -ksp_pc_side right -ksp_max_it 7
+	./transportk -problem problems/box_80x40_st2.json -precon_stream -ksp_max_it 7
 	@echo "Test 2D box, matrix-free removal on a larger grid (the twin of the line above)"
-	./transportk -problem problems/box_80x40_st2.json -matfree_removal -ksp_pc_side right -ksp_max_it 7
+	./transportk -problem problems/box_80x40_st2.json -matfree_removal -ksp_max_it 7
 	@echo "Test 2D box, pure scattering on a larger grid"
 	./transportk -problem problems/box_60_st2.json -ksp_max_it 7
 	@echo "Test 3D cube, three-halves as fine in each direction (mesh independence)"
@@ -1371,18 +1371,18 @@ capture_baselines:
 	./transportk -problem problems/slab_st2.json $(BASE) > baselines/slab1d_default_st2_np1.log
 	./transportk -problem problems/slab_st0.json -diag_scale $(BASE) > baselines/slab1d_default_st0_np1_ds.log
 	./transportk -problem problems/slab_st2.json -diag_scale $(BASE) > baselines/slab1d_default_st2_np1_ds.log || true
-	./transportk -problem problems/slab_st0.json -precon_stream -ksp_pc_side right $(BASE) > baselines/slab1d_stream_st0_np1.log
-	./transportk -problem problems/slab_st2.json -precon_stream -ksp_pc_side right $(BASE) > baselines/slab1d_stream_st2_np1.log
-	./transportk -problem problems/slab_st0.json -precon_stream -ksp_pc_side right -diag_scale $(BASE) > baselines/slab1d_stream_st0_np1_ds.log
-	./transportk -problem problems/slab_st2.json -precon_stream -ksp_pc_side right -diag_scale $(BASE) > baselines/slab1d_stream_st2_np1_ds.log || true
+	./transportk -problem problems/slab_st0.json -precon_stream $(BASE) > baselines/slab1d_stream_st0_np1.log
+	./transportk -problem problems/slab_st2.json -precon_stream $(BASE) > baselines/slab1d_stream_st2_np1.log
+	./transportk -problem problems/slab_st0.json -precon_stream -diag_scale $(BASE) > baselines/slab1d_stream_st0_np1_ds.log
+	./transportk -problem problems/slab_st2.json -precon_stream -diag_scale $(BASE) > baselines/slab1d_stream_st2_np1_ds.log || true
 	$(MPIEXEC) -n 2 ./transportk -problem problems/slab_st0.json $(BASE) > baselines/slab1d_default_st0_np2.log
 	$(MPIEXEC) -n 2 ./transportk -problem problems/slab_st2.json $(BASE) > baselines/slab1d_default_st2_np2.log
 	$(MPIEXEC) -n 2 ./transportk -problem problems/slab_st0.json -diag_scale $(BASE) > baselines/slab1d_default_st0_np2_ds.log
 	$(MPIEXEC) -n 2 ./transportk -problem problems/slab_st2.json -diag_scale $(BASE) > baselines/slab1d_default_st2_np2_ds.log || true
-	$(MPIEXEC) -n 2 ./transportk -problem problems/slab_st0.json -precon_stream -ksp_pc_side right $(BASE) > baselines/slab1d_stream_st0_np2.log
-	$(MPIEXEC) -n 2 ./transportk -problem problems/slab_st2.json -precon_stream -ksp_pc_side right $(BASE) > baselines/slab1d_stream_st2_np2.log
-	$(MPIEXEC) -n 2 ./transportk -problem problems/slab_st0.json -precon_stream -ksp_pc_side right -diag_scale $(BASE) > baselines/slab1d_stream_st0_np2_ds.log
-	$(MPIEXEC) -n 2 ./transportk -problem problems/slab_st2.json -precon_stream -ksp_pc_side right -diag_scale $(BASE) > baselines/slab1d_stream_st2_np2_ds.log || true
+	$(MPIEXEC) -n 2 ./transportk -problem problems/slab_st0.json -precon_stream $(BASE) > baselines/slab1d_stream_st0_np2.log
+	$(MPIEXEC) -n 2 ./transportk -problem problems/slab_st2.json -precon_stream $(BASE) > baselines/slab1d_stream_st2_np2.log
+	$(MPIEXEC) -n 2 ./transportk -problem problems/slab_st0.json -precon_stream -diag_scale $(BASE) > baselines/slab1d_stream_st0_np2_ds.log
+	$(MPIEXEC) -n 2 ./transportk -problem problems/slab_st2.json -precon_stream -diag_scale $(BASE) > baselines/slab1d_stream_st2_np2_ds.log || true
 #
 # Multigroup: 4 groups, {default pc, precon_stream} x {transfer 0, 0.5} x {np 1, 2}.
 # Each log is the whole group sweep, one KSP history after another. The
@@ -1395,9 +1395,9 @@ capture_baselines:
 	./transportk -problem problems/slab_mg4_t0.json $(BASE) > baselines/slab1dmg_default_st2_g4_t0_np1.log
 	./transportk -problem problems/slab_mg4_t05.json $(BASE) > baselines/slab1dmg_default_st2_g4_t05_np1.log
 	./transportk -problem problems/slab_mg4_t05_st0.json $(BASE) > baselines/slab1dmg_default_st0_g4_t05_np1.log
-	./transportk -problem problems/slab_mg4_t05.json -precon_stream -ksp_pc_side right $(BASE) > baselines/slab1dmg_stream_st2_g4_t05_np1.log
+	./transportk -problem problems/slab_mg4_t05.json -precon_stream $(BASE) > baselines/slab1dmg_stream_st2_g4_t05_np1.log
 	$(MPIEXEC) -n 2 ./transportk -problem problems/slab_mg4_t0.json $(BASE) > baselines/slab1dmg_default_st2_g4_t0_np2.log
 	$(MPIEXEC) -n 2 ./transportk -problem problems/slab_mg4_t05.json $(BASE) > baselines/slab1dmg_default_st2_g4_t05_np2.log
 	$(MPIEXEC) -n 2 ./transportk -problem problems/slab_mg4_t05_st0.json $(BASE) > baselines/slab1dmg_default_st0_g4_t05_np2.log
-	$(MPIEXEC) -n 2 ./transportk -problem problems/slab_mg4_t05.json -precon_stream -ksp_pc_side right $(BASE) > baselines/slab1dmg_stream_st2_g4_t05_np2.log
+	$(MPIEXEC) -n 2 ./transportk -problem problems/slab_mg4_t05.json -precon_stream $(BASE) > baselines/slab1dmg_stream_st2_g4_t05_np2.log
 	@echo "Baselines captured in baselines/"
