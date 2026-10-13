@@ -3065,3 +3065,246 @@ Bitwise: `-outer_store angular` is the default and unchanged - every recipe of
 "Bitwise capture" procedure, base = PR #25's head 257f5a6). Without upscatter the
 moments store solves bitwise as the angular one, flux files included (`slab_mg4_t05`,
 `plex_box_50_st2_dg1`).
+
+## Right preconditioning by default (2026-10-13)
+
+`TransportSolver::create` sets `KSPSetPCSide(PC_RIGHT)` before its `KSPSetFromOptions`,
+so every transport solve stops on the true residual `||b - A x||` whatever the
+composite holds, and `-ksp_pc_side left` still overrides it. Only the side is set: the
+norm stays `KSP_NORM_DEFAULT`, which GMRES resolves to UNPRECONDITIONED on the right
+and PRECONDITIONED on the left, so the left override needs nothing else. Before this,
+PETSc's left default stopped every solve on `||P^{-1} r||`, which is a different
+quantity for every preconditioner and on a streaming-only pmat did not track the true
+residual: the moments store took 125 outer sweeps against 19 on `slab_up3_inf_medium`
+(the "Upscatter: the moments store" section above), and the streaming-only twin recipes
+passed `-ksp_pc_side right` by hand (the full-pmat ones ran left: "Mind the pc side" in
+the reference-shift section). The DSA inner solve (`-dsa_`
+prefix, PREONLY + GAMG) is a separate KSP and is untouched; the `verify_*` drivers go
+through `TransportSolver` and get the default too. The cost: right-preconditioned GMRES
+applies the preconditioner once more at the end of every solve that took an iteration,
+to form `x = M^{-1} y`.
+
+How it was checked (local opt arch unless said; no timings):
+- The 30 recipe lines that passed `-ksp_pc_side right` give byte-identical
+  `-ksp_monitor -ksp_converged_reason` output and stderr with the flag removed (main
+  with it, the branch without it, pins lifted); the flag is gone from every recipe and
+  capture line. With `-ksp_pc_side left` the branch reproduces main byte for byte
+  (`plex_box_50_st2_dg1`, `box_diffusive -precon_dsa`, `cg_box_20_inf_medium`,
+  `box_50_inf_medium` and the `slab_up3_inf_medium` oracle checked).
+- Every recipe re-measured pin-lifted (`-ksp_max_it`/`-outer_max_it` 1000) on main and
+  on the branch: 168 of the 420 `transportk` lines measure a different count (121 up,
+  47 down), and none of the upscatter recipes changes its sweep count. Pins set to the
+  branch's local count; the CI +1 pins whose local count moved take the new count and
+  lose their note (`slab_inf_medium_ghost -matfree_removal`, unmoved at 17, keeps 18).
+- Every `verify_*` driver (serial, -n 2, -n 4, on the debug arch, main against branch)
+  passes with its measurements at the same orders against the same tolerances: the
+  pure-streaming closed forms 1e-15 to 1.8e-12 against 1e-9, the plex identities to
+  1e-15; `verify_cgk`'s benchmark errors are unchanged and its reported iteration counts
+  move by at most one. Every `-check_inf_medium` stays at or below 9.7e-12 against 1e-9
+  (worst: the slab upscatter oracles, ~9.5e-12 both sides).
+- The 24 baselines were re-captured (below).
+
+Why the counts move. The relative tolerance is now on the true residual, which is not
+the quantity left preconditioning stopped on, so a count can go either way; the rates
+are the same. On the crooked pipe (113 -> 231, the largest rise) the left-preconditioned
+solve stopped at 113 with its TRUE residual at 9.3e-4 of `||b||`, an order and a half
+short of the 1e-5 asked for; right preconditioned it reaches 1e-5 at 231, and the true
+residuals of the two runs agree iteration by iteration (1.55e-3 left, 1.57e-3 right at
+99). The heterogeneous and void problems rise for the same reason (`box_layers` 24 ->
+29, `box_random8` 19 -> 24, the void channels 26 -> 31, the decades void files 27-29 ->
+31-35, `cube_diffusive -precon_stream -precon_dsa` 25 -> 32); DSA counts mostly rise by
+one (5 -> 6); the easy homogeneous files fall by one (`slab_st2`, `box_50_st2`,
+`plex_box_50_st2` 7 -> 6, the multigroup slabs 6 -> 5). The opt-in Dirichlet-cell twins
+rise (6 -> 8; not looked into further).
+
+One count sits on a rounding floor: `slab_inf_medium -matfree_removal -ksp_rtol 1e-12`
+(7 -> 19, np=2 8 -> 26). A streaming-only pmat on an all-reflective slab is nearly
+singular (the left-preconditioned residual started at 1.7e16); right preconditioned the
+true residual falls to 3.5e-12 of `||b||` in 7 iterations and then crawls the last factor
+of 3.5 to 1e-12. Its error against the infinite-medium solution is 3.6e-13 (np=2
+2.9e-13) against 1e-9, so the tolerance is not at risk, but the count is a hair-trigger
+that a CI arch may want more than one extra for.
+
+The moments store's inner-iteration totals (not pinned) move with the stopping test:
+left -> right, `box_up3_layers` 50 -> 54 (angular 75 -> 79), `plex_box_up3_layers` 49 ->
+55 (angular 77 -> 79), `slab_up3_inf_medium` 53 -> 73 (angular 83 -> 90), and on DG1
+`plex_box_up3_layers_dg1` 54 -> 84 against the angular store's 83 -> 85 (the oracle
+`plex_box_up2_inf_medium_dg1` 56 -> 81, angular 98 -> 108): the reconstruction still
+saves inner iterations on DG0 and structured, and on DG1 roughly none. On a
+streaming-only pmat it is the other way round: `slab_up3_inf_medium -precon_stream`
+moments store left 125 sweeps / 1943 inner, right 19 / 312 (angular 19 / 292 left, 19 /
+312 right), errors 1.2e-10 left and 9.7e-12 right.
+
+Left against right on representative recipes (pins lifted; `k` = max inner iterations,
+`k / n` with the sweeps; errors against the infinite-medium solution, tolerance 1e-9):
+
+| recipe | left | right | error left / right |
+|---|---|---|---|
+| `box_50_st2` (structured) | 7 | 6 | |
+| `box_50_inf_medium -check_inf_medium -ksp_rtol 1e-12` | 10 | 11 | 1.3e-13 / 2.4e-14 |
+| `box_50_inf_medium -matfree_removal` (same check) | 24 | 30 | 7.5e-12 / 5.4e-14 |
+| `box_50_inf_medium -precon_dsa` (same check) | 9 | 9 | 4.0e-14 / 5.1e-14 |
+| `plex_box_50_st2` (DG0) | 7 | 6 | |
+| `plex_tri_30_inf_medium_ghost -check_inf_medium -ksp_rtol 1e-12` (DG0) | 12 | 11 | 1.7e-14 / 3.3e-13 |
+| `plex_box_50_st2_dg1` (DG1) | 7 | 7 | |
+| `plex_box_30_inf_medium_dg1 -check_inf_medium -ksp_rtol 1e-12` | 12 | 12 | 1.3e-13 / 1.5e-13 |
+| `plex_box_30_inf_medium_dg1 -precon_dsa` (same check) | 11 | 11 | 1.9e-14 / 2.9e-14 |
+| `cg_box_50_st2` (CG) | 7 | 7 | |
+| `cg_box_20_inf_medium -check_inf_medium -ksp_rtol 1e-12` | 11 | 11 | 7.8e-13 / 6.8e-13 |
+| `box_diffusive -precon_dsa` / plex DG0 / DG1 / CG twins | 5 / 5 / 6 / 5 | 6 / 6 / 7 / 6 | |
+| `box_crooked_pipe` (no DSA / DSA) | 113 / 8 | 231 / 9 | |
+| `slab_up3_inf_medium` oracle, angular store | 12 / 19 | 13 / 19 | 9.6e-12 / 9.3e-12 |
+| the same, moments store | 12 / 19 | 13 / 19 | 8.7e-12 / 9.6e-12 |
+| the same, `-precon_stream`, angular store | 8 / 19 | 8 / 19 | 1.8e-11 / 9.7e-12 |
+| the same, `-precon_stream`, moments store | 8 / 125 | 8 / 19 | 1.2e-10 / 9.7e-12 |
+| `plex_box_up2_inf_medium` oracle, angular / moments (DG0) | 2 / 27, 1 / 27 | 2 / 27, 2 / 27 | 1.1e-12, 9.4e-13 / 9.8e-13, 9.4e-13 |
+| `plex_box_up2_inf_medium_dg1` oracle, angular / moments | 2 / 27, 2 / 27 | 2 / 27, 2 / 27 | 1.1e-12, 9.6e-13 / 9.4e-13, 9.4e-13 |
+
+Baselines. The 24 logs record `-ksp_monitor`, which is now the true residual, so they
+were re-captured deliberately, on the environment of every earlier capture (debug PETSc
+main, PFLARE main debug, here 1bdeb3c), where the unmodified main first reproduced all
+24 tracked logs byte for byte. The 10 `stream` logs (already right preconditioned) are
+byte-identical; the 14 `default` logs moved; two captures were identical. Counts:
+`slab1d_default_st2` 6 -> 5, its `-diag_scale` pair 174 / 173 -> the 200 cap (still
+converging, the true residual at 1.5e-4 of `||b||` there: left had stopped on its
+preconditioned residual), the st2 multigroup logs 6 -> 5 per group; the t0 logs are still
+four byte-for-byte copies of the single-group log.
+
+Every pin that moved, old -> new (the old pin; "local" where it carried a CI +1 over the
+local opt count; np=4 is the painting identities):
+
+**1D structured** (44 pins)
+
+| problem | options | np=1 | np=2 | np=4 |
+|---|---|---|---|---|
+| `slab_decades4` | `-matfree_removal -precon_ref_shift -precon_dsa` | 11 -> 12 | 11 -> 13 | - |
+| `slab_decades4` | `-matfree_removal -precon_ref_shift -precon_ref_k 4` | 22 -> 23 | 22 -> 23 | - |
+| `slab_decades4` | `-matfree_removal -precon_ref_shift -precon_ref_k 4 -precon_dsa` | 5 -> 6 | 5 -> 6 | - |
+| `slab_decades4_stream0` | `-matfree_removal -precon_ref_shift` | 22 -> 23 | 22 -> 23 | - |
+| `slab_decades4_stream0` | `-precon_dsa` | 5 -> 6 | - | - |
+| `slab_decades4_void` | `-matfree_removal -precon_ref_shift -precon_dsa` | 11 -> 12 | - | - |
+| `slab_diffusive` | `-precon_dsa` | 5 -> 6 | 5 -> 6 | - |
+| `slab_inf_medium` | `-matfree_removal -check_inf_medium -ksp_rtol 1e-12` | 7 -> 19 | 8 -> 26 | - |
+| `slab_mg4_t0` |  | 6 -> 5 | 6 -> 5 | - |
+| `slab_mg4_t05` |  | 6 -> 5 | 6 -> 5 | - |
+| `slab_mg4_t05` | `-check_matfree` | 6 -> 5 | 6 -> 5 | - |
+| `slab_mg4_t05` | `-matfree_removal -precon_ref_shift -precon_ref_k 2` | 6 -> 5 | 6 -> 5 | - |
+| `slab_mg4_t05` | `-ubolt_coo_two_call` | 6 -> 5 | - | - |
+| `slab_mg4_t2` |  | 6 -> 5 | 6 -> 5 | - |
+| `slab_st2` |  | 6 -> 5 | 6 -> 5 | - |
+| `slab_st2` | `-matfree_removal -precon_ref_shift` | 6 -> 5 | - | - |
+| `slab_st2` | `-sub_1_pc_air_print_stats_timings` | 6 -> 5 | - | - |
+| `slab_st2` | `-ubolt_coo_two_call` | 6 -> 5 | 6 -> 5 | - |
+| `slab_up3_inf_medium` | `-check_inf_medium -ksp_rtol 1e-12 -outer_rtol 1e-11` | 12 -> 13 | 12 -> 13 | - |
+| `slab_up3_inf_medium` | `-check_inf_medium -ksp_rtol 1e-12 -outer_rtol 1e-11 -outer_store moments` | 12 -> 13 | 12 -> 13 | - |
+| `slab_up3_inf_medium` | `-check_inf_medium -ksp_rtol 1e-12 -outer_rtol 1e-11 -outer_store moments -outer_recon none` | 12 -> 13 | 12 -> 13 | - |
+| `slab_up3_layers` |  | 11 -> 12 | - | - |
+| `slab_up3_layers` | `-outer_store moments` | 11 -> 12 | - | - |
+| `slab_void_gap` | `-matfree_removal -precon_ref_shift -precon_dsa` | 6 -> 7 | 6 -> 7 | - |
+| `slab_void_gap` | `-precon_dsa` | 6 -> 7 | 6 -> 7 | - |
+| `slab_void_gap` | `-precon_dsa -dsa_void_bridge 0` | 6 -> 8 | - | - |
+
+**2D structured** (55 pins)
+
+| problem | options | np=1 | np=2 | np=4 |
+|---|---|---|---|---|
+| `box_50_identity` |  | 7 -> 6 | - | 7 -> 6 |
+| `box_50_inf_medium` | `-check_inf_medium -ksp_rtol 1e-12` | 10 -> 11 | 10 -> 11 | - |
+| `box_50_inf_medium` | `-matfree_removal -check_inf_medium -ksp_rtol 1e-12` | 25 (local 24) -> 30 | - | - |
+| `box_50_inf_medium_ghost` | `-check_inf_medium -ksp_rtol 1e-12` | 11 -> 12 | 12 (local 11) -> 12 | - |
+| `box_50_reflect_lb` |  | - | 6 -> 5 | - |
+| `box_50_st2` |  | 7 -> 6 | 7 -> 6 | - |
+| `box_50_st2` | `-check_matfree` | - | 7 -> 6 | - |
+| `box_50_st2` | `-ubolt_coo_two_call` | 7 -> 6 | 7 -> 6 | - |
+| `box_50_st2_dirichlet_cell` |  | 6 -> 8 | 6 -> 8 | - |
+| `box_50_st2_dirichlet_cell` | `-precon_dsa` | 5 -> 7 | - | - |
+| `box_60_st2` |  | 7 -> 6 | 7 -> 6 | - |
+| `box_80x40_st2` |  | 7 -> 6 | 7 -> 6 | - |
+| `box_crooked_pipe` |  | 113 -> 231 | 117 (local 114) -> 233 | - |
+| `box_crooked_pipe` | `-precon_dsa` | 8 -> 9 | 8 -> 9 | - |
+| `box_crooked_pipe` | `-precon_dsa -dsa_consistent_d 0` | 28 -> 30 | - | - |
+| `box_decades4` | `-matfree_removal -precon_ref_shift` | 51 -> 52 | 51 -> 52 | - |
+| `box_decades4` | `-matfree_removal -precon_ref_shift -precon_dsa` | 8 -> 9 | 8 -> 9 | - |
+| `box_decades4` | `-matfree_removal -precon_ref_shift -precon_ref_k 3` | 29 -> 30 | 29 -> 30 | - |
+| `box_decades4` | `-matfree_removal -precon_ref_shift -precon_ref_k 4` | 29 -> 30 | 29 -> 30 | - |
+| `box_decades4` | `-matfree_removal -precon_ref_shift -precon_ref_k 4 -precon_dsa` | 5 -> 6 | 5 -> 6 | - |
+| `box_decades4_void` | `-matfree_removal -precon_ref_shift -check_ref_shift` | 29 -> 35 | 29 -> 35 | - |
+| `box_decades4_void` | `-matfree_removal -precon_ref_shift -precon_dsa` | 6 -> 7 | - | - |
+| `box_diffusive` | `-matfree_removal -precon_ref_shift -precon_dsa` | 5 -> 6 | - | - |
+| `box_diffusive` | `-precon_dsa` | 5 -> 6 | 5 -> 6 | - |
+| `box_diffusive` | `-precon_dsa -dsa_consistent_d 0` | 11 -> 12 | - | - |
+| `box_diffusive` | `-precon_dsa -dsa_consistent_d_power 1` | 5 -> 6 | - | - |
+| `box_diffusive` | `-precon_dsa -pc_composite_type additive` | 7 -> 8 | - | - |
+| `box_layers` |  | 24 -> 29 | 24 -> 29 | - |
+| `box_layers` | `-precon_dsa` | 11 -> 13 | 11 -> 13 | - |
+| `box_random8` |  | 19 -> 24 | 19 -> 24 | - |
+| `box_random8` | `-precon_dsa` | - | 6 -> 7 | - |
+| `box_up2_inf_medium` | `-check_inf_medium -ksp_rtol 1e-12 -outer_rtol 1e-11 -outer_store moments` | 1 -> 2 | 1 -> 2 | - |
+| `box_void_channel` |  | 26 -> 31 | - | - |
+| `box_void_channel` | `-matfree_removal -precon_ref_shift` | 26 -> 31 | - | - |
+
+**3D structured** (12 pins)
+
+| problem | options | np=1 | np=2 | np=4 |
+|---|---|---|---|---|
+| `cube_10_inf_medium_ghost` | `-matfree_removal -check_inf_medium -ksp_rtol 1e-12` | 22 (local 21) -> 22 | - | - |
+| `cube_10_mg4_t05` |  | 5 -> 6 | - | - |
+| `cube_10_ratio05` |  | - | 4 -> 5 | - |
+| `cube_10_st2_dirichlet_cell` |  | 5 -> 6 | - | - |
+| `cube_10x5x5_st2` |  | 6 -> 7 | 6 -> 7 | - |
+| `cube_diffusive` | `-precon_stream -precon_dsa` | 25 -> 32 | 25 -> 32 | - |
+| `cube_void_duct` |  | 21 -> 22 | - | - |
+| `cube_void_duct` | `-matfree_removal -precon_ref_shift` | - | 21 -> 22 | - |
+| `cube_void_duct` | `-matfree_removal -precon_ref_shift -check_ref_shift` | 21 -> 22 | - | - |
+| `cube_void_duct` | `-precon_dsa -dsa_void_bridge 0` | 6 -> 7 | - | - |
+
+**Unstructured DG0** (29 pins)
+
+| problem | options | np=1 | np=2 | np=4 |
+|---|---|---|---|---|
+| `plex_box_50_reflect_lb` |  | 6 -> 5 | 6 -> 5 | - |
+| `plex_box_50_st2` |  | 7 -> 6 | 7 -> 6 | - |
+| `plex_box_50_st2_dirichlet_cell` |  | 6 -> 8 | - | - |
+| `plex_box_50_st2_dirichlet_cell` | `-precon_dsa` | 5 -> 7 | - | - |
+| `plex_box_diffusive` | `-matfree_removal -precon_ref_shift -precon_dsa` | 5 -> 6 | 5 -> 6 | - |
+| `plex_box_diffusive` | `-precon_dsa` | 5 -> 6 | 5 -> 6 | - |
+| `plex_box_diffusive` | `-precon_dsa -pc_composite_type additive` | 7 -> 8 | - | - |
+| `plex_box_up2_inf_medium` | `-check_inf_medium -ksp_rtol 1e-12 -outer_rtol 1e-11 -outer_store moments` | 1 -> 2 | 1 -> 2 | - |
+| `plex_box_void_channel` |  | 26 (local 25) -> 30 | - | - |
+| `plex_decades4` | `-matfree_removal -precon_ref_shift` | 51 -> 52 | 51 -> 52 | - |
+| `plex_decades4` | `-matfree_removal -precon_ref_shift -precon_ref_k 4` | 29 (local 28) -> 30 | 29 -> 30 | - |
+| `plex_decades4_void` | `-matfree_removal -precon_ref_shift -check_ref_shift` | 27 -> 31 | 27 -> 31 | - |
+| `plex_decades4_void` | `-matfree_removal -precon_ref_shift -precon_dsa` | 6 -> 7 | - | - |
+| `plex_tet_12_absorber_dirichlet_cell` | `-ksp_rtol 1e-12` | 6 -> 7 | - | - |
+| `plex_tet_diffusive` | `-precon_dsa` | 5 -> 6 | 5 -> 6 | - |
+| `plex_tri_30_inf_medium_ghost` | `-check_inf_medium -ksp_rtol 1e-12` | 12 -> 11 | - | - |
+| `plex_tri_30_inf_medium_ghost` | `-matfree_removal -check_inf_medium -ksp_rtol 1e-12` | 33 -> 35 | - | - |
+| `plex_tri_diffusive` |  | 35 -> 34 | - | - |
+| `plex_tri_diffusive` | `-precon_dsa` | 5 -> 6 | 5 -> 6 | - |
+
+**Unstructured DG1** (8 pins)
+
+| problem | options | np=1 | np=2 | np=4 |
+|---|---|---|---|---|
+| `plex_box_diffusive_dg1` | `-precon_dsa` | 6 -> 7 | - | - |
+| `plex_box_void_channel_dg1` |  | 34 -> 37 | - | - |
+| `plex_cube_10_st2_dg1` |  | 7 -> 6 | 7 -> 6 | - |
+| `plex_cube_diffusive_dg1` | `-precon_dsa` | 7 -> 8 | 7 -> 8 | - |
+| `plex_decades4_dg1` | `-matfree_removal -precon_ref_shift` | 66 -> 65 | - | - |
+| `plex_tet_diffusive_dg1` | `-precon_dsa` | 9 -> 10 | - | - |
+
+**CG-SUPG** (14 pins)
+
+| problem | options | np=1 | np=2 | np=4 |
+|---|---|---|---|---|
+| `cg_box_50_reflect_lb` |  | 6 -> 5 | - | - |
+| `cg_box_diffusive` |  | 39 -> 38 | - | - |
+| `cg_box_diffusive` | `-precon_dsa` | 5 -> 6 | 5 -> 6 | - |
+| `cg_box_void_channel` |  | 47 -> 48 | 46 -> 48 | - |
+| `cg_cube_diffusive` |  | 49 (local 48) -> 47 | - | - |
+| `cg_decades4` |  | 41 -> 42 | - | - |
+| `cg_decades4` | `-precon_dsa` | 5 -> 6 | - | - |
+| `cg_slab_saaf_ls_void` | `-supg_zeta 2` | 3 -> 4 | - | - |
+| `cg_tet_diffusive` |  | 39 -> 38 | - | - |
+| `cg_tet_diffusive` | `-precon_dsa` | 5 -> 6 | 5 -> 6 | - |
+| `cg_tri_diffusive` | `-precon_dsa` | 5 -> 6 | - | - |

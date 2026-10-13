@@ -45,10 +45,12 @@ verbatim; "Where the notes live" at the end maps the names code comments use ont
     density-scaled materials), can stall on non-separable materials (C5G7 in the
     campaign) and never converges on a streaming-only pmat (every reconstruction stops
     on the safeguard). Which groups may share a hierarchy is the open question.
-  - [ ] On a streaming-only pmat the moments store wants `-ksp_pc_side right` (left
-    stops on a preconditioned residual that, from the P1 guesses, costs the outer
-    iteration sweeps: 125 against 19 on `slab_up3_inf_medium`); the driver notes it but
-    does not switch the side itself.
+- Landed 2026-10-13: right preconditioning is the default (`TransportSolver::create`
+  sets `PC_RIGHT` before `KSPSetFromOptions`; `-ksp_pc_side left` still overrides), so
+  every transport solve stops on the true residual whatever the preconditioner. That
+  closes the moments store's streaming-only-pmat caveat (it was a left-preconditioning
+  effect; `-ksp_pc_side left` is the case it was about). Every pin re-set on the local
+  opt arch and the 1D baselines re-captured; history: "Right preconditioning by default".
 - Extensions the refactor's seams now make local (not scheduled): a time-derivative term
   (`OperatorTerm` with a diagonal half and a rhs half), Pn/anisotropic scatter (widen
   `AngularQuadrature::w_d` plus a moment-to-discrete matrix), a new direction set (a

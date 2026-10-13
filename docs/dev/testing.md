@@ -14,15 +14,24 @@ this file used to carry went.
   count, so an iteration-count regression fails the run. A pin is the count measured on
   the local opt arch (`arch-linux-c-opt`), exactly, with no per-arch slack: every pin was
   re-set that way 2026-09-25 for the ghost-flux vacuum default (see "Switching the
-  default" in `docs/dev/history.md`). The same recipes run on every CI arch
+  default" in `docs/dev/history.md`), and again 2026-10-13 for right preconditioning
+  (below). The same recipes run on every CI arch
   (opt/debug/64-bit/OpenMP), so CI flags any arch that needs one more, and at that point
   the pin takes the max over the arches. The first CI run after the re-pin did that for
   four recipes: the 1D ghost-flux and 2D all-reflective `-matfree_removal` inf-medium
   checks (64-bit, 17 -> 18 and 24 -> 25), the 2D ghost-flux inf-medium check at np=2
-  (OpenMP, 11 -> 12) and the crooked pipe at np=2 (OpenMP, 114 -> 117). Every recipe
+  (OpenMP, 11 -> 12) and the crooked pipe at np=2 (OpenMP, 114 -> 117); the 2026-10-13
+  re-pin moved those recipes' local counts (except the 1D one, which keeps its 18) and
+  dropped their +1s with the notes. Every recipe
   carrying such a CI +1 today is marked in the note column of
   `docs/dev/iteration_counts.md`. Older per-arch notes in the history ("pinned 10") are
   the history of the pre-2026-09-25 policy.
+- Every count is a right-preconditioned one: `TransportSolver` sets `PC_RIGHT` (since
+  2026-10-13), so every solve stops on the TRUE residual whatever the preconditioner,
+  and no recipe passes `-ksp_pc_side` (before then the streaming-only twins passed
+  `-ksp_pc_side right` by hand and the rest ran PETSc's left default). Every pin was
+  re-set on that date (`docs/dev/history.md`, "Right preconditioning by default"). A
+  recipe that wants the left-preconditioned behaviour passes `-ksp_pc_side left`.
 - Multigroup caveat: `-ksp_max_it` is one option for the whole group sweep, so a
   multigroup recipe pins the **max over the groups**. A single group getting slower
   without exceeding that max will not fail the recipe — the multigroup baselines below
@@ -46,7 +55,7 @@ this file used to carry went.
   serial and -n 2, at `-outer_recon tol` (the default) and `none`; every `*_up3_layers`
   regression except CG-SUPG (refused), DG1 included; `-outer_recon 2`; and the two
   shared-hierarchy cases, reference-shifted pmats on `box_up3_layers` and a
-  streaming-only pmat (`-precon_stream -ksp_pc_side right`) on `box_up2_inf_medium`, which
+  streaming-only pmat (`-precon_stream`) on `box_up2_inf_medium`, which
   is the stall safeguard's recipe (every reconstruction stops on it). The reconstruction
   V-cycles are pinned by nothing: they are reported on stderr, separately from the inner
   iterations, and the pins stay the angular meaning (max inner iterations / sweeps).
